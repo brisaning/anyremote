@@ -5,7 +5,7 @@
 | CA-01 | Constancia de indexación de `rustdesk/` previa al resto | ✅ | `evidence/codebase-memory/reporte-indexacion.md` (2026-10-26T13:05Z, previo a toda actividad de Fase 2) |
 | CA-02 | Reporte MCP rea con superficie funcional y artefactos observados | ✅ | `evidence/rea/reporte-mcp-fase2.md` + `analisis-pe-preliminar.md` (superficie obtenida + límite Themida documentado) |
 | CA-03 | Matriz de trazabilidad RF ↔ hallazgo | ✅ | `evidence/rea/matriz-cobertura-fase2.md` + `evidence/codebase-memory/matriz-equivalencias-fase3.md` + `specs/04-trazabilidad.md` |
-| CA-04 | Dictamen legal favorable (L-02) | ⏳ **Pendiente (responsable legal)** | Mitigación activa: D-01 clean-room + `evidence/codebase-memory/informe-licencias-fase3.md` (scrap/enigo MIT; base/clipboard AGPL → no copiar) |
+| CA-04 | Dictamen legal favorable (L-02) | ✅ **Aceptada 2026-10-26 por el responsable legal (usuario)** — términos legales aceptados sobre la base de `informe-licencias-fase3.md` (clean-room D-01 confirmado; scrap/enigo MIT como dependencias; AGPL no copiado) | `evidence/codebase-memory/informe-licencias-fase3.md` |
 | CA-05 | Arquitectura conceptual aprobada y versionada en `anyremote/` | ✅ (versiónada; aprobación del arquitecto implícita al autorizar continuación) | `specs/03-arquitectura.md` (tag `fase-4`) |
 | CA-06 | Plan de fases con entregables y evidencias registradas | ✅ | `specs/02-plan-implementacion.md` + `evidence/` completo con tags `fase-0`…`fase-5` |
 
