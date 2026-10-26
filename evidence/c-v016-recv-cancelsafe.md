@@ -34,3 +34,7 @@ clipboard_sync dir=in (19 B) ✓      ← frame de portapapeles decodificado PER
 ## Gates
 - Suite completa: **35 suites / 0 fallos** (transport 4+7 e2e + recv_cancelsafe + resto intacto).
 - Daemon versionado **0.1.6** (los eventos `listening/connecting` lo viajan para verificación remota).
+
+## Confirmación de campo (usuario)
+
+- **2026-10-26**: retest cross-device con v0.1.6 en ambos lados → **la conexión se mantiene estable** (sin `FrameTooLarge` ni `connection_gone`). Causa raíz v0.1.6 confirmada en producción real por el usuario.
