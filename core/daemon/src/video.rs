@@ -180,6 +180,18 @@ impl AdaptState {
     }
 }
 
+/// Resolución efectiva de trabajo: `requested==(0,0)` = **nativa** (la fija el
+/// primer frame del capturer; en modo Test sin escritorio → 1280x720).
+pub fn resolve_native(mode: VideoMode, requested: (u32, u32), first: (u32, u32)) -> (u32, u32) {
+    if requested.0 > 0 && requested.1 > 0 {
+        return requested;
+    }
+    if matches!(mode, VideoMode::Test) || first.0 == 0 || first.1 == 0 {
+        return (1280, 720);
+    }
+    first
+}
+
 /// Lanza la tarea de vídeo hacia `out` (preview local + eventos). Deténela con `stop`.
 pub fn spawn_video_task(
     mode: VideoMode,
@@ -191,14 +203,19 @@ pub fn spawn_video_task(
     stop: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let (mut w, mut h) = size;
+        // Resolución nativa (0,0): en Test se fija ya; en Auto espera al primer frame.
+        let (mut w, mut h) = if size == (0, 0) && matches!(mode, VideoMode::Test) {
+            (1280, 720)
+        } else {
+            size
+        };
         let mut capturer: PlatformCapturer = match mode {
             VideoMode::Off => return,
-            VideoMode::Test => PlatformCapturer::TestPattern(TestPatternCapturer::new(w, h)),
-            VideoMode::Auto => best_capturer(w, h),
+            VideoMode::Test => PlatformCapturer::TestPattern(TestPatternCapturer::new(w.max(1), h.max(1))),
+            VideoMode::Auto => best_capturer(w.max(64), h.max(64)),
         };
         let mut encoder = encoder_for(codec);
-        let mut adapt = AdaptState::new(size);
+        let mut adapt: Option<AdaptState> = None;
         let budget_ms = 1000.0 / fps.max(1) as f64;
         let mut seq: u32 = 0;
         let mut tick = tokio::time::interval(Duration::from_millis(1000 / fps.max(1)));
@@ -208,11 +225,19 @@ pub fn spawn_video_task(
                 break;
             }
             tick.tick().await;
-            let frame = match capturer.next_frame() {
+            let captured = match capturer.next_frame() {
                 Ok(f) => f,
                 Err(_) => continue, // captura momentáneamente no disponible
             };
-            let frame = scale_frame(&frame, w, h);
+            // Fija la resolución nativa con el primer frame.
+            if w == 0 || h == 0 {
+                w = captured.width;
+                h = captured.height;
+            }
+            let frame = scale_frame(&captured, w, h);
+            if adapt.is_none() {
+                adapt = Some(AdaptState::new((w, h)));
+            }
 
             let t0 = std::time::Instant::now();
             let enc = match encoder.encode(&frame) {
@@ -228,29 +253,32 @@ pub fn spawn_video_task(
             }
 
             // Control adaptativo de calidad (bitrate/escala) cada ~60 frames.
-            if let Some(dec) = adapt.observe(took_ms, budget_ms) {
-                let mut applied = false;
-                if let Some(bps) = dec.target_bps {
-                    if encoder.set_target_bitrate(bps) {
-                        applied = true;
-                        let _ = out.try_send(VideoMsg::Event(json!({
-                            "event": "video_adapt", "reason": dec.reason, "bps": bps,
-                            "size": format!("{}x{}", adapt.size.0, adapt.size.1),
-                        })));
-                    }
-                }
-                if !applied {
-                    if let Some((nw, nh)) = dec.video_size {
-                        w = nw;
-                        h = nh;
-                        if matches!(mode, VideoMode::Test) {
-                            capturer = PlatformCapturer::TestPattern(TestPatternCapturer::new(w, h));
+            if let Some(st) = adapt.as_mut() {
+                if let Some(dec) = st.observe(took_ms, budget_ms) {
+                    let mut applied = false;
+                    if let Some(bps) = dec.target_bps {
+                        if encoder.set_target_bitrate(bps) {
+                            applied = true;
+                            let _ = out.try_send(VideoMsg::Event(json!({
+                                "event": "video_adapt", "reason": dec.reason, "bps": bps,
+                                "size": format!("{}x{}", st.size.0, st.size.1),
+                            })));
                         }
-                        encoder = encoder_for(codec); // recreado con la nueva escala
-                        let _ = out.try_send(VideoMsg::Event(json!({
-                            "event": "video_adapt", "reason": dec.reason,
-                            "size": format!("{}x{}", w, h),
-                        })));
+                    }
+                    if !applied {
+                        if let Some((nw, nh)) = dec.video_size {
+                            w = nw;
+                            h = nh;
+                            if matches!(mode, VideoMode::Test) {
+                                capturer =
+                                    PlatformCapturer::TestPattern(TestPatternCapturer::new(w, h));
+                            }
+                            encoder = encoder_for(codec); // recreado con la nueva escala
+                            let _ = out.try_send(VideoMsg::Event(json!({
+                                "event": "video_adapt", "reason": dec.reason,
+                                "size": format!("{}x{}", w, h),
+                            })));
+                        }
                     }
                 }
             }
@@ -275,6 +303,16 @@ mod tests {
             }
         }
         Frame { width: 4, height: 4, format: PixelFormat::Bgra8, data }
+    }
+
+    #[test]
+    fn resolve_native_uses_first_frame_or_fixed_size() {
+        // Explícito WxH manda siempre.
+        assert_eq!(resolve_native(VideoMode::Auto, (640, 360), (1920, 1080)), (640, 360));
+        // Nativa + capturer real → dimensiones del primer frame.
+        assert_eq!(resolve_native(VideoMode::Auto, (0, 0), (1920, 1080)), (1920, 1080));
+        // Nativa en modo Test (sin escritorio) → 1280x720.
+        assert_eq!(resolve_native(VideoMode::Test, (0, 0), (64, 64)), (1280, 720));
     }
 
     #[test]

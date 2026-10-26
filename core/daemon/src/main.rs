@@ -89,13 +89,17 @@ async fn main() {
                 });
             }
             if let Some(sz) = flag_value(&args, "--video-size") {
-                let sz = sz.to_ascii_lowercase();
-                let parts: Vec<&str> = sz.split('x').collect();
-                match (parts.len(), parts[0].parse::<u32>(), parts.get(1).and_then(|h| h.parse::<u32>().ok())) {
-                    (2, Ok(w), Some(h)) if w > 0 && h > 0 => cfg.video_size = (w, h),
-                    _ => {
-                        eprintln!("--video-size espera WxH (p. ej. 960x540)");
-                        std::process::exit(2);
+                let s = sz.to_ascii_lowercase();
+                if s == "native" || s == "auto" {
+                    cfg.video_size = (0, 0); // sentinela: resolución nativa del capturer
+                } else {
+                    let parts: Vec<&str> = s.split('x').collect();
+                    match (parts.len(), parts[0].parse::<u32>(), parts.get(1).and_then(|h| h.parse::<u32>().ok())) {
+                        (2, Ok(w), Some(h)) if w > 0 && h > 0 => cfg.video_size = (w, h),
+                        _ => {
+                            eprintln!("--video-size espera native|WxH (p. ej. 960x540)");
+                            std::process::exit(2);
+                        }
                     }
                 }
             }

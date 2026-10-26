@@ -76,6 +76,10 @@ class _HomePageState extends State<HomePage> {
   Process? _daemon;
   Process? _listener;
 
+  // Perfiles (C6) cargados del daemon: `anyremoted profiles --list`.
+  List<String> _aliases = [];
+  bool _loadingProfiles = false;
+
   // Hito M2: visor remoto (preview local del daemon controlador).
   Socket? _preview;
   Uint8List _videoBuf = Uint8List(0);
@@ -90,6 +94,49 @@ class _HomePageState extends State<HomePage> {
     '[build] Flutter $kFlutterBuild · windows-x64',
     '[core] ciclos S0..C8 completos · daemon anyremoted integrado',
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshProfiles());
+  }
+
+  /// Carga los aliases de perfil desde el daemon (`profiles --list`, JSONL).
+  Future<void> _refreshProfiles() async {
+    final daemon = resolveDaemonPath();
+    if (!File(daemon).existsSync()) {
+      _append('[ui] perfiles: anyremoted.exe no encontrado en $daemon');
+      return;
+    }
+    setState(() => _loadingProfiles = true);
+    try {
+      final res = await Process.run(daemon, ['profiles', '--list']);
+      final out = (res.stdout ?? '').toString();
+      final aliases = <String>[];
+      for (final line in const LineSplitter().convert(out)) {
+        final t = line.trim();
+        if (!t.startsWith('{')) continue;
+        try {
+          final v = jsonDecode(t) as Map<String, dynamic>;
+          if (v['event'] == 'profile' && v['alias'] is String) {
+            aliases.add(v['alias'] as String);
+          }
+        } catch (_) {}
+      }
+      if (mounted) {
+        setState(() {
+          _aliases = aliases;
+          _loadingProfiles = false;
+        });
+        _append(aliases.isEmpty
+            ? '[ui] sin perfiles guardados (anyremoted profiles --add alias,host,puerto)'
+            : '[ui] perfiles cargados: ${aliases.join(", ")}');
+      }
+    } catch (e) {
+      if (mounted) setState(() => _loadingProfiles = false);
+      _append('[ui] error leyendo perfiles: $e');
+    }
+  }
 
   void _append(String line) {
     setState(() => _log.add(line));
@@ -194,7 +241,7 @@ class _HomePageState extends State<HomePage> {
           '--clipboard', 'win',
           // M2: el escuchador comparte SU pantalla por defecto (sino no hay qué ver).
           '--video', 'on',
-          '--video-size', '1280x720',
+          '--video-size', 'native',
           '--video-fps', '15',
           '--codec', 'vp9',
         ],
@@ -534,6 +581,33 @@ class _HomePageState extends State<HomePage> {
                       ],
                     ),
                     const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        DropdownButton<String>(
+                          hint: const Text('perfiles', style: TextStyle(fontSize: 13)),
+                          value: _aliases.contains(_target.text) ? _target.text : null,
+                          items: _aliases
+                              .map((a) => DropdownMenuItem(value: a, child: Text(a)))
+                              .toList(),
+                          onChanged: running
+                              ? null
+                              : (v) {
+                                  if (v != null) setState(() => _target.text = v);
+                                },
+                          isDense: true,
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          tooltip: 'Actualizar perfiles',
+                          icon: const Icon(Icons.refresh, size: 18),
+                          onPressed: _loadingProfiles ? null : _refreshProfiles,
+                        ),
+                        if (_aliases.isNotEmpty)
+                          Text('${_aliases.length} perfil(es)',
+                              style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
                     Text(
                       'Daemon: ${resolveDaemonPath()}',
                       style: const TextStyle(fontSize: 11, color: Colors.grey),
