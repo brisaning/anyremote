@@ -39,6 +39,17 @@
 - **Remediación en curso**: instalación de Ghidra 12.2 (release oficial NSA, SHA256 `2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67`) + `GHIDRA_INSTALL_DIR`.
 - **Tipo**: unknown (proceso), no de comportamiento del artefacto.
 
+### H-AD-02b — Identidad de versión y manifiesto (vía strings, Ghidra 12.1.4)
+
+- **Evidencia**: `rea search AnyDesk.exe --pattern "anydesk" --mode regex --case-sensitive=false --snapshot ...`
+- **Resultado**: manifiesto de aplicación completo en el binario:
+  - `assemblyIdentity version="9.8.2.0"`, `name="AnyDesk.AnyDesk.AnyDesk"`, `processorArchitecture="x86"` → **versión 9.8.2** (alineada a la línea base).
+  - `requestedExecutionLevel level="asInvoker"` → sin elevación UAC forzada (privilegios del usuario invocador).
+  - Compatibilidad declarada: Windows 10 / 8.1 / Vista.
+  - `description`: "screen sharing and remote control software".
+- **Interpretación**: superficie de identificación + política de privilegios observables; L-01: registrar hechos, no replicar marcas.
+- **Tipo**: observación (observed). Autoridad: shipped-artifact.
+
 ## Invocaciones exactas (reproducibilidad)
 
 ```
