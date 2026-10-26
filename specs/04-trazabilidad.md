@@ -21,3 +21,18 @@
 1. Un hallazgo nuevo (H-AD/H-RD) ⇒ fila actualizada aquí antes de su uso en un ciclo.
 2. Un componente nuevo ⇒ su prueba de gate definida en el mismo PR (D-07 pruebas por ciclo).
 3. Cada gate cerrado ⇒ evidencia del test + tag del ciclo en git; estado reflejado en la bóveda (`Memoria del proyecto.md`).
+
+## Estado de ciclos (2026-10-26)
+
+| Ciclo | RF | Gate | Tag | Evidencia |
+|---|---|---|---|---|
+| S0 Tronco | — | 9 tests + demo TLS loopback | `ciclo-s0` | — |
+| C1 | RF-01 | `e2e_session_establishment_with_metrics` | `ciclo-c1` | — |
+| C2 | RF-03/RNF-01 | `e2e_mutual_auth_with_trust_store` + rechazos + límite | `ciclo-c2` | — |
+| C3 | RF-02a | DXGI real + e2e vídeo + bench | `ciclo-c3` | `evidence/c3-gate.md` |
+| C3-bis | RNF-02 | VP9 release ≥30 fps + e2e VP9 | `ciclo-c3-bis` | `evidence/c3-bis-gate.md` |
+| C4 | RF-02b | `e2e_clipboard` (bidireccional+contención) | `ciclo-c4` | `evidence/c4-gate.md` |
+| C5 | RF-02c | `e2e_filexfer` (hash+reanudación+límites) | `ciclo-c5` | `evidence/c5-gate.md` |
+| C6 | RF-04 | `profile_applies_to_a_new_session` (6/6) | `ciclo-c6` | `evidence/c6-gate.md` |
+| C7 | RF-05 | `e2e_audit_events_and_diagnostic_report` | `ciclo-c7` | `evidence/c7-gate.md` |
+| C8 | RNF-01/02/05 | auditoría de secretos + benchmark final + checklist | `ciclo-c8` | `evidence/c8-checklist.md` |

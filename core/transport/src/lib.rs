@@ -105,15 +105,6 @@ fn io_err(e: std::io::Error) -> TransportError {
     TransportError::Io(e.to_string())
 }
 
-trait CloneKey {
-    fn clone_key(&self) -> PrivateKeyDer<'static>;
-}
-impl CloneKey for PrivateKeyDer<'static> {
-    fn clone_key(&self) -> PrivateKeyDer<'static> {
-        PrivateKeyDer::Pkcs8(self.secret_der().to_vec().into())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
