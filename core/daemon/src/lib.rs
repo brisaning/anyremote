@@ -236,10 +236,14 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         serde_json::json!({ "bind": bind_addr, "node_id": identity.node_id().to_string() }),
     ));
 
-    let (tcp, peer) = listener
+    let (mut tcp, peer) = listener
         .accept()
         .await
         .map_err(|e| DaemonError::Io(e.to_string()))?;
+    // Bootstrap de raíz (PEM público) antes del TLS → permite confianza cross-machine.
+    if let Some(pem) = anyremote_transport::cert_store::read_pem(&cfg.config_dir)? {
+        anyremote_transport::cert_store::write_bootstrap(&mut tcp, &pem).await?;
+    }
     let tls = TlsAcceptor::from(Arc::new(srv_cfg))
         .accept(tcp)
         .await
@@ -451,14 +455,38 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     )?;
     emit.emit(ev("connecting", serde_json::json!({ "target": target.clone(), "node_id": identity.node_id().to_string() })));
 
-    // Raíz = cert persistido del listen (v0.1 localhost). Si no existe, se crea
-    // (orden de arranque indiferente en la misma máquina: quien llegue primero lo genera).
-    let (root, _) = anyremote_transport::cert_store::ensure(&cfg.config_dir)?;
-    let cli_cfg = anyremote_transport::client_config(&root)?;
-
-    let tcp = TcpStream::connect(&target)
+    // Raíz de confianza: pin local si existe; si no, la recibe por bootstrap del
+    // par y se persiste SOLO tras completar la autenticación mutua (C2).
+    let mut tcp = TcpStream::connect(&target)
         .await
         .map_err(|e| DaemonError::Io(e.to_string()))?;
+    let incoming = anyremote_transport::cert_store::read_bootstrap(&mut tcp).await?;
+    let local_pem = anyremote_transport::cert_store::read_pem(&cfg.config_dir)?;
+    let (root, pending_pin) = match (local_pem, incoming) {
+        (Some(pem), inc) => {
+            let root = anyremote_transport::cert_store::cert_from_pem(&pem)?;
+            if let Some((_, inc_cert)) = inc {
+                let fp_local = anyremote_transport::cert_store::cert_fingerprint(&root);
+                let fp_inc = anyremote_transport::cert_store::cert_fingerprint(&inc_cert);
+                if fp_inc != fp_local {
+                    return Err(DaemonError::Config(format!(
+                        "el cert del servidor ({fp_inc}…) no coincide con tu pin local ({fp_local}…) \
+                         — posible intermediario. Si el servidor cambió legítimamente, borra \
+                         server_cert.pem del directorio de configuración y reconecta"
+                    )));
+                }
+            }
+            (root, None)
+        }
+        (None, Some((pem, cert))) => (cert, Some(pem)),
+        (None, None) => {
+            return Err(DaemonError::Config(
+                "sin pin local y el par no envió cert bootstrap — ¿está escuchando un anyremoted?".into(),
+            ))
+        }
+    };
+    let cli_cfg = anyremote_transport::client_config(&root)?;
+
     let sni = rustls::pki_types::ServerName::try_from("localhost")
         .map_err(|e| DaemonError::Config(format!("SNI: {e}")))?;
     let tls = TlsConnector::from(Arc::new(cli_cfg))
@@ -473,6 +501,11 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     let mut gate = auth::AuthGate::new();
     let trust = TrustStore::new();
     let peer_id = auth::recv_validate_auth(&mut ch, &mut gate, &trust, &binding).await?;
+    if let Some(pem) = pending_pin {
+        // Auth OK: el pin recibido es legítimo para esta identidad → persistir.
+        anyremote_transport::cert_store::save_pem(&cfg.config_dir, &pem)?;
+        emit.emit(ev("cert_pinned", serde_json::json!({"note": "raíz del servidor guardada"})));
+    }
     log.record(
         AuditEventKind::SessionEstablished,
         &session_id,

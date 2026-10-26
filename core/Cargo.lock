@@ -121,6 +121,7 @@ dependencies = [
  "anyremote-input",
  "anyremote-session",
  "anyremote-telemetry",
+ "data-encoding",
  "prost",
  "prost-build",
  "protox",
@@ -128,6 +129,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-rustls",
 ]

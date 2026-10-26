@@ -99,7 +99,8 @@ class _HomePageState extends State<HomePage> {
         switch (kind) {
           case 'listening':
             _append('[daemon] escuchando en ${ev['bind']} (node ${ev['node_id']})');
-            if (_daemon == null) _setStatus('Escuchando (local)', Colors.teal);
+            if (_daemon == null) _setStatus('Escuchando (red)', Colors.teal);
+            _showLanIps();
           case 'connecting':
             _append('[daemon] conectando a ${ev['target']}…');
             _setStatus('Conectando', Colors.orange);
@@ -123,7 +124,7 @@ class _HomePageState extends State<HomePage> {
             if (detail.contains('10061') ||
                 detail.contains('refused') ||
                 detail.contains('rechazada')) {
-              _append('[ui] nadie escucha en el destino — usa "Escuchar (local)" '
+              _append('[ui] nadie escucha en el destino — usa "Escuchar (red)" '
                   'o abre `anyremoted listen` en otra terminal');
             }
             _setStatus('Error', Colors.red);
@@ -153,11 +154,11 @@ class _HomePageState extends State<HomePage> {
     try {
       final proc = await Process.start(
         _daemonBin,
-        ['listen', '--bind', '127.0.0.1:21118', '--clipboard', 'win'],
+        ['listen', '--bind', '0.0.0.0:21118', '--clipboard', 'win'],
         mode: ProcessStartMode.normal,
       );
       setState(() => _listener = proc);
-      _append('[ui] listener local lanzado (127.0.0.1:21118)');
+      _append('[ui] listener de red lanzado (0.0.0.0:21118 — todas las interfaces)');
       proc.stdout
           .transform(utf8.decoder)
           .transform(const LineSplitter())
@@ -181,12 +182,31 @@ class _HomePageState extends State<HomePage> {
   Future<void> _stopLocalListen() async {
     final proc = _listener;
     if (proc == null) return;
-    _append('[ui] deteniendo listener local…');
+    _append('[ui] deteniendo listener de red…');
     proc.kill(ProcessSignal.sigterm);
     await proc.exitCode.timeout(const Duration(seconds: 3), onTimeout: () {
       proc.kill(ProcessSignal.sigkill);
       return -9;
     });
+  }
+
+  /// Muestra las IPs LAN desde las que otros dispositivos pueden conectarse.
+  Future<void> _showLanIps() async {
+    try {
+      final ifs = await NetworkInterface.list(
+        includeLoopback: false,
+        type: InternetAddressType.IPv4,
+      );
+      final ips = ifs.expand((i) => i.addresses).map((a) => a.address).toList();
+      if (!mounted) return;
+      _append(ips.isEmpty
+          ? '[ui] no se detectó ninguna IP LAN'
+          : '[ui] desde otra máquina usa: ${ips.join("  |  ")}');
+      _append('[ui] si falla la conexión, abre el puerto (admin): '
+          'netsh advfirewall firewall add rule name="anyremote" dir=in action=allow protocol=TCP localport=21118');
+    } catch (e) {
+      if (mounted) _append('[ui] no se pudieron listar las IPs: $e');
+    }
   }
 
   Future<void> _connect() async {
@@ -342,7 +362,7 @@ class _HomePageState extends State<HomePage> {
                         OutlinedButton.icon(
                           onPressed: _listener == null ? _startLocalListen : _stopLocalListen,
                           icon: Icon(_listener == null ? Icons.sensors : Icons.stop_circle_outlined),
-                          label: Text(_listener == null ? 'Escuchar (local)' : 'Detener listen'),
+                          label: Text(_listener == null ? 'Escuchar (red)' : 'Detener listen'),
                         ),
                       ],
                     ),

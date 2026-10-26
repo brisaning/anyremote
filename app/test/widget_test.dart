@@ -38,8 +38,8 @@ void main() {
     expect(find.textContaining('Daemon no encontrado'), findsOneWidget);
 
     // Botón de par local presente (listener autocontenido).
-    expect(find.widgetWithText(OutlinedButton, 'Escuchar (local)'), findsOneWidget);
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Escuchar (local)'));
+    expect(find.widgetWithText(OutlinedButton, 'Escuchar (red)'), findsOneWidget);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Escuchar (red)'));
     await tester.pump();
     expect(find.textContaining('anyremoted.exe no encontrado'), findsWidgets);
   });
