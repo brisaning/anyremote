@@ -4,7 +4,7 @@
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{read_frame, write_frame, TransportError};
+use crate::{write_frame, TransportError};
 
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/arsp.rs"));
@@ -14,9 +14,16 @@ pub mod proto {
 pub const ARSP_VERSION: u32 = 1;
 
 /// Canal ARSP genérico sobre cualquier stream (TLS en producción, TCP en tests).
+///
+/// **Cancellation-safe (fix v0.1.6)**: `recv()` acumula bytes en este buffer
+/// PERSISTENTE. Si un `tokio::select!` cancela la recepción a mitad (ticks de
+/// latido/portapapeles), los bytes ya leídos permanecen en `buf` — antes se
+/// perdían y desincronizaban el flujo (bytes de payload leídos como longitud →
+/// `FrameTooLarge` y muerte de sesión en pruebas cross-device reales).
 pub struct Channel<T> {
     inner: T,
     next_seq: u64,
+    buf: Vec<u8>,
 }
 
 impl<T> Channel<T> {
@@ -24,6 +31,7 @@ impl<T> Channel<T> {
         Self {
             inner,
             next_seq: 1,
+            buf: Vec::with_capacity(16 * 1024),
         }
     }
 }
@@ -41,10 +49,51 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Channel<T> {
         write_frame(&mut self.inner, &buf).await
     }
 
-    /// Recibe y decodifica un Envelope ARSP.
-    pub async fn recv(&mut self) -> Result<proto::Envelope, TransportError> {
-        let raw = read_frame(&mut self.inner).await?;
-        proto::Envelope::decode(raw.as_slice()).map_err(|e| TransportError::Io(e.to_string()))
+    /// Recibe y decodifica un Envelope ARSP. **Cancel-safe**: el progreso parcial
+    /// vive en el buffer del canal, no en el futuro cancelado.
+    pub fn recv(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<proto::Envelope, TransportError>> + '_ {
+        std::future::poll_fn(move |cx| {
+            use std::task::Poll;
+            use std::pin::Pin;
+            loop {
+                // ¿Frame completo ya bufferizado?
+                if self.buf.len() >= 4 {
+                    let len = u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]])
+                        as usize;
+                    if len > crate::MAX_FRAME_BYTES {
+                        self.buf.clear();
+                        return Poll::Ready(Err(TransportError::FrameTooLarge(len)));
+                    }
+                    if self.buf.len() >= 4 + len {
+                        let frame = self.buf[4..4 + len].to_vec();
+                        self.buf.drain(..4 + len);
+                        return Poll::Ready(
+                            proto::Envelope::decode(frame.as_slice())
+                                .map_err(|e| TransportError::Io(e.to_string())),
+                        );
+                    }
+                }
+                // Más bytes al buffer persistente (si poll queda Pending no se consumió nada;
+                // si consumió, el byte queda en self.buf y sobrevive a la cancelación).
+                let mut chunk = [0u8; 16 * 1024];
+                let mut rb = tokio::io::ReadBuf::new(&mut chunk);
+                match Pin::new(&mut self.inner).poll_read(cx, &mut rb) {
+                    Poll::Ready(Ok(())) => {
+                        let n = rb.filled().len();
+                        if n == 0 {
+                            return Poll::Ready(Err(TransportError::Eof));
+                        }
+                        self.buf.extend_from_slice(rb.filled());
+                    }
+                    Poll::Ready(Err(e)) => {
+                        return Poll::Ready(Err(TransportError::Io(e.to_string())))
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+        })
     }
 }
 
