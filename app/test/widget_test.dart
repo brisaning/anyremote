@@ -22,12 +22,25 @@ void main() {
     await tester.pump();
     expect(find.textContaining('indica un destino'), findsOneWidget);
 
+    // Formato normalizado: coma → dos puntos (host,puerto).
+    expect(normalizeTarget('127.0.0.1,21118'), '127.0.0.1:21118');
+    expect(normalizeTarget('casa,127.0.0.1,21118'), '127.0.0.1:21118');
+    expect(normalizeTarget('127.0.0.1:21118'), '127.0.0.1:21118');
+    expect(looksLikeAlias('smoke'), isTrue);
+    expect(looksLikeAlias('127.0.0.1:21118'), isFalse);
+
     // Con destino: en el entorno de test no hay anyremoted.exe junto al
     // binario → la app degrada con traza explícita (sin daemon real).
-    await tester.enterText(find.byType(TextField), '127.0.0.1:21118');
+    await tester.enterText(find.byType(TextField), '127.0.0.1,21118');
     await tester.tap(find.widgetWithText(FilledButton, 'Conectar'));
     await tester.pump();
     expect(find.textContaining('anyremoted.exe no encontrado'), findsOneWidget);
     expect(find.textContaining('Daemon no encontrado'), findsOneWidget);
+
+    // Botón de par local presente (listener autocontenido).
+    expect(find.widgetWithText(OutlinedButton, 'Escuchar (local)'), findsOneWidget);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Escuchar (local)'));
+    await tester.pump();
+    expect(find.textContaining('anyremoted.exe no encontrado'), findsWidgets);
   });
 }

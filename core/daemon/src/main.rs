@@ -40,6 +40,21 @@ fn parse_grant(args: &[String], default: &[&str]) -> Vec<String> {
     }
 }
 
+/// Normaliza destinos de CLI: `host,puerto` y `alias,host,puerto` → `host:puerto`.
+fn normalize_cli_target(s: &str) -> String {
+    let t = s.trim();
+    let parts: Vec<&str> = t.split(',').collect();
+    match parts.as_slice() {
+        [host, port] if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() && !host.contains(':') => {
+            format!("{host}:{port}")
+        }
+        [_, host, port] if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() => {
+            format!("{host}:{port}")
+        }
+        _ => t.to_string(),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -80,7 +95,7 @@ async fn main() {
             } else {
                 args.iter()
                     .find(|a| !a.starts_with("--") && cmd.as_str() != a.as_str())
-                    .cloned()
+                    .map(|s| normalize_cli_target(s))
                     .unwrap_or_default()
             };
             if target.is_empty() {

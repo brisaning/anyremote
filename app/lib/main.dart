@@ -16,6 +16,20 @@ const String kVersion = String.fromEnvironment('APP_VERSION', defaultValue: '0.1
 const String kGitRev = String.fromEnvironment('GIT_REV', defaultValue: 'desconocido');
 const String kFlutterBuild = String.fromEnvironment('FLUTTER_BUILD', defaultValue: 'unknown');
 
+/// Normaliza el destino escrito por el usuario: acepta `host:puerto`,
+/// `host,puerto` y `alias,host,puerto` (formato profiles --add) → `host:puerto`.
+/// Un valor sin separadores se interpreta como alias de perfil (sin ':' → --profile).
+String normalizeTarget(String raw) {
+  var s = raw.trim();
+  final trio = RegExp(r'^([^,]+),([^,]+),(\d+)$').firstMatch(s);
+  if (trio != null) return '${trio.group(2)}:${trio.group(3)}';
+  final duo = RegExp(r'^([^:,]+),(\d+)$').firstMatch(s);
+  if (duo != null) return '${duo.group(1)}:${duo.group(2)}';
+  return s;
+}
+
+bool looksLikeAlias(String target) => !target.contains(':');
+
 /// Ubica `anyremoted.exe`: env ANYREMOTE_DAEMON (override) o junto al ejecutable.
 String resolveDaemonPath() {
   final override = Platform.environment['ANYREMOTE_DAEMON'];
@@ -57,6 +71,7 @@ class _HomePageState extends State<HomePage> {
   String _status = 'Desconectado';
   Color _statusColor = Colors.grey;
   Process? _daemon;
+  Process? _listener;
   final List<String> _log = [
     '[build] anyremote $kVersion · rev $kGitRev',
     '[build] Flutter $kFlutterBuild · windows-x64',
@@ -82,6 +97,9 @@ class _HomePageState extends State<HomePage> {
         final ev = jsonDecode(trimmed) as Map<String, dynamic>;
         final kind = ev['event'] as String? ?? 'unknown';
         switch (kind) {
+          case 'listening':
+            _append('[daemon] escuchando en ${ev['bind']} (node ${ev['node_id']})');
+            if (_daemon == null) _setStatus('Escuchando (local)', Colors.teal);
           case 'connecting':
             _append('[daemon] conectando a ${ev['target']}…');
             _setStatus('Conectando', Colors.orange);
@@ -101,6 +119,13 @@ class _HomePageState extends State<HomePage> {
             _setStatus('Desconectado', Colors.grey);
           case 'error':
             _append('[daemon] error: ${ev['detail']}');
+            final detail = '${ev['detail']}'.toLowerCase();
+            if (detail.contains('10061') ||
+                detail.contains('refused') ||
+                detail.contains('rechazada')) {
+              _append('[ui] nadie escucha en el destino — usa "Escuchar (local)" '
+                  'o abre `anyremoted listen` en otra terminal');
+            }
             _setStatus('Error', Colors.red);
           default:
             _append('[daemon] $kind');
@@ -113,8 +138,59 @@ class _HomePageState extends State<HomePage> {
     _append('[daemon] $trimmed');
   }
 
+  String get _daemonBin => resolveDaemonPath();
+
+  Future<void> _startLocalListen() async {
+    if (_listener != null) {
+      _append('[ui] el listener local ya corre');
+      return;
+    }
+    if (!File(_daemonBin).existsSync()) {
+      _append('[ui] anyremoted.exe no encontrado en $_daemonBin');
+      _setStatus('Daemon no encontrado', Colors.orange);
+      return;
+    }
+    try {
+      final proc = await Process.start(
+        _daemonBin,
+        ['listen', '--bind', '127.0.0.1:21118', '--clipboard', 'win'],
+        mode: ProcessStartMode.normal,
+      );
+      setState(() => _listener = proc);
+      _append('[ui] listener local lanzado (127.0.0.1:21118)');
+      proc.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen(_handleEvent);
+      proc.stderr
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) => _append('[listener-err] $line'));
+      final code = await proc.exitCode;
+      if (mounted) {
+        setState(() => _listener = null);
+        _append('[ui] listener finalizado (código $code)');
+        if (_daemon == null) _setStatus('Desconectado', Colors.grey);
+      }
+    } catch (e) {
+      _append('[ui] error al lanzar listener: $e');
+      _setStatus('Error', Colors.red);
+    }
+  }
+
+  Future<void> _stopLocalListen() async {
+    final proc = _listener;
+    if (proc == null) return;
+    _append('[ui] deteniendo listener local…');
+    proc.kill(ProcessSignal.sigterm);
+    await proc.exitCode.timeout(const Duration(seconds: 3), onTimeout: () {
+      proc.kill(ProcessSignal.sigkill);
+      return -9;
+    });
+  }
+
   Future<void> _connect() async {
-    final target = _target.text.trim();
+    final target = normalizeTarget(_target.text);
     if (target.isEmpty) {
       _append('[ui] indica un destino host:puerto o alias de perfil');
       return;
@@ -123,17 +199,20 @@ class _HomePageState extends State<HomePage> {
       _append('[ui] ya hay una sesión en curso — pulsa Detener primero');
       return;
     }
-    final daemon = resolveDaemonPath();
-    if (!File(daemon).existsSync()) {
-      _append('[ui] anyremoted.exe no encontrado en $daemon');
+    if (!File(_daemonBin).existsSync()) {
+      _append('[ui] anyremoted.exe no encontrado en $_daemonBin');
       _setStatus('Daemon no encontrado', Colors.orange);
       return;
     }
-    _append('[ui] lanzando anyremoted connect $target');
+    final asAlias = looksLikeAlias(target);
+    final args = asAlias
+        ? ['connect', '--profile', target, '--clipboard', 'win']
+        : ['connect', target, '--clipboard', 'win'];
+    _append('[ui] lanzando anyremoted ${asAlias ? 'connect --profile $target' : 'connect $target'}');
     try {
       final proc = await Process.start(
-        daemon,
-        ['connect', target, '--clipboard', 'win'],
+        _daemonBin,
+        args,
         mode: ProcessStartMode.normal,
       );
       setState(() => _daemon = proc);
@@ -171,7 +250,11 @@ class _HomePageState extends State<HomePage> {
     if (mounted) {
       setState(() => _daemon = null);
       _append('[ui] daemon detenido (código $code)');
-      _setStatus('Desconectado', Colors.grey);
+      if (_listener != null) {
+        _setStatus('Escuchando (local)', Colors.teal);
+      } else {
+        _setStatus('Desconectado', Colors.grey);
+      }
     }
   }
 
@@ -254,6 +337,12 @@ class _HomePageState extends State<HomePage> {
                           onPressed: running ? _stop : null,
                           icon: const Icon(Icons.stop),
                           label: const Text('Detener'),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton.icon(
+                          onPressed: _listener == null ? _startLocalListen : _stopLocalListen,
+                          icon: Icon(_listener == null ? Icons.sensors : Icons.stop_circle_outlined),
+                          label: Text(_listener == null ? 'Escuchar (local)' : 'Detener listen'),
                         ),
                       ],
                     ),
