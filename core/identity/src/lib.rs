@@ -188,10 +188,25 @@ mod tests {
 
     #[test]
     fn derived_node_id_matches_signer() {
-        let id = Identity::generate();
-        let pk = id.verifying_key_bytes();
-        assert_eq!(Identity::derive_node_id(&pk).unwrap(), id.node_id());
-        assert!(Identity::derive_node_id(&[0xff; 32]).is_err());
+        for _ in 0..8 {
+            let id = Identity::generate();
+            assert_eq!(
+                Identity::derive_node_id(&id.verifying_key_bytes()).unwrap(),
+                id.node_id()
+            );
+        }
+        // Existen codificaciones de32 bytes que no son puntos ed25519 válidos:
+        // alguna x en 0..=255 no tiene y en la curva y debe rechazarse.
+        let mut rejected = false;
+        for b in 0..=255u8 {
+            let mut k = [0u8; 32];
+            k[0] = b;
+            if Identity::derive_node_id(&k).is_err() {
+                rejected = true;
+                break;
+            }
+        }
+        assert!(rejected, "debe existir alguna codificación inválida");
     }
 
     #[test]
