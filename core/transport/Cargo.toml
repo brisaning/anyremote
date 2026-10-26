@@ -19,3 +19,6 @@ protox = "0.7"
 
 [dev-dependencies]
 anyremote-session = { workspace = true }
+anyremote-capture = { workspace = true }
+anyremote-codec = { workspace = true }
+anyremote-input = { workspace = true }

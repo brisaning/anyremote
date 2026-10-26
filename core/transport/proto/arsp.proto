@@ -14,7 +14,51 @@ message Envelope {
     PermissionResponse permission_response = 13;
     Heartbeat heartbeat = 14;
     Bye bye = 15;
+    VideoFrame video_frame = 16;
+    InputEventMsg input_event = 17;
   }
+}
+
+// Formato del códec de vídeo (espejo de anyremote-codec::CodecFormat).
+enum CodecFormatEnum {
+  RAW_CODEC = 0;
+  DEFLATE_CODEC = 1;
+}
+
+// Frame de vídeo empaquetado (ciclo C3, RF-02a).
+message VideoFrame {
+  uint64 seq = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  CodecFormatEnum format = 4;
+  bytes data = 5;
+}
+
+// Evento de entrada remoto (RF-02a; inyección bajo permiso D-07).
+message InputEventMsg {
+  oneof ev {
+    Key key = 1;
+    Pointer pointer = 2;
+    Button button = 3;
+  }
+}
+
+message Key {
+  uint32 code = 1;   // código de tecla del protocolo (ver anyremote-input)
+  bool down = 2;
+  bool extended = 3;
+}
+
+message Pointer {
+  int32 x = 1;
+  int32 y = 2;
+  bool absolute = 3;
+}
+
+message Button {
+  uint32 button = 1; // 0=izq 1=der 2=medio
+  bool down = 3;
+  int32 wheel = 4;
 }
 
 // Prueba de identidad ed25519 vinculada al canal TLS (D-03, patrón H-RD-02 id_pk).
