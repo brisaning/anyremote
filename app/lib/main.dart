@@ -180,11 +180,20 @@ class _HomePageState extends State<HomePage> {
     try {
       final proc = await Process.start(
         _daemonBin,
-        ['listen', '--bind', '0.0.0.0:21118', '--clipboard', 'win'],
+        [
+          'listen',
+          '--bind', '0.0.0.0:21118',
+          '--clipboard', 'win',
+          // M2: el escuchador comparte SU pantalla por defecto (sino no hay qué ver).
+          '--video', 'on',
+          '--video-size', '1280x720',
+          '--video-fps', '15',
+          '--codec', 'vp9',
+        ],
         mode: ProcessStartMode.normal,
       );
       setState(() => _listener = proc);
-      _append('[ui] listener de red lanzado (0.0.0.0:21118 — todas las interfaces)');
+      _append('[ui] listener de red lanzado (0.0.0.0:21118 — vídeo 1280x720@15 vp9)');
       proc.stdout
           .transform(utf8.decoder)
           .transform(const LineSplitter())
@@ -254,6 +263,12 @@ class _HomePageState extends State<HomePage> {
         _videoStatus = 'visor conectado (esperando frames)…';
       });
       _append('[ui] visor conectado al preview 127.0.0.1:$port');
+      Timer(const Duration(seconds: 5), () {
+        if (mounted && _lastImage == null && _preview != null) {
+          setState(() => _videoStatus =
+              'sin frames: el escuchador debe iniciar con --video on');
+        }
+      });
       sock.listen(
         _onVideoBytes,
         onDone: () {
