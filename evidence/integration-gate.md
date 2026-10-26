@@ -65,6 +65,45 @@ Nota: cert-store compartido por defecto en `%APPDATA%\anyremote\` (misma máquin
 
 ---
 
+---
+
+# Addendum v0.1.4 — Diagnóstico por registro de la sesión real + resiliencia de portapapeles
+
+| Campo | Valor |
+|---|---|
+| Fecha | 2026-10-26 |
+| Rama | `feature/clipboard-resilience` (D-11) · tag `integracion-v0.1.4` |
+
+## Evidencia del registro local (sesión reportada por el usuario)
+
+`%APPDATA%\anyremote\audit\audit-1793045714084-*.jsonl` (ses-ZSZ65IMQ4U, peer `S5663BFII2`):
+```
+14:01:54.085 session_started  → 192.168.6.152:21118
+14:01:54.372 session_established (auth mutua OK)
+14:01:54.758 permission_granted [keyboard,mouse]
+14:01:54.771 clipboard_sync dir=out (14 B)   ← envío de portapapeles
+14:01:55.830 heartbeat rtt=115ms · disconnected connection_gone  ← el REMOTO murió ~1 s después
+```
+
+## Causa raíz (reproducida con `--clipboard flaky`)
+
+**Los errores de portapapeles eran fatales (`?`) en el daemon.** El receptor remoto aplicó el `ClipboardSync` con `SetClipboardData` real (puede fallar por bloqueo de otro proceso — RDP/portapapeles remoto, etc.) y la sesión moría. Cuatro fugas, todas corregidas:
+
+1. Inbound del **controlador** (`apply_remote?`).
+2. Inbound/outbound del **controlado** (lectura y escritura).
+3. **`engine.text()?` del cierre** (¡rompía incluso el cierre ya limpio!).
+4. Envíos (heartbeat/clipboard) → ahora mapeados a `connection_gone` limpio.
+
+Nuevo comportamiento: cualquier fallo de portapapeles → evento **`clipboard_error`** + **desactivación del subsistema para esa sesión** (`clip_off`) y la sesión **continúa**. Errores de recepción de archivos → `file_error` + nack, la sesión continúa. Errores de sesión no previstos → wrap de cierre limpio (`closed{session_error…}` auditable) en ambos roles.
+
+## Regresión
+`daemon_clipboard_resilience::clipboard_faults_do_not_kill_the_session` — ambos lados en `--clipboard flaky` (lecturas fallan tras la primera, escrituras siempre): sesión completa ordenada + `clipboard_error` + latidos ≥1. **5/5 ejecuciones deterministas**.
+
+## Gates finales
+Rust **34 suites / 0 fallos** · Flutter analyze limpio + test 1/1 · Release `anyremote_app.exe` **v0.1.4** + `anyremoted.exe` copiado.
+
+---
+
 # Addendum v0.1.3 — Corrección cross-device observada en prueba real
 
 | Campo | Valor |
