@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "transport", "identity", "session", "capture", "codec",
+    "input", "clipboard", "filexfer", "profiles", "telemetry",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://example.invalid/anyremote"
+
+[workspace.dependencies]
+anyremote-transport = { path = "transport" }
+anyremote-identity = { path = "identity" }
+anyremote-session = { path = "session" }
+anyremote-capture = { path = "capture" }
+anyremote-codec = { path = "codec" }
+anyremote-input = { path = "input" }
+anyremote-clipboard = { path = "clipboard" }
+anyremote-filexfer = { path = "filexfer" }
+anyremote-profiles = { path = "profiles" }
+anyremote-telemetry = { path = "telemetry" }
