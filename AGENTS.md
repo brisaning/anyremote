@@ -18,6 +18,15 @@ La memoria persistente vive en la bóveda Obsidian **anyremote**:
 - **codebase-memory-mcp**: grafo de conocimiento sobre `rustdesk/` (proyecto externo, debe indexarse en Fase 1 — precondición dura C-01). Para código de este repo, usar también codebase-memory.
 - **obsidian-vault**: memoria del proyecto (arriba).
 
+## Flujo de trabajo git (norma D-11, 2026-10-26)
+
+- **`main`**: solo vía **PR/MR** (nunca commits directos).
+- **`develop`**: rama de integración. Se actualiza desde ramas de funcionalidad **con rebase**.
+- Cada funcionalidad o ciclo ODD ⇒ rama `feature/<ciclo>-<descripción>` creada desde `develop`:
+  commits convencionales pequeños + **push de la rama** en cada avance.
+- Cierre de rama: `git rebase develop` → push (force si rebaseó) → integración en `develop` (merge/FF o MR) → push de `develop` → **tag del ciclo en `develop`**.
+- Los tags viven en `develop` (y se propagan al integrar a `main` vía PR).
+
 ## Reglas clave
 
 - **Clean-room (D-01)**: no copiar código de RustDesk (AGPL-3.0); solo patrones referenciados por ruta lógica de símbolo.

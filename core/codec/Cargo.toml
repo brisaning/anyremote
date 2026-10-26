@@ -4,4 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Backend VP9 real (ciclo C3-bis): shiguredo_libvpx trae binario precompilado (Apache-2.0).
+vpx = ["dep:shiguredo_libvpx"]
+
 [dependencies]
+anyremote-capture = { workspace = true }
+flate2 = "1"
+shiguredo_libvpx = { version = "2026.2.0-canary.3", optional = true }
