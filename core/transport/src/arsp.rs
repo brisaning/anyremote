@@ -124,6 +124,34 @@ pub fn video_frame_from_wire(v: proto::VideoFrame) -> Result<anyremote_codec::En
     })
 }
 
+/// Contenido de portapapeles → wire (solo formatos admitidos por contención C4).
+pub fn clipboard_to_wire(
+    content: &anyremote_clipboard::ClipboardContent,
+) -> Result<proto::ClipboardSync, TransportError> {
+    let format = match content.format {
+        anyremote_clipboard::ClipboardFormat::Text => proto::ClipboardFormatEnum::ClipText,
+    };
+    Ok(proto::ClipboardSync {
+        revision: content.revision,
+        format: format as i32,
+        utf8: content.text.as_bytes().to_vec(),
+    })
+}
+
+/// Wire → contenido de portapapeles; **rechaza formatos no admitidos** (contención).
+pub fn clipboard_from_wire(
+    v: proto::ClipboardSync,
+) -> Result<anyremote_clipboard::ClipboardContent, TransportError> {
+    let format = anyremote_clipboard::ClipboardFormat::from_wire(v.format).ok_or_else(|| {
+        TransportError::Auth(format!("formato de portapapeles no admitido: {}", v.format))
+    })?;
+    Ok(anyremote_clipboard::ClipboardContent {
+        revision: v.revision,
+        format,
+        text: String::from_utf8_lossy(&v.utf8).into_owned(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

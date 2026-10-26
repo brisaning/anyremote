@@ -16,7 +16,20 @@ message Envelope {
     Bye bye = 15;
     VideoFrame video_frame = 16;
     InputEventMsg input_event = 17;
+    ClipboardSync clipboard = 18;
   }
+}
+
+// Formato de portapapeles admitido (contención C4: solo texto; otros = rechazo).
+enum ClipboardFormatEnum {
+  CLIP_TEXT = 0;
+}
+
+// Sincronización de portapapeles (RF-02b, ciclo C4).
+message ClipboardSync {
+  uint64 revision = 1;
+  ClipboardFormatEnum format = 2;
+  bytes utf8 = 3;
 }
 
 // Formato del códec de vídeo (espejo de anyremote-codec::CodecFormat).
