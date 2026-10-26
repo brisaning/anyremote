@@ -16,7 +16,45 @@ message Envelope {
     Bye bye = 15;
     VideoFrame video_frame = 16;
     InputEventMsg input_event = 17;
+    ClipboardSync clipboard = 18;
+    FileOffer file_offer = 19;
+    FileChunk file_chunk = 20;
+    FileDone file_done = 21;
   }
+}
+
+// Oferta de transferencia de archivos (RF-02c, ciclo C5; límites patrón H-RD-08).
+message FileOffer {
+  uint64 transfer_id = 1;
+  string name = 2;
+  uint64 size = 3;
+  bytes sha256 = 4;   // 32 bytes
+}
+
+// Chunk con offset absoluto (la reanudación usa el último offset confirmado).
+message FileChunk {
+  uint64 transfer_id = 1;
+  uint64 offset = 2;
+  bytes data = 3;
+}
+
+// Resultado de la transferencia (hash verificado por el receptor).
+message FileDone {
+  uint64 transfer_id = 1;
+  bool ok = 2;
+  string detail = 3;
+}
+
+// Formato de portapapeles admitido (contención C4: solo texto; otros = rechazo).
+enum ClipboardFormatEnum {
+  CLIP_TEXT = 0;
+}
+
+// Sincronización de portapapeles (RF-02b, ciclo C4).
+message ClipboardSync {
+  uint64 revision = 1;
+  ClipboardFormatEnum format = 2;
+  bytes utf8 = 3;
 }
 
 // Formato del códec de vídeo (espejo de anyremote-codec::CodecFormat).

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "transport", "identity", "session", "capture", "codec",
+    "transport", "identity", "session", "capture", "codec", "daemon",
     "input", "clipboard", "filexfer", "profiles", "telemetry",
 ]
 
