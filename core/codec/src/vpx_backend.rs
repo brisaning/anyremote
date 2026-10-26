@@ -173,6 +173,17 @@ impl VideoEncoder for Vp9Encoder {
     fn format(&self) -> CodecFormat {
         CodecFormat::Vp9
     }
+
+    fn set_target_bitrate(&mut self, bps: usize) -> bool {
+        let Some(inner) = self.inner.as_mut() else {
+            return false;
+        };
+        let params = shiguredo_libvpx::ReconfigureParams {
+            target_bitrate: Some(bps),
+            ..Default::default()
+        };
+        inner.reconfigure(&params).is_ok()
+    }
 }
 
 /// Decoder VP9 con estado de sesión.

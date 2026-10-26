@@ -39,3 +39,7 @@ App:      127.0.0.1:21118 → Conectar   (o Escuchar (red) en el otro equipo)
 - Escalado por vecino más próximo (calidad suficiente para preview; resampling real = futuro).
 - Sin audio (scope RF-02 sin audio en el spec actual de ciclos).
 - Rendimiento de render Flutter a resolución nativa completa = medir en campo; bajar `--video-size`/`--video-fps` si hace falta.
+
+## Confirmación de campo (usuario)
+
+- **2026-10-26**: el usuario verificó **visualización de la pantalla remota** en el visor de la app (v0.2.1 + listen --video on) sobre LAN — hito M2 validado de extremo a extremo en producción real (captura → VP9 → sesión → preview → render Flutter).

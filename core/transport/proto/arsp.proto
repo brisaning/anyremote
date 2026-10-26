@@ -20,6 +20,7 @@ message Envelope {
     FileOffer file_offer = 19;
     FileChunk file_chunk = 20;
     FileDone file_done = 21;
+    FileReady file_ready = 22;
   }
 }
 
@@ -43,6 +44,13 @@ message FileDone {
   uint64 transfer_id = 1;
   bool ok = 2;
   string detail = 3;
+}
+
+// Aceptación de la oferta: offset desde el que enviar (0 = archivo nuevo;
+// >0 = reanudación desde un parcial persistido entre sesiones).
+message FileReady {
+  uint64 transfer_id = 1;
+  uint64 resume_offset = 2;
 }
 
 // Formato de portapapeles admitido (contención C4: solo texto; otros = rechazo).

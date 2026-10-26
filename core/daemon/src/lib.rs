@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
-use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender, TransferPolicy};
+use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender};
 use anyremote_identity::{Identity, TrustStore};
 use anyremote_codec::VideoDecoder;
 use anyremote_session::{LinkStats, SessionEvent, SessionState};
@@ -28,7 +28,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 pub mod preview;
 pub mod video;
 
-use video::{spawn_video_task, VideoItem, VideoMode};
+use video::{spawn_video_task, VideoMsg, VideoMode};
 
 #[derive(Debug)]
 pub enum DaemonError {
@@ -123,6 +123,11 @@ pub struct DaemonConfig {
     pub video_size: (u32, u32),
     pub video_fps: u64,
     pub codec: anyremote_codec::CodecFormat,
+    /// Política de un solo sentido para archivos (patrón OPTION_ONE_WAY_FILE_TRANSFER):
+    /// solo controlador → controlado; el controlador RECHAZA ofertas entrantes.
+    pub one_way_files: bool,
+    /// Fuente de cierre externa (tests): envía "bye" al canal de cierre.
+    pub bye_source: Option<tokio::sync::mpsc::Receiver<String>>,
 }
 
 impl DaemonConfig {
@@ -141,8 +146,36 @@ impl DaemonConfig {
             video_size: (960, 540),
             video_fps: 10,
             codec: anyremote_codec::CodecFormat::Vp9,
+            one_way_files: false,
+            bye_source: None,
         }
     }
+}
+
+/// Política de transferencia derivada de la configuración del daemon.
+fn file_policy(cfg: &DaemonConfig) -> anyremote_filexfer::TransferPolicy {
+    anyremote_filexfer::TransferPolicy {
+        one_way: cfg.one_way_files,
+        ..anyremote_filexfer::TransferPolicy::default()
+    }
+}
+
+/// Fuente de cierre: inyectada (tests) o stdin del proceso (`bye` / fin de archivo).
+fn build_bye_source(cfg: &mut DaemonConfig) -> tokio::sync::mpsc::Receiver<String> {
+    if let Some(rx) = cfg.bye_source.take() {
+        return rx;
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(2);
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut lines = BufReader::new(tokio::io::stdin()).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tx.send(line).await.is_err() {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 /// Detiene la tarea de vídeo al salir del ámbito de la sesión.
@@ -379,6 +412,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
     };
     let mut log = SessionLog::open(&cfg.config_dir.join("audit"))?;
     let mut report = SessionReport::new(&session_id);
+    let bye_rx = build_bye_source(&mut cfg);
 
     let (cert, key) = anyremote_transport::cert_store::ensure(&cfg.config_dir)?;
     let srv_cfg = anyremote_transport::server_config_from(cert, key)?;
@@ -443,7 +477,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         match attempt {
             Ok(Ok(Established::Active(mut ch))) => {
                 // Errores de sesión en curso → cierre limpio auditable (no matan el listener como proceso con pánico).
-                return match active_controlled(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id).await {
+                return match active_controlled(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, bye_rx).await {
                     Ok(o) => Ok(o),
                     Err(e) => {
                         log.record(AuditEventKind::Error, &session_id,
@@ -502,8 +536,8 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
 
 /// Resultado de recibir una oferta completa: (contenido, transfer_id).
 /// Error: (transfer_id, detalle) para poder enviar el nack.
-async fn receive_file_offer(
-    ch: &mut arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>,
+async fn receive_file_offer<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ch: &mut arsp::Channel<T>,
     files: &mut FileReceiver,
     o: proto::FileOffer,
 ) -> Result<(Vec<u8>, u64), (u64, String)> {
@@ -511,6 +545,14 @@ async fn receive_file_offer(
     let tid = meta.transfer_id;
     let size = meta.size;
     files.accept_offer(meta).map_err(|e| (tid, e.to_string()))?;
+    // Aceptación + offset de reanudación para el emisor (C5 v2 / reanudación entre sesiones).
+    let resume = files.next_offset(tid).map_err(|e| (tid, e.to_string()))?;
+    ch.send(proto::envelope::Payload::FileReady(proto::FileReady {
+        transfer_id: tid,
+        resume_offset: resume,
+    }))
+    .await
+    .map_err(|e| (tid, e.to_string()))?;
     while files.next_offset(tid).map_err(|e| (tid, e.to_string()))? < size {
         let c = ch.recv().await.map_err(|e| (tid, e.to_string()))?;
         match c.payload {
@@ -535,9 +577,10 @@ async fn active_controlled(
     emit: &mut Emit,
     cfg: &DaemonConfig,
     session_id: &str,
+    mut bye_rx: tokio::sync::mpsc::Receiver<String>,
 ) -> Result<RunOutcome, DaemonError> {
     let mut engine = Engine::new(make_clipboard(cfg)?);
-    let mut files = FileReceiver::new(TransferPolicy::default());
+    let mut files = FileReceiver::new_with_store(file_policy(cfg), cfg.config_dir.join("transfers"));
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(cfg.max_secs);
     let mut clip_tick = tokio::time::interval(std::time::Duration::from_millis(500));
     let state = SessionState::Active;
@@ -545,10 +588,11 @@ async fn active_controlled(
     let mut clip_off = false;
 
     // Hito M2: vídeo hacia el canal + preview local de la propia pantalla (solo listen).
-    let (video_tx, mut video_rx) = mpsc::channel::<VideoItem>(3);
+    let (video_tx, mut video_rx) = mpsc::channel::<VideoMsg>(3);
     let stop = Arc::new(AtomicBool::new(false));
     let _stop_guard = StopGuard(stop.clone());
     let mut video_done = false;
+    let mut bye_done = false;
     if cfg.video != VideoMode::Off {
         let (preview_srv, preview_port, _preview_task) = preview::PreviewServer::start();
         emit.emit(ev("preview", serde_json::json!({ "port": preview_port })));
@@ -690,20 +734,43 @@ async fn active_controlled(
                     }
                 }
             }
-            item = video_rx.recv(), if cfg.video != VideoMode::Off && !video_done => {
-                let Some(item) = item else { video_done = true; continue; };
-                match ch.send(proto::envelope::Payload::VideoFrame(
-                    arsp::video_frame_to_wire(&item.enc),
-                )).await {
-                    Ok(()) => report.record_frame_sent(item.enc.data.len()),
-                    Err(e) if conn_gone(&e) => {
-                        log.record(AuditEventKind::Disconnected, session_id,
-                            serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
-                        emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
-                        break;
+            msg = video_rx.recv(), if cfg.video != VideoMode::Off && !video_done => {
+                let Some(msg) = msg else { video_done = true; continue; };
+                match msg {
+                    VideoMsg::Event(v) => emit.emit(v),
+                    VideoMsg::Frame(item) => {
+                        match ch.send(proto::envelope::Payload::VideoFrame(
+                            arsp::video_frame_to_wire(&item),
+                        )).await {
+                            Ok(()) => report.record_frame_sent(item.data.len()),
+                            Err(e) if conn_gone(&e) => {
+                                log.record(AuditEventKind::Disconnected, session_id,
+                                    serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                                emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                                break;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
                     }
-                    Err(e) => return Err(e.into()),
                 }
+            }
+            reason = bye_rx.recv(), if !bye_done => {
+                let Some(reason) = reason else { bye_done = true; continue; };
+                let reason = if reason.trim().is_empty() { "stdin".to_string() } else { reason };
+                let _ = ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: reason.clone() })).await;
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await; // gracia de cierre
+                log.record(AuditEventKind::Disconnected, session_id,
+                    serde_json::json!({"reason": reason, "role": "listener"}))?;
+                emit.emit(ev("closed", serde_json::json!({"reason": reason})));
+                break;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                let _ = ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: "signal".into() })).await;
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                log.record(AuditEventKind::Disconnected, session_id,
+                    serde_json::json!({"reason":"signal","role":"listener"}))?;
+                emit.emit(ev("closed", serde_json::json!({"reason": "signal"})));
+                break;
             }
             _ = tokio::time::sleep_until(deadline) => {
                 ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: "max_secs".into() })).await?;
@@ -746,6 +813,7 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     };
     let mut log = SessionLog::open(&cfg.config_dir.join("audit"))?;
     let mut report = SessionReport::new(&session_id);
+    let bye_rx = build_bye_source(&mut cfg);
     let target = cfg
         .target
         .clone()
@@ -861,7 +929,7 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     }
     log.record(AuditEventKind::PermissionGranted, &session_id, serde_json::json!({"perms": allowed}))?;
 
-    match active_controller(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, &peer_id.node_id.to_string()).await {
+    match active_controller(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, &peer_id.node_id.to_string(), bye_rx).await {
         Ok(o) => Ok(o),
         Err(e) => {
             // Errores de sesión en curso → cierre limpio auditable.
@@ -883,8 +951,10 @@ async fn active_controller(
     cfg: &DaemonConfig,
     session_id: &str,
     peer: &str,
+    mut bye_rx: tokio::sync::mpsc::Receiver<String>,
 ) -> Result<RunOutcome, DaemonError> {
     let mut engine = Engine::new(make_clipboard(cfg)?);
+    let mut files = FileReceiver::new_with_store(file_policy(cfg), cfg.config_dir.join("transfers"));
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(cfg.max_secs);
     let mut hb_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut clip_tick = tokio::time::interval(std::time::Duration::from_millis(500));
@@ -893,6 +963,7 @@ async fn active_controller(
     let state = SessionState::Active;
     // Resiliencia de portapapeles (v0.1.4): un fallo desactiva el subsistema, no la sesión.
     let mut clip_off = false;
+    let mut bye_done = false;
 
     // Hito M2: preview local de lo que llega del controlado + decodificador con estado.
     let (preview_srv, preview_port, _preview_task) = preview::PreviewServer::start();
@@ -902,7 +973,7 @@ async fn active_controller(
     let mut video_frames: u64 = 0;
     let mut video_seq: u32 = 0;
 
-    // C5: envío de archivo opcional tras activar.
+    // C5: envío de archivo opcional tras activar (espera FileReady: offset de reanudación).
     let mut pending_file: Option<(u64, String, String)> = None;
     if let Some(path) = cfg.send_file.clone() {
         let data = std::fs::read(&path).map_err(|e| DaemonError::Io(format!("{path:?}: {e}")))?;
@@ -911,20 +982,45 @@ async fn active_controller(
             .and_then(|s| s.to_str())
             .unwrap_or("archivo.bin")
             .to_string();
-        let sender = FileSender::new(TransferPolicy::default());
+        let sender = FileSender::new(file_policy(cfg));
         let meta = sender.offer(1, &name, &data)?;
         let hex = sha256_hex(&data);
         ch.send(proto::envelope::Payload::FileOffer(arsp::file_offer_to_wire(&meta))).await?;
-        for (off, chunk) in sender.chunks_from(&data, 0, 32 * 1024) {
+        emit.emit(ev("file_sent", serde_json::json!({"name": name.clone()})));
+
+        let mut resume_from = 0u64;
+        loop {
+            let env = ch.recv().await?;
+            match env.payload {
+                Some(proto::envelope::Payload::FileReady(fr)) if fr.transfer_id == meta.transfer_id => {
+                    resume_from = fr.resume_offset;
+                    break;
+                }
+                Some(proto::envelope::Payload::Clipboard(w)) => {
+                    let content = arsp::clipboard_from_wire(w)?;
+                    let _ = engine.apply_remote(&content);
+                }
+                Some(proto::envelope::Payload::Heartbeat(_)) => {}
+                Some(proto::envelope::Payload::VideoFrame(_)) => {}
+                other => {
+                    return Err(DaemonError::Config(format!("esperaba FileReady: {other:?}")))
+                }
+            }
+        }
+        for (off, chunk) in sender.chunks_from(&data, resume_from, 32 * 1024) {
             ch.send(proto::envelope::Payload::FileChunk(arsp::file_chunk_to_wire(
                 meta.transfer_id,
                 off,
                 chunk,
-            ))).await?;
+            )))
+            .await?;
         }
-        report.record_frame_sent(data.len());
-        pending_file = Some((meta.transfer_id, hex, name));
-        emit.emit(ev("file_sent", serde_json::json!({"name": name_hint(&pending_file)})));
+        report.record_frame_sent((data.len() as u64 - resume_from) as usize);
+        pending_file = Some((meta.transfer_id, hex, name.clone()));
+        emit.emit(ev(
+            "file_resume",
+            serde_json::json!({"from_offset": resume_from, "name": name}),
+        ));
     }
 
     loop {
@@ -983,6 +1079,41 @@ async fn active_controller(
                                         serde_json::json!({"file_nack": d.detail.clone()}))?;
                                     emit.emit(ev("error", serde_json::json!({"detail": format!("file nack: {}", d.detail)})));
                                 }
+                            }
+                        }
+                    }
+                    Some(proto::envelope::Payload::FileOffer(o)) => {
+                        if cfg.one_way_files {
+                            // Política de un solo sentido (patrón OPTION_ONE_WAY_FILE_TRANSFER):
+                            // solo controlador → controlado; esta oferta entrante se rechaza.
+                            let _ = ch.send(proto::envelope::Payload::FileDone(arsp::file_done_to_wire(
+                                o.transfer_id,
+                                false,
+                                "one_way: enlace de un solo sentido (solo controlador→controlado)",
+                            ))).await;
+                            log.record(AuditEventKind::Error, session_id,
+                                serde_json::json!({"file_reject": "one_way"}))?;
+                            emit.emit(ev("file_rejected", serde_json::json!({"detail": "one_way"})));
+                            continue;
+                        }
+                        match receive_file_offer(ch, &mut files, o).await {
+                            Ok((data, tid)) => {
+                                let hex = sha256_hex(&data);
+                                let _ = ch.send(proto::envelope::Payload::FileDone(
+                                    arsp::file_done_to_wire(tid, true, &hex),
+                                )).await;
+                                report.record_file();
+                                log.record(AuditEventKind::FileTransfer, session_id,
+                                    serde_json::json!({"dir":"in","bytes": data.len(), "sha256": hex}))?;
+                                emit.emit(ev("file_received", serde_json::json!({"bytes": data.len()})));
+                            }
+                            Err((tid, detail)) => {
+                                let _ = ch.send(proto::envelope::Payload::FileDone(
+                                    arsp::file_done_to_wire(tid, false, &detail),
+                                )).await;
+                                log.record(AuditEventKind::Error, session_id,
+                                    serde_json::json!({"file": detail.clone()}))?;
+                                emit.emit(ev("file_error", serde_json::json!({"detail": detail})));
                             }
                         }
                     }
@@ -1087,6 +1218,24 @@ async fn active_controller(
                         emit.emit(ev("clipboard_error", serde_json::json!({"dir":"out","detail": format!("{e:?}")})));
                     }
                 }
+            }
+            reason = bye_rx.recv(), if !bye_done => {
+                let Some(reason) = reason else { bye_done = true; continue; };
+                let reason = if reason.trim().is_empty() { "stdin".to_string() } else { reason };
+                let _ = ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: reason.clone() })).await;
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await; // gracia de cierre
+                log.record(AuditEventKind::Disconnected, session_id,
+                    serde_json::json!({"reason": reason, "role": "controller"}))?;
+                emit.emit(ev("closed", serde_json::json!({"reason": reason})));
+                break;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                let _ = ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: "signal".into() })).await;
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                log.record(AuditEventKind::Disconnected, session_id,
+                    serde_json::json!({"reason":"signal","role":"controller"}))?;
+                emit.emit(ev("closed", serde_json::json!({"reason": "signal"})));
+                break;
             }
             _ = tokio::time::sleep_until(deadline) => {
                 ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: "max_secs".into() })).await?;
