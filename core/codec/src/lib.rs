@@ -48,6 +48,11 @@ pub enum CodecError {
 pub trait VideoEncoder: Send {
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, CodecError>;
     fn format(&self) -> CodecFormat;
+    /// Ajuste dinámico de la tasa objetivo (control adaptativo M2+).
+    /// `true` si el códec lo aplicó (si no, el llamador degrada a escala).
+    fn set_target_bitrate(&mut self, _bps: usize) -> bool {
+        false
+    }
 }
 
 pub trait VideoDecoder: Send {

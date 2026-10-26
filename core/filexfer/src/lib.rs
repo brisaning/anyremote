@@ -69,14 +69,15 @@ pub struct FileMeta {
     pub sha256: [u8; 32],
 }
 
-/// Sanitización de nombre: sin separadores, sin `..`, no vacío, ≤255.
+/// Sanitización de nombre: sin separadores, sin `..`, sin controles, no vacío, ≤255.
 pub fn sanitize_name(name: &str) -> Result<String, TransferError> {
     let ok = !name.is_empty()
         && name.len() <= 255
         && name != "."
         && name != ".."
         && !name.contains(['/', '\\', ':', '\0'])
-        && !name.starts_with('.');
+        && !name.starts_with('.')
+        && !name.chars().any(|c| c.is_control());
     if ok {
         Ok(name.to_string())
     } else {
@@ -156,11 +157,78 @@ struct Partial {
     next_offset: u64,
 }
 
+/// Persistencia de parciales: `dir/{id}.part` + `dir/{id}.meta` (`size\nsha\nname`).
+/// Permite **reanudar transferencias entre sesiones** (gap C5 → cerrado).
+pub struct TransferStore {
+    dir: PathBuf,
+}
+
+impl TransferStore {
+    pub fn new(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+
+    fn part(&self, id: u64) -> PathBuf {
+        self.dir.join(format!("{id}.part"))
+    }
+
+    fn meta_path(&self, id: u64) -> PathBuf {
+        self.dir.join(format!("{id}.meta"))
+    }
+
+    fn write_meta(&self, m: &FileMeta) -> Result<(), TransferError> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| TransferError::Io(e.to_string()))?;
+        let content = format!("{}\n{}\n{}\n", m.size, HEXLOWER.encode(&m.sha256), m.name);
+        std::fs::write(self.meta_path(m.transfer_id), content)
+            .map_err(|e| TransferError::Io(e.to_string()))
+    }
+
+    /// Parcial existente si coincide EXACTAMENTE con la oferta (size+sha+nombre).
+    pub fn load_partial(&self, m: &FileMeta) -> Result<Option<Vec<u8>>, TransferError> {
+        if !self.meta_path(m.transfer_id).exists() || !self.part(m.transfer_id).exists() {
+            return Ok(None);
+        }
+        let raw = std::fs::read_to_string(self.meta_path(m.transfer_id))
+            .map_err(|e| TransferError::Io(e.to_string()))?;
+        let mut it = raw.splitn(4, '\n');
+        let matches = it.next() == Some(m.size.to_string().as_str())
+            && it.next() == Some(HEXLOWER.encode(&m.sha256).as_str())
+            && it.next() == Some(m.name.as_str());
+        if !matches {
+            self.clear(m.transfer_id);
+            return Ok(None);
+        }
+        let buf = std::fs::read(self.part(m.transfer_id)).map_err(|e| TransferError::Io(e.to_string()))?;
+        if buf.len() as u64 > m.size {
+            self.clear(m.transfer_id);
+            return Ok(None);
+        }
+        Ok(Some(buf))
+    }
+
+    pub fn append(&self, id: u64, data: &[u8]) -> Result<(), TransferError> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| TransferError::Io(e.to_string()))?;
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.part(id))
+            .map_err(|e| TransferError::Io(e.to_string()))?;
+        f.write_all(data).map_err(|e| TransferError::Io(e.to_string()))
+    }
+
+    pub fn clear(&self, id: u64) {
+        let _ = std::fs::remove_file(self.part(id));
+        let _ = std::fs::remove_file(self.meta_path(id));
+    }
+}
+
 /// Receptor: ensambla por offset, reporta el offset esperado (reanudación)
 /// y verifica SHA-256 al finalizar.
 pub struct FileReceiver {
     policy: TransferPolicy,
     incoming: HashMap<u64, Partial>,
+    store: Option<TransferStore>,
 }
 
 impl FileReceiver {
@@ -168,6 +236,16 @@ impl FileReceiver {
         Self {
             policy,
             incoming: HashMap::new(),
+            store: None,
+        }
+    }
+
+    /// Con persistencia de parciales (reanudación entre sesiones).
+    pub fn new_with_store(policy: TransferPolicy, dir: PathBuf) -> Self {
+        Self {
+            policy,
+            incoming: HashMap::new(),
+            store: Some(TransferStore::new(dir)),
         }
     }
 
@@ -187,12 +265,22 @@ impl FileReceiver {
             // Reoferta idempotente (reanudación tras reinicio del emisor).
             return Ok(());
         }
+        // Parcial persistido de una sesión anterior → reanudar.
+        let mut buf = Vec::new();
+        let mut next_offset = 0u64;
+        if let Some(st) = &self.store {
+            st.write_meta(&meta)?;
+            if let Some(existing) = st.load_partial(&meta)? {
+                buf = existing;
+                next_offset = buf.len() as u64;
+            }
+        }
         self.incoming.insert(
             meta.transfer_id,
             Partial {
-                buf: Vec::with_capacity(meta.size as usize),
+                buf,
                 meta,
-                next_offset: 0,
+                next_offset,
             },
         );
         Ok(())
@@ -228,7 +316,12 @@ impl FileReceiver {
         }
         p.buf.extend_from_slice(data);
         p.next_offset = new_len as u64;
-        Ok(p.next_offset)
+        let next = p.next_offset;
+        // Persistir el avance (reanudación entre sesiones).
+        if let Some(st) = &self.store {
+            st.append(transfer_id, data)?;
+        }
+        Ok(next)
     }
 
     /// Finaliza: exige tamaño completo y verifica SHA-256. Devuelve el contenido.
@@ -237,6 +330,10 @@ impl FileReceiver {
             .incoming
             .remove(&transfer_id)
             .ok_or(TransferError::UnknownTransfer(transfer_id))?;
+        // Estado finalizado: elimina el parcial persistido (exitoso o corrupto).
+        if let Some(st) = &self.store {
+            st.clear(transfer_id);
+        }
         if p.buf.len() as u64 != p.meta.size {
             return Err(TransferError::Offset {
                 expected: p.meta.size,
@@ -394,6 +491,50 @@ mod tests {
         r.write_chunk(9, 0, data).unwrap();
         let path = r.finish_to_file(9, &dir).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), data);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn names_with_control_chars_are_rejected() {
+        for bad in ["a\nb", "tab\there", "cr\rx"] {
+            assert!(sanitize_name(bad).is_err(), "debió rechazar {bad:?}");
+        }
+    }
+
+    #[test]
+    fn partials_persist_across_sessions_and_resume() {
+        let dir = std::env::temp_dir().join(format!("anyremote-c5-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let data: Vec<u8> = (0..70_000u32).map(|i| (i % 199) as u8).collect();
+        let mut s = FileSender::new(TransferPolicy::default());
+        let offer = s.offer(42, "lote.bin", &data).unwrap();
+
+        // Sesión 1: recibe 2 chunks y "muere" sin finish.
+        let mut r1 = FileReceiver::new_with_store(TransferPolicy::default(), dir.clone());
+        r1.accept_offer(offer.clone()).unwrap();
+        let chunks: Vec<_> = s.chunks_from(&data, 0, 32 * 1024).collect();
+        r1.write_chunk(42, chunks[0].0, chunks[0].1).unwrap();
+        r1.write_chunk(42, chunks[1].0, chunks[1].1).unwrap();
+        let confirmed = r1.next_offset(42).unwrap();
+        assert!(confirmed > 0 && (confirmed as usize) < data.len());
+        drop(r1);
+        assert!(dir.join("42.part").exists() && dir.join("42.meta").exists(), "parcial persistido");
+
+        // Sesión 2: receptor NUEVO → reanuda desde el parcial.
+        let mut r2 = FileReceiver::new_with_store(TransferPolicy::default(), dir.clone());
+        r2.accept_offer(offer.clone()).unwrap();
+        assert_eq!(
+            r2.next_offset(42).unwrap(),
+            confirmed,
+            "reanuda exactamente desde el último offset confirmado"
+        );
+        for (off, chunk) in s.chunks_from(&data, confirmed, 32 * 1024) {
+            r2.write_chunk(42, off, chunk).unwrap();
+        }
+        let got = r2.finish(42).unwrap();
+        assert_eq!(got.len(), data.len());
+        assert_eq!(sha256_hex(&got), HEXLOWER.encode(&offer.sha256));
+        assert!(!dir.join("42.part").exists(), "los temporales se limpian al finish");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -81,6 +81,8 @@ class _HomePageState extends State<HomePage> {
   Uint8List _videoBuf = Uint8List(0);
   ui.Image? _lastImage;
   int _videoFrames = 0;
+  double _renderFps = 0;
+  int _lastRenderMs = 0;
   bool _rendering = false;
   String _videoStatus = 'sin vídeo';
   final List<String> _log = [
@@ -141,6 +143,12 @@ class _HomePageState extends State<HomePage> {
           case 'video_stats':
             _videoStatus = 'vídeo ${ev['w']}x${ev['h']} · ${ev['frames']} frames';
             if (mounted) setState(() {});
+          case 'video_adapt':
+            _append('[daemon] calidad adaptada: ${ev['reason']} → ${ev['size']}${ev['bps'] != null ? ' @${ev['bps']} bps' : ''}');
+          case 'file_resume':
+            _append('[daemon] reanudando envío de ${ev['name']} desde offset ${ev['from_offset']}');
+          case 'file_rejected':
+            _append('[daemon] oferta rechazada: ${ev['detail']}');
           case 'closed':
             _append('[daemon] sesión cerrada: ${ev['reason']}');
             _setStatus('Desconectado', Colors.grey);
@@ -217,8 +225,8 @@ class _HomePageState extends State<HomePage> {
   Future<void> _stopLocalListen() async {
     final proc = _listener;
     if (proc == null) return;
-    _append('[ui] deteniendo listener de red…');
-    proc.kill(ProcessSignal.sigterm);
+    _append('[ui] deteniendo listener (bye ordenado)…');
+    proc.stdin.writeln('bye');
     await proc.exitCode.timeout(const Duration(seconds: 3), onTimeout: () {
       proc.kill(ProcessSignal.sigkill);
       return -9;
@@ -345,10 +353,17 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       final prev = _lastImage;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (_lastRenderMs > 0 && now > _lastRenderMs) {
+        final inst = 1000.0 / (now - _lastRenderMs);
+        _renderFps = _renderFps == 0 ? inst : 0.8 * _renderFps + 0.2 * inst;
+      }
+      _lastRenderMs = now;
       setState(() {
         _lastImage = img;
         _videoFrames += 1;
-        _videoStatus = 'vídeo ${w}x$h · $_videoFrames frames';
+        _videoStatus =
+            'vídeo ${w}x$h · $_videoFrames frames · ${_renderFps.toStringAsFixed(0)} fps render';
       });
       prev?.dispose();
     } catch (e) {
@@ -410,9 +425,9 @@ class _HomePageState extends State<HomePage> {
   Future<void> _stop() async {
     final proc = _daemon;
     if (proc == null) return;
-    _append('[ui] deteniendo daemon…');
-    proc.kill(ProcessSignal.sigterm);
-    final code = await proc.exitCode.timeout(const Duration(seconds: 5), onTimeout: () {
+    _append('[ui] deteniendo sesión (bye ordenado)…');
+    proc.stdin.writeln('bye');
+    final code = await proc.exitCode.timeout(const Duration(seconds: 3), onTimeout: () {
       proc.kill(ProcessSignal.sigkill);
       return -9;
     });
@@ -420,7 +435,7 @@ class _HomePageState extends State<HomePage> {
       setState(() => _daemon = null);
       _append('[ui] daemon detenido (código $code)');
       if (_listener != null) {
-        _setStatus('Escuchando (local)', Colors.teal);
+        _setStatus('Escuchando (red)', Colors.teal);
       } else {
         _setStatus('Desconectado', Colors.grey);
       }

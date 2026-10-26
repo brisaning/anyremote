@@ -77,6 +77,7 @@ async fn main() {
                 });
             }
             cfg.grant = parse_grant(&args, &["keyboard", "mouse"]);
+            cfg.one_way_files = args.iter().any(|a| a == "--one-way-files");
             if let Some(v) = flag_value(&args, "--max-secs") {
                 cfg.max_secs = v.parse().unwrap_or(600);
             }
@@ -145,6 +146,7 @@ async fn main() {
                 });
             }
             cfg.grant = parse_grant(&args, &["keyboard", "mouse"]);
+            cfg.one_way_files = args.iter().any(|a| a == "--one-way-files");
             if let Some(f) = flag_value(&args, "--send-file") {
                 cfg.send_file = Some(PathBuf::from(f));
             }
@@ -164,7 +166,7 @@ async fn main() {
         _ => {
             eprintln!("anyremoted — integración anyremote (S0..C8) + vídeo M2");
             eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size 960x540] [--video-fps 10] [--codec vp9|deflate|raw] [--clipboard ...] [--max-secs n]");
-            eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--clipboard ...]");
+            eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--clipboard ...]");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             std::process::exit(2);
         }
