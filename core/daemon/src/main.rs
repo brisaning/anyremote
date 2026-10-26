@@ -9,6 +9,8 @@
 
 use std::path::PathBuf;
 
+use anyremote_codec::CodecFormat;
+use anyremote_daemon::video::VideoMode;
 use anyremote_daemon::{resolve_profile, run_connect, run_listen, ClipboardMode, DaemonConfig};
 
 fn config_dir(flag_dir: Option<String>) -> PathBuf {
@@ -78,6 +80,38 @@ async fn main() {
             if let Some(v) = flag_value(&args, "--max-secs") {
                 cfg.max_secs = v.parse().unwrap_or(600);
             }
+            // Hito M2: flags de vídeo (solo tiene efecto en listen).
+            if let Some(v) = flag_value(&args, "--video") {
+                cfg.video = VideoMode::parse(&v).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                });
+            }
+            if let Some(sz) = flag_value(&args, "--video-size") {
+                let sz = sz.to_ascii_lowercase();
+                let parts: Vec<&str> = sz.split('x').collect();
+                match (parts.len(), parts[0].parse::<u32>(), parts.get(1).and_then(|h| h.parse::<u32>().ok())) {
+                    (2, Ok(w), Some(h)) if w > 0 && h > 0 => cfg.video_size = (w, h),
+                    _ => {
+                        eprintln!("--video-size espera WxH (p. ej. 960x540)");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            if let Some(f) = flag_value(&args, "--video-fps") {
+                cfg.video_fps = f.parse().unwrap_or(10).clamp(1, 60);
+            }
+            if let Some(c) = flag_value(&args, "--codec") {
+                cfg.codec = match c.as_str() {
+                    "vp9" => CodecFormat::Vp9,
+                    "deflate" => CodecFormat::Deflate,
+                    "raw" => CodecFormat::Raw,
+                    other => {
+                        eprintln!("--codec espera vp9|deflate|raw (recibido {other})");
+                        std::process::exit(2);
+                    }
+                };
+            }
             cfg.on_event = Some(Box::new(|line: String| {
                 println!("{line}");
                 use std::io::Write;
@@ -128,8 +162,8 @@ async fn main() {
             std::process::exit(run_profiles(&args, &cfg_dir));
         }
         _ => {
-            eprintln!("anyremoted — integración anyremote (S0..C8)");
-            eprintln!("  anyremoted listen   [--bind a:p] [--clipboard off|memory|win] [--grant k,m] [--max-secs n]");
+            eprintln!("anyremoted — integración anyremote (S0..C8) + vídeo M2");
+            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size 960x540] [--video-fps 10] [--codec vp9|deflate|raw] [--clipboard ...] [--max-secs n]");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--clipboard ...]");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             std::process::exit(2);

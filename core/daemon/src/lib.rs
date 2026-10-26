@@ -10,17 +10,25 @@
 //! aplicación: un MITM rompe el binding de canal y es rechazado.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
 use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender, TransferPolicy};
 use anyremote_identity::{Identity, TrustStore};
+use anyremote_codec::VideoDecoder;
 use anyremote_session::{LinkStats, SessionEvent, SessionState};
 use anyremote_telemetry::{AuditEventKind, SessionLog, SessionReport};
 use anyremote_transport::arsp::{self, proto};
 use anyremote_transport::auth;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+pub mod preview;
+pub mod video;
+
+use video::{spawn_video_task, VideoItem, VideoMode};
 
 #[derive(Debug)]
 pub enum DaemonError {
@@ -110,6 +118,11 @@ pub struct DaemonConfig {
     /// Directorio de configuración (cert-store + audit/) — por defecto el de perfiles.
     pub config_dir: PathBuf,
     pub on_event: Option<EventSink>,
+    /// Hito M2: envío de vídeo desde el lado `listen` (el receptor siempre decodifica).
+    pub video: VideoMode,
+    pub video_size: (u32, u32),
+    pub video_fps: u64,
+    pub codec: anyremote_codec::CodecFormat,
 }
 
 impl DaemonConfig {
@@ -124,7 +137,19 @@ impl DaemonConfig {
             max_secs: 600,
             config_dir,
             on_event: None,
+            video: VideoMode::Off,
+            video_size: (960, 540),
+            video_fps: 10,
+            codec: anyremote_codec::CodecFormat::Vp9,
         }
+    }
+}
+
+/// Detiene la tarea de vídeo al salir del ámbito de la sesión.
+struct StopGuard(Arc<AtomicBool>);
+impl Drop for StopGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
     }
 }
 
@@ -519,6 +544,22 @@ async fn active_controlled(
     // Un fallo de portapapeles NO mata la sesión: se desactiva el subsistema (v0.1.4).
     let mut clip_off = false;
 
+    // Hito M2: vídeo hacia el canal + preview local de la propia pantalla (solo listen).
+    let (video_tx, mut video_rx) = mpsc::channel::<VideoItem>(3);
+    let stop = Arc::new(AtomicBool::new(false));
+    let _stop_guard = StopGuard(stop.clone());
+    let mut video_done = false;
+    if cfg.video != VideoMode::Off {
+        let (preview_srv, preview_port, _preview_task) = preview::PreviewServer::start();
+        emit.emit(ev("preview", serde_json::json!({ "port": preview_port })));
+        emit.emit(ev("video_start", serde_json::json!({
+            "mode": format!("{:?}", cfg.video),
+            "width": cfg.video_size.0, "height": cfg.video_size.1,
+            "fps": cfg.video_fps, "codec": format!("{:?}", cfg.codec),
+        })));
+        spawn_video_task(cfg.video, cfg.video_size, cfg.video_fps, cfg.codec, video_tx, preview_srv, stop);
+    }
+
     loop {
         tokio::select! {
             env = ch.recv() => {
@@ -594,6 +635,9 @@ async fn active_controlled(
                             }
                         }
                     }
+                    Some(proto::envelope::Payload::VideoFrame(_)) => {
+                        // El controlado no recibe vídeo (M2): ignora con seguridad.
+                    }
                     Some(proto::envelope::Payload::Bye(b)) => {
                         log.record(AuditEventKind::Disconnected, session_id,
                             serde_json::json!({"reason": b.reason.clone(), "role":"controlled"}))?;
@@ -644,6 +688,21 @@ async fn active_controlled(
                             serde_json::json!({"clipboard": format!("{e:?}"), "dir":"out"}))?;
                         emit.emit(ev("clipboard_error", serde_json::json!({"dir":"out","detail": format!("{e:?}")})));
                     }
+                }
+            }
+            item = video_rx.recv(), if cfg.video != VideoMode::Off && !video_done => {
+                let Some(item) = item else { video_done = true; continue; };
+                match ch.send(proto::envelope::Payload::VideoFrame(
+                    arsp::video_frame_to_wire(&item.enc),
+                )).await {
+                    Ok(()) => report.record_frame_sent(item.enc.data.len()),
+                    Err(e) if conn_gone(&e) => {
+                        log.record(AuditEventKind::Disconnected, session_id,
+                            serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                        emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                        break;
+                    }
+                    Err(e) => return Err(e.into()),
                 }
             }
             _ = tokio::time::sleep_until(deadline) => {
@@ -835,6 +894,14 @@ async fn active_controller(
     // Resiliencia de portapapeles (v0.1.4): un fallo desactiva el subsistema, no la sesión.
     let mut clip_off = false;
 
+    // Hito M2: preview local de lo que llega del controlado + decodificador con estado.
+    let (preview_srv, preview_port, _preview_task) = preview::PreviewServer::start();
+    emit.emit(ev("preview", serde_json::json!({ "port": preview_port })));
+    let preview = Arc::new(preview_srv);
+    let mut decoder: Option<anyremote_codec::NativeDecoder> = None;
+    let mut video_frames: u64 = 0;
+    let mut video_seq: u32 = 0;
+
     // C5: envío de archivo opcional tras activar.
     let mut pending_file: Option<(u64, String, String)> = None;
     if let Some(path) = cfg.send_file.clone() {
@@ -916,6 +983,36 @@ async fn active_controller(
                                         serde_json::json!({"file_nack": d.detail.clone()}))?;
                                     emit.emit(ev("error", serde_json::json!({"detail": format!("file nack: {}", d.detail)})));
                                 }
+                            }
+                        }
+                    }
+                    Some(proto::envelope::Payload::VideoFrame(vf)) => {
+                        // Hito M2: decodifica y alimenta el preview local (errores no matan la sesión).
+                        match arsp::video_frame_from_wire(vf) {
+                            Ok(enc) if !enc.data.is_empty() => {
+                                let dec = decoder.get_or_insert_with(anyremote_codec::NativeDecoder::new);
+                                match dec.decode(&enc) {
+                                    Ok(img) => {
+                                        preview.push(img.width, img.height, video_seq, &img.data);
+                                        video_seq = video_seq.wrapping_add(1);
+                                        video_frames += 1;
+                                        report.record_bytes_recv(enc.data.len());
+                                        if video_frames % 60 == 1 {
+                                            emit.emit(ev("video_stats", serde_json::json!({
+                                                "frames": video_frames, "w": img.width, "h": img.height
+                                            })));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log.record(AuditEventKind::Error, session_id,
+                                            serde_json::json!({"video": format!("{e:?}")}))?;
+                                        emit.emit(ev("video_error", serde_json::json!({"detail": format!("{e:?}")})));
+                                    }
+                                }
+                            }
+                            Ok(_) => {} // frame omitido por el codificador
+                            Err(e) => {
+                                emit.emit(ev("video_error", serde_json::json!({"detail": e.to_string()})));
                             }
                         }
                     }

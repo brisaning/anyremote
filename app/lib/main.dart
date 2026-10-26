@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -72,6 +75,14 @@ class _HomePageState extends State<HomePage> {
   Color _statusColor = Colors.grey;
   Process? _daemon;
   Process? _listener;
+
+  // Hito M2: visor remoto (preview local del daemon controlador).
+  Socket? _preview;
+  Uint8List _videoBuf = Uint8List(0);
+  ui.Image? _lastImage;
+  int _videoFrames = 0;
+  bool _rendering = false;
+  String _videoStatus = 'sin vídeo';
   final List<String> _log = [
     '[build] anyremote $kVersion · rev $kGitRev',
     '[build] Flutter $kFlutterBuild · windows-x64',
@@ -123,6 +134,13 @@ class _HomePageState extends State<HomePage> {
             _append('[daemon] cliente rechazado desde ${ev['peer']}: ${ev['detail']} (el listener sigue escuchando)');
           case 'cert_pinned':
             _append('[daemon] certificado del servidor pineado para ${ev['target']}');
+          case 'preview':
+            _startViewer((ev['port'] as num).toInt());
+          case 'video_start':
+            _append('[daemon] vídeo iniciando: ${ev['width']}x${ev['height']} @${ev['fps']} fps (${ev['codec']})');
+          case 'video_stats':
+            _videoStatus = 'vídeo ${ev['w']}x${ev['h']} · ${ev['frames']} frames';
+            if (mounted) setState(() {});
           case 'closed':
             _append('[daemon] sesión cerrada: ${ev['reason']}');
             _setStatus('Desconectado', Colors.grey);
@@ -217,6 +235,114 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  // ---------- Hito M2: visor remoto (preview local) ----------
+
+  Future<void> _startViewer(int port) async {
+    await _stopViewer();
+    try {
+      final sock = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        port,
+        timeout: const Duration(seconds: 3),
+      );
+      if (!mounted) {
+        sock.destroy();
+        return;
+      }
+      setState(() {
+        _preview = sock;
+        _videoStatus = 'visor conectado (esperando frames)…';
+      });
+      _append('[ui] visor conectado al preview 127.0.0.1:$port');
+      sock.listen(
+        _onVideoBytes,
+        onDone: () {
+          if (mounted) {
+            setState(() => _preview = null);
+            _videoStatus = 'visor finalizado';
+          }
+        },
+        onError: (Object e) {
+          if (mounted) {
+            setState(() => _preview = null);
+            _videoStatus = 'visor con error: $e';
+          }
+        },
+        cancelOnError: true,
+      );
+    } catch (e) {
+      _append('[ui] preview no disponible: $e');
+    }
+  }
+
+  Future<void> _stopViewer() async {
+    _preview?.destroy();
+    _preview = null;
+    _videoBuf = Uint8List(0);
+    final img = _lastImage;
+    _lastImage = null;
+    img?.dispose();
+    _videoFrames = 0;
+  }
+
+  void _onVideoBytes(Uint8List chunk) {
+    if (chunk.isEmpty) return;
+    if (_videoBuf.isEmpty) {
+      _videoBuf = chunk;
+    } else {
+      final merged = Uint8List(_videoBuf.length + chunk.length);
+      merged.setAll(0, _videoBuf);
+      merged.setAll(_videoBuf.length, chunk);
+      _videoBuf = merged;
+    }
+    while (_videoBuf.length >= 16) {
+      final bd = ByteData.sublistView(_videoBuf);
+      final w = bd.getUint32(0, Endian.little);
+      final h = bd.getUint32(4, Endian.little);
+      final len = bd.getUint32(12, Endian.little);
+      if (w == 0 || h == 0 || w > 8192 || h > 8192 || len > 128 * 1024 * 1024) {
+        _videoBuf = Uint8List(0); // pérdida de sincronía: resincronizar
+        return;
+      }
+      if (_videoBuf.length < 16 + len) break;
+      final payload = Uint8List.fromList(_videoBuf.sublist(16, 16 + len));
+      _videoBuf = Uint8List.fromList(_videoBuf.sublist(16 + len));
+      unawaited(_renderFrame(payload, w, h));
+    }
+  }
+
+  Future<void> _renderFrame(Uint8List bgra, int w, int h) async {
+    if (_rendering) return; // bajo carga: descarta en lugar de encolar
+    _rendering = true;
+    try {
+      final buf = await ui.ImmutableBuffer.fromUint8List(bgra);
+      final desc = ui.ImageDescriptor.raw(
+        buf,
+        width: w,
+        height: h,
+        pixelFormat: ui.PixelFormat.bgra8888,
+      );
+      final codec = await desc.instantiateCodec();
+      final frame = await codec.getNextFrame();
+      final img = frame.image;
+      if (!mounted) {
+        img.dispose();
+        return;
+      }
+      final prev = _lastImage;
+      setState(() {
+        _lastImage = img;
+        _videoFrames += 1;
+        _videoStatus = 'vídeo ${w}x$h · $_videoFrames frames';
+      });
+      prev?.dispose();
+    } catch (e) {
+      if (mounted) _videoStatus = 'render error: $e';
+    } finally {
+      _rendering = false;
+    }
+  }
+
   Future<void> _connect() async {
     final target = normalizeTarget(_target.text);
     if (target.isEmpty) {
@@ -289,6 +415,9 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _daemon?.kill(ProcessSignal.sigkill);
+    _listener?.kill(ProcessSignal.sigkill);
+    _preview?.destroy();
+    _lastImage?.dispose();
     _target.dispose();
     super.dispose();
   }
@@ -383,6 +512,40 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ),
+            const SizedBox(height: 12),
+            if (_lastImage != null || _preview != null)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.monitor, size: 18),
+                          const SizedBox(width: 8),
+                          const Text('Visor remoto',
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                          const Spacer(),
+                          Text(_videoStatus, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      AspectRatio(
+                        aspectRatio: _lastImage != null
+                            ? _lastImage!.width / _lastImage!.height
+                            : 16 / 9,
+                        child: _lastImage != null
+                            ? RawImage(image: _lastImage, fit: BoxFit.contain)
+                            : const Center(
+                                child: Text('conectado… esperando primer frame',
+                                    style: TextStyle(color: Colors.grey)),
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             const SizedBox(height: 12),
             Expanded(
               child: Card(
