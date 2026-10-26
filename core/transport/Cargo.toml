@@ -7,11 +7,17 @@ license.workspace = true
 [dependencies]
 anyremote-identity = { workspace = true }
 anyremote-session = { workspace = true }
+anyremote-codec = { workspace = true }
 tokio = { version = "1", features = ["net", "io-util", "macros", "rt-multi-thread", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
 rcgen = "0.13"
 prost = "0.13"
+
+[features]
+default = []
+# Activa el backend VP9 en el pipeline de transporte (gate C3-bis).
+vpx = ["anyremote-codec/vpx"]
 
 [build-dependencies]
 prost-build = "0.13"

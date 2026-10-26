@@ -5,6 +5,9 @@
 
 use anyremote_capture::{CaptureError, Frame, PixelFormat};
 
+#[cfg(feature = "vpx")]
+pub mod vpx_backend;
+
 /// Formato negociable del códec (patrón H-RD-05 `CodecFormat`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CodecFormat {
@@ -124,17 +127,35 @@ impl VideoEncoder for DeflateEncoder {
 }
 
 /// Decodificador según el formato del frame (fábrica implícita).
-pub struct NativeDecoder;
+pub struct NativeDecoder {
+    #[cfg(feature = "vpx")]
+    vp9: Option<vpx_backend::Vp9Decoder>,
+}
 
 impl NativeDecoder {
     pub fn new() -> Self {
-        Self
+        Self {
+            #[cfg(feature = "vpx")]
+            vp9: None,
+        }
     }
 }
 
 impl VideoDecoder for NativeDecoder {
     fn decode(&mut self, frame: &EncodedFrame) -> Result<Frame, CodecError> {
         use std::io::Read;
+        if frame.format == CodecFormat::Vp9 {
+            // Delegado al backend VP9 con estado (feature `vpx`).
+            #[cfg(feature = "vpx")]
+            {
+                if self.vp9.is_none() {
+                    self.vp9 = Some(vpx_backend::Vp9Decoder::new()?);
+                }
+                return self.vp9.as_mut().unwrap().decode(frame);
+            }
+            #[cfg(not(feature = "vpx"))]
+            return Err(CodecError::Unsupported(CodecFormat::Vp9));
+        }
         let expect = (frame.width * frame.height * 4) as usize;
         let data = match frame.format {
             CodecFormat::Raw => frame.data.clone(),
@@ -145,10 +166,7 @@ impl VideoDecoder for NativeDecoder {
                     .map_err(|e| CodecError::Decode(e.to_string()))?;
                 out
             }
-            CodecFormat::Vp9 => {
-                // Gateado por feature `vpx` (ciclo C3-bis): sin libvpx, se rechaza explícitamente.
-                return Err(CodecError::Unsupported(CodecFormat::Vp9));
-            }
+            CodecFormat::Vp9 => unreachable!("manejado arriba"),
         };
         if data.len() != expect {
             return Err(CodecError::Decode(format!(
@@ -185,10 +203,19 @@ pub fn encoder_for(format: CodecFormat) -> Box<dyn VideoEncoder> {
     match format {
         CodecFormat::Raw => Box::new(RawEncoder::new()),
         CodecFormat::Deflate => Box::new(DeflateEncoder::new(6)),
-        // C3-bis: se reemplaza por Vp9Encoder con feature `vpx` (libvpx).
-        CodecFormat::Vp9 => Box::new(UnsupportedEncoder {
-            format: CodecFormat::Vp9,
-        }),
+        CodecFormat::Vp9 => {
+            #[cfg(feature = "vpx")]
+            {
+                Box::new(vpx_backend::Vp9Encoder::new())
+            }
+            #[cfg(not(feature = "vpx"))]
+            {
+                // Sin feature `vpx`: rechazo explícito (gate de C3-bis).
+                Box::new(UnsupportedEncoder {
+                    format: CodecFormat::Vp9,
+                })
+            }
+        }
     }
 }
 

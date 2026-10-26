@@ -100,6 +100,30 @@ pub fn check_version(env: &proto::Envelope) -> Result<(), String> {
     }
 }
 
+/// Convierte un frame empaquetado del códec a su forma wire ARSP.
+pub fn video_frame_to_wire(frame: &anyremote_codec::EncodedFrame) -> proto::VideoFrame {
+    proto::VideoFrame {
+        seq: frame.seq,
+        width: frame.width,
+        height: frame.height,
+        format: frame.format as i32,
+        data: frame.data.clone(),
+    }
+}
+
+/// Convierte un VideoFrame wire al frame empaquetado del códec (valida formato).
+pub fn video_frame_from_wire(v: proto::VideoFrame) -> Result<anyremote_codec::EncodedFrame, TransportError> {
+    let format = anyremote_codec::CodecFormat::from_proto(v.format)
+        .ok_or_else(|| TransportError::Io(format!("formato de códec desconocido: {}", v.format)))?;
+    Ok(anyremote_codec::EncodedFrame {
+        format,
+        seq: v.seq,
+        width: v.width,
+        height: v.height,
+        data: v.data,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
