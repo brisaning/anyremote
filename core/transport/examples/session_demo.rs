@@ -4,9 +4,10 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyremote_identity::Identity;
+use anyremote_identity::{Identity, NodeId, TrustStore};
 use anyremote_session::{LinkStats, SessionEvent, SessionState};
 use anyremote_transport::arsp::{self, proto};
+use anyremote_transport::auth;
 use anyremote_transport::{client_config, generate_loopback_cert, server_config};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -32,12 +33,31 @@ async fn main() {
     let addr = listener.local_addr().unwrap();
 
     let ctrl_id_for_task = controller.node_id().to_string();
+    let controller_pk = controller.verifying_key_bytes();
+    let controller_id_task = ctrl_id_for_task.clone();
     let controlled_id_task = controlled.node_id().to_string();
     let controlled_task = tokio::spawn(async move {
         let acceptor = TlsAcceptor::from(Arc::new(srv_cfg));
-        let (tcp, peer) = listener.accept().await.expect("accept");
-        println!("[controlado] conexión TLS de {peer}");
-        let mut ch = arsp::Channel::new(acceptor.accept(tcp).await.expect("tls"));
+        let (tcp, peer_addr) = listener.accept().await.expect("accept");
+        println!("[controlado] conexión TLS de {peer_addr}");
+        let tls = acceptor.accept(tcp).await.expect("tls");
+        let binding = auth::binding_of_server(&tls).expect("binding");
+        let mut ch = arsp::Channel::new(tls);
+
+        // C2: autenticación mutua con channel binding + trust store (H-RD-02/H-RD-04).
+        let mut store = TrustStore::new();
+        store.trust(NodeId::parse(&controller_id_task).unwrap(), controller_pk);
+        let mut gate = auth::AuthGate::new();
+        let peer = auth::recv_validate_auth(&mut ch, &mut gate, &store, &binding)
+            .await
+            .expect("auth del controlador");
+        println!(
+            "[controlado] controlador autenticado: {} (dispositivo confiable={})",
+            peer.node_id, peer.trusted
+        );
+        auth::send_auth(&mut ch, &controlled, &binding)
+            .await
+            .expect("auth propio");
 
         let mut state = SessionState::Handshaking;
         let hello = ch.recv().await.expect("hello");
@@ -86,15 +106,29 @@ async fn main() {
 
     let tcp = TcpStream::connect(addr).await.expect("connect");
     let sni = rustls::pki_types::ServerName::try_from("localhost").unwrap();
-    let mut ch = arsp::Channel::new(
-        TlsConnector::from(Arc::new(cli_cfg))
-            .connect(sni, tcp)
-            .await
-            .expect("cliente tls"),
+    let tls = TlsConnector::from(Arc::new(cli_cfg))
+        .connect(sni, tcp)
+        .await
+        .expect("cliente tls");
+    let binding = auth::binding_of_client(&tls).expect("binding");
+    let mut ch = arsp::Channel::new(tls);
+
+    // C2: autenticación mutua desde el controlador.
+    auth::send_auth(&mut ch, &controller, &binding)
+        .await
+        .expect("auth");
+    let mut gate = auth::AuthGate::new();
+    let store = TrustStore::new();
+    let peer = auth::recv_validate_auth(&mut ch, &mut gate, &store, &binding)
+        .await
+        .expect("auth del controlado");
+    println!(
+        "[controlador] controlado verificado: {} (confiable={})",
+        peer.node_id, peer.trusted
     );
 
     let mut state = SessionState::Handshaking;
-    ch.send(arsp::hello(&controller.node_id().to_string(), "demo-c1"))
+    ch.send(arsp::hello(&controller.node_id().to_string(), "demo-c2"))
         .await
         .expect("hello");
     let welcome = ch.recv().await.expect("welcome");

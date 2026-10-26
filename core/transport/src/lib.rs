@@ -8,6 +8,7 @@ use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub mod arsp;
+pub mod auth;
 
 /// Máximo de un frame ARSP (16 MiB) — cota de recurso del protocolo.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -60,6 +61,7 @@ pub enum TransportError {
     Config(String),
     Io(String),
     FrameTooLarge(usize),
+    Auth(String),
     Eof,
 }
 

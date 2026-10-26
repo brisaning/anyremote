@@ -7,6 +7,7 @@ package arsp;
 message Envelope {
   uint64 seq = 1;
   oneof payload {
+    Auth auth = 8;
     Hello hello = 10;
     Welcome welcome = 11;
     PermissionRequest permission_request = 12;
@@ -14,6 +15,16 @@ message Envelope {
     Heartbeat heartbeat = 14;
     Bye bye = 15;
   }
+}
+
+// Prueba de identidad ed25519 vinculada al canal TLS (D-03, patrón H-RD-02 id_pk).
+// `signature` = ed25519("anyremote-auth-v1" || len(binding) || binding) con la clave
+// cuyo hash deriva en `node_id`; `binding` debe ser idéntico al exportado por el receptor.
+message Auth {
+  string node_id = 1;
+  bytes pubkey = 2;
+  bytes signature = 3;
+  bytes binding = 4;
 }
 
 // Controlador -> controlado al abrir sesión.
