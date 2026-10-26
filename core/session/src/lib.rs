@@ -28,14 +28,14 @@ pub enum SessionError {
 
 impl SessionState {
     pub fn transition(self, event: SessionEvent) -> Result<SessionState, SessionError> {
-        use SessionEvent::*;
-        use SessionState::*;
+        use SessionEvent as E;
+        use SessionState as S;
         let next = match (self, event) {
-            (Handshaking, HandshakeOk) => AwaitingPermission,
-            (AwaitingPermission, PermissionGranted) => Active,
-            (AwaitingPermission, PermissionDenied) => Closing,
-            (Active, StartClose) | (AwaitingPermission, StartClose) | (Handshaking, StartClose) => Closing,
-            (Closing, Closed) => Closed,
+            (S::Handshaking, E::HandshakeOk) => S::AwaitingPermission,
+            (S::AwaitingPermission, E::PermissionGranted) => S::Active,
+            (S::AwaitingPermission, E::PermissionDenied) => S::Closing,
+            (S::Active, E::StartClose) | (S::AwaitingPermission, E::StartClose) | (S::Handshaking, E::StartClose) => S::Closing,
+            (S::Closing, E::Closed) => S::Closed,
             (s, e) => return Err(SessionError::IllegalTransition(s, e)),
         };
         Ok(next)
@@ -67,34 +67,34 @@ impl PermissionSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use SessionEvent::*;
-    use SessionState::*;
+    use SessionEvent as E;
+    use SessionState as S;
 
     #[test]
     fn happy_path_reaches_active() {
-        let s = Handshaking.transition(HandshakeOk).unwrap();
-        assert_eq!(s, AwaitingPermission);
-        assert_eq!(s.transition(PermissionGranted).unwrap(), Active);
-        assert_eq!(Active.transition(StartClose).unwrap(), Closing);
-        assert_eq!(Closing.transition(Closed).unwrap(), Closed);
+        let s = S::Handshaking.transition(E::HandshakeOk).unwrap();
+        assert_eq!(s, S::AwaitingPermission);
+        assert_eq!(s.transition(E::PermissionGranted).unwrap(), S::Active);
+        assert_eq!(S::Active.transition(E::StartClose).unwrap(), S::Closing);
+        assert_eq!(S::Closing.transition(E::Closed).unwrap(), S::Closed);
     }
 
     #[test]
     fn denial_closes_without_activating() {
-        let s = Handshaking.transition(HandshakeOk).unwrap();
-        assert_eq!(s.transition(PermissionDenied).unwrap(), Closing);
-        assert_eq!(Closing.transition(Closed).unwrap(), Closed);
+        let s = S::Handshaking.transition(E::HandshakeOk).unwrap();
+        assert_eq!(s.transition(E::PermissionDenied).unwrap(), S::Closing);
+        assert_eq!(S::Closing.transition(E::Closed).unwrap(), S::Closed);
     }
 
     #[test]
     fn illegal_transitions_are_rejected() {
         assert_eq!(
-            Handshaking.transition(PermissionGranted),
-            Err(SessionError::IllegalTransition(Handshaking, PermissionGranted))
+            S::Handshaking.transition(E::PermissionGranted),
+            Err(SessionError::IllegalTransition(S::Handshaking, E::PermissionGranted))
         );
         assert_eq!(
-            Closed.transition(HandshakeOk),
-            Err(SessionError::IllegalTransition(Closed, HandshakeOk))
+            S::Closed.transition(E::HandshakeOk),
+            Err(SessionError::IllegalTransition(S::Closed, E::HandshakeOk))
         );
     }
 

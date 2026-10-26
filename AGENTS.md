@@ -24,3 +24,10 @@ La memoria persistente vive en la bóveda Obsidian **anyremote**:
 - Trazabilidad obligatoria (RNF-05): cada componente/ciclo debe mapear a hallazgos H-AD/H-RD versionados en `evidence/`.
 - Versionado: commit convencional por iteración; tag por ciclo cerrado (S0…C8).
 - Evidencia MCP/CLI versionada en `evidence/` con la invocación exacta que la produjo.
+
+## Toolchain de build (host Windows)
+
+- **Rust (workspace `core/`)**: usar el toolchain **GNU host** para que los build scripts no requieran MSVC:
+  `PATH="C:\proyectos\tools\w64devkit\w64devkit\bin:$PATH"` y `cargo +stable-x86_64-pc-windows-gnu test|run` (w64devkit 2.10.1, gcc 16.2; stub `libgcc_eh.a` = copia de `libgcc.a` ya aplicado).
+- **Flutter (`app/`)**: requiere **VS Build Tools 2022 + VCTools** (MSVC) para `flutter build windows` — pendiente de instalar vía terminal elevada si aún no está.
+- Memoria de estado: bóveda `anyremote` → nota `Memoria del proyecto.md`.
