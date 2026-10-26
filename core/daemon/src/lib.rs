@@ -211,43 +211,34 @@ fn conn_gone(e: &anyremote_transport::TransportError) -> bool {
     ["10053", "10054", "1006", "eof", "anulada", "reset", "closed"].iter().any(|k| s.contains(k))
 }
 
-/// Lado controlado: acepta UNA sesión (`anyremoted listen`).
-pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError> {
-    let identity = Identity::generate();
-    let session_id = session_id_of(&identity);
-    let mut emit = Emit {
-        events: Vec::new(),
-        sink: cfg.on_event.take(),
-    };
-    let mut log = SessionLog::open(&cfg.config_dir.join("audit"))?;
-    let mut report = SessionReport::new(&session_id);
+/// Resultado del establecimiento con un cliente.
+enum Established {
+    /// Sesión autenticada y con permisos → pasar a `active_controlled`.
+    Active(arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>),
+    /// Permiso denegado: cliente descartado; el listener sigue vivo.
+    Denied,
+}
 
-    let (cert, key) = anyremote_transport::cert_store::ensure(&cfg.config_dir)?;
-    let srv_cfg = anyremote_transport::server_config_from(cert, key)?;
-    let listener = TcpListener::bind(&cfg.bind)
-        .await
-        .map_err(|e| DaemonError::Io(e.to_string()))?;
-    let bind_addr = listener
-        .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_default();
-    emit.emit(ev(
-        "listening",
-        serde_json::json!({ "bind": bind_addr, "node_id": identity.node_id().to_string() }),
-    ));
-
-    let (mut tcp, peer) = listener
-        .accept()
-        .await
-        .map_err(|e| DaemonError::Io(e.to_string()))?;
-    // Bootstrap de raíz (PEM público) antes del TLS → permite confianza cross-machine.
+/// Handshake con UN cliente ya aceptado: bootstrap → TLS → auth (C2) → permisos (C1).
+/// Todo fallo aquí es del cliente (el caller continúa aceptando).
+async fn establish_controlled(
+    mut tcp: TcpStream,
+    peer: std::net::SocketAddr,
+    acceptor: &TlsAcceptor,
+    identity: &Identity,
+    session_id: &str,
+    cfg: &DaemonConfig,
+    log: &mut SessionLog,
+    emit: &mut Emit,
+) -> Result<Established, DaemonError> {
+    // Bootstrap de raíz (PEM público) antes del TLS → confianza cross-machine.
     if let Some(pem) = anyremote_transport::cert_store::read_pem(&cfg.config_dir)? {
         anyremote_transport::cert_store::write_bootstrap(&mut tcp, &pem).await?;
     }
-    let tls = TlsAcceptor::from(Arc::new(srv_cfg))
+    let tls = acceptor
         .accept(tcp)
         .await
-        .map_err(|e| DaemonError::Io(e.to_string()))?;
+        .map_err(|e| DaemonError::Io(format!("tls del cliente {peer}: {e}")))?;
     let binding = auth::binding_of_server(&tls)?;
     let mut ch = arsp::Channel::new(tls);
 
@@ -258,7 +249,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
     auth::send_auth(&mut ch, &identity, &binding).await?;
     log.record(
         AuditEventKind::SessionEstablished,
-        &session_id,
+        session_id,
         serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted, "peer_addr": peer.to_string()}),
     )?;
     emit.emit(ev(
@@ -292,24 +283,143 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
     if !granted.granted || granted.permissions.is_empty() {
         log.record(
             AuditEventKind::PermissionDenied,
-            &session_id,
-            serde_json::json!({"from": "controller"}),
+            session_id,
+            serde_json::json!({"from": "controller", "peer": peer.to_string()}),
         )?;
-        emit.emit(ev("closed", serde_json::json!({"reason": "permission_denied"})));
-        report.finish();
-        return Ok(RunOutcome {
-            report,
-            events: emit.events,
-            clipboard_final: None,
-        });
+        emit.emit(ev("client_failed", serde_json::json!({"peer": peer.to_string(), "detail": "permission_denied"})));
+        return Ok(Established::Denied);
     }
     log.record(
         AuditEventKind::PermissionGranted,
-        &session_id,
+        session_id,
         serde_json::json!({"perms": granted.permissions}),
     )?;
+    Ok(Established::Active(ch))
+}
 
-    active_controlled(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id).await
+/// Lado controlado: acepta sesiones (`anyremoted listen`).
+///
+/// **Resiliencia (prueba cross-device)**: un cliente que falle en cualquier etapa
+/// (TLS, auth, secuencia, silencio >15 s) se audita como `client_failed` y el
+/// listener **sigue aceptando**; solo termina con una sesión completada o al
+/// agotar `--max-secs` de vida del listener.
+pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError> {
+    let identity = Identity::generate();
+    let session_id = session_id_of(&identity);
+    let mut emit = Emit {
+        events: Vec::new(),
+        sink: cfg.on_event.take(),
+    };
+    let mut log = SessionLog::open(&cfg.config_dir.join("audit"))?;
+    let mut report = SessionReport::new(&session_id);
+
+    let (cert, key) = anyremote_transport::cert_store::ensure(&cfg.config_dir)?;
+    let srv_cfg = anyremote_transport::server_config_from(cert, key)?;
+    let listener = TcpListener::bind(&cfg.bind)
+        .await
+        .map_err(|e| DaemonError::Io(e.to_string()))?;
+    let bind_addr = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
+    emit.emit(ev(
+        "listening",
+        serde_json::json!({ "bind": bind_addr, "node_id": identity.node_id().to_string() }),
+    ));
+
+    let acceptor = TlsAcceptor::from(Arc::new(srv_cfg));
+    let listen_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(cfg.max_secs);
+
+    loop {
+        let remaining = listen_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            log.record(
+                AuditEventKind::Disconnected,
+                &session_id,
+                serde_json::json!({"reason":"listen_timeout","role":"listener"}),
+            )?;
+            emit.emit(ev("closed", serde_json::json!({"reason": "listen_timeout"})));
+            report.finish();
+            break;
+        }
+
+        let (tcp, peer) = match tokio::time::timeout(remaining, listener.accept()).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(DaemonError::Io(e.to_string())), // fallo del socket local
+            Err(_idle) => {
+                log.record(
+                    AuditEventKind::Disconnected,
+                    &session_id,
+                    serde_json::json!({"reason":"listen_timeout","role":"listener"}),
+                )?;
+                emit.emit(ev("closed", serde_json::json!({"reason": "listen_timeout"})));
+                report.finish();
+                break;
+            }
+        };
+
+        let attempt = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            establish_controlled(
+                tcp,
+                peer,
+                &acceptor,
+                &identity,
+                &session_id,
+                &cfg,
+                &mut log,
+                &mut emit,
+            ),
+        )
+        .await;
+
+        match attempt {
+            Ok(Ok(Established::Active(mut ch))) => {
+                return active_controlled(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id).await;
+            }
+            Ok(Ok(Established::Denied)) => {
+                // Cliente descartado tras auditoría → sigue escuchando.
+                continue;
+            }
+            Ok(Err(e)) => {
+                // Cliente falló (TLS/auth/secuencia): audita y NO mata el listener.
+                log.record(
+                    AuditEventKind::Error,
+                    &session_id,
+                    serde_json::json!({"client": peer.to_string(), "error": e.to_string()}),
+                )?;
+                emit.emit(ev(
+                    "client_failed",
+                    serde_json::json!({"peer": peer.to_string(), "detail": e.to_string()}),
+                ));
+                continue;
+            }
+            Err(_elapsed) => {
+                log.record(
+                    AuditEventKind::Error,
+                    &session_id,
+                    serde_json::json!({"client": peer.to_string(), "error": "handshake_timeout_15s"}),
+                )?;
+                emit.emit(ev(
+                    "client_failed",
+                    serde_json::json!({"peer": peer.to_string(), "detail": "handshake_timeout (15s)"}),
+                ));
+                continue;
+            }
+        }
+    }
+
+    log.record(
+        AuditEventKind::Disconnected,
+        &session_id,
+        report.disconnect_event(),
+    )?;
+    let clipboard_final = None;
+    Ok(RunOutcome {
+        report,
+        events: emit.events,
+        clipboard_final,
+    })
 }
 
 async fn active_controlled(
@@ -461,8 +571,8 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
         .await
         .map_err(|e| DaemonError::Io(e.to_string()))?;
     let incoming = anyremote_transport::cert_store::read_bootstrap(&mut tcp).await?;
-    let local_pem = anyremote_transport::cert_store::read_pem(&cfg.config_dir)?;
-    let (root, pending_pin) = match (local_pem, incoming) {
+    let pin_pem = anyremote_transport::cert_store::load_trusted(&cfg.config_dir, &target)?;
+    let (root, pending_pin) = match (pin_pem, incoming) {
         (Some(pem), inc) => {
             let root = anyremote_transport::cert_store::cert_from_pem(&pem)?;
             if let Some((_, inc_cert)) = inc {
@@ -470,9 +580,10 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
                 let fp_inc = anyremote_transport::cert_store::cert_fingerprint(&inc_cert);
                 if fp_inc != fp_local {
                     return Err(DaemonError::Config(format!(
-                        "el cert del servidor ({fp_inc}…) no coincide con tu pin local ({fp_local}…) \
-                         — posible intermediario. Si el servidor cambió legítimamente, borra \
-                         server_cert.pem del directorio de configuración y reconecta"
+                        "el cert del servidor ({fp_inc}…) no coincide con tu pin de {target} ({fp_local}…) \
+                         — posible intermediario. Si el servidor cambió legítimamente, borra {} \
+                         y reconecta",
+                        anyremote_transport::cert_store::trusted_path(&cfg.config_dir, &target).display()
                     )));
                 }
             }
@@ -481,7 +592,7 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
         (None, Some((pem, cert))) => (cert, Some(pem)),
         (None, None) => {
             return Err(DaemonError::Config(
-                "sin pin local y el par no envió cert bootstrap — ¿está escuchando un anyremoted?".into(),
+                "sin pin para este destino y el par no envió cert bootstrap — ¿está escuchando un anyremoted?".into(),
             ))
         }
     };
@@ -502,9 +613,9 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     let trust = TrustStore::new();
     let peer_id = auth::recv_validate_auth(&mut ch, &mut gate, &trust, &binding).await?;
     if let Some(pem) = pending_pin {
-        // Auth OK: el pin recibido es legítimo para esta identidad → persistir.
-        anyremote_transport::cert_store::save_pem(&cfg.config_dir, &pem)?;
-        emit.emit(ev("cert_pinned", serde_json::json!({"note": "raíz del servidor guardada"})));
+        // Auth OK: el pin recibido es legítimo para esta identidad → persistir (por destino).
+        anyremote_transport::cert_store::save_trusted(&cfg.config_dir, &target, &pem)?;
+        emit.emit(ev("cert_pinned", serde_json::json!({"target": target.clone()})));
     }
     log.record(
         AuditEventKind::SessionEstablished,

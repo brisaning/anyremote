@@ -144,6 +144,39 @@ pub mod cert_store {
         std::fs::write(dir.join(CERT_FILE), pem).map_err(|e| TransportError::Io(e.to_string()))
     }
 
+    fn sanitize_target(target: &str) -> String {
+        target
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect()
+    }
+
+    /// Ruta del pin de un destino concreto: `trusted/<target_sanitizado>.pem`.
+    /// Un pin por destino evita que el cert de TU propio listener contaminé
+    /// la confianza hacia otros servidores (fallo observado en prueba cross-device).
+    pub fn trusted_path(dir: &Path, target: &str) -> std::path::PathBuf {
+        dir.join("trusted")
+            .join(format!("{}.pem", sanitize_target(target)))
+    }
+
+    pub fn load_trusted(dir: &Path, target: &str) -> Result<Option<String>, TransportError> {
+        let p = trusted_path(dir, target);
+        if !p.exists() {
+            return Ok(None);
+        }
+        std::fs::read_to_string(p)
+            .map(Some)
+            .map_err(|e| TransportError::Io(e.to_string()))
+    }
+
+    pub fn save_trusted(dir: &Path, target: &str, pem: &str) -> Result<(), TransportError> {
+        let p = trusted_path(dir, target);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| TransportError::Io(e.to_string()))?;
+        }
+        std::fs::write(p, pem).map_err(|e| TransportError::Io(e.to_string()))
+    }
+
     const BOOTSTRAP_MAGIC: &str = "ANYREMOTE-CERT-V1";
 
     /// El servidor envía su PEM de raíz en claro ANTES del TLS (dato público;
