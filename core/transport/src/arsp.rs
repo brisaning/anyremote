@@ -68,6 +68,11 @@ pub fn welcome(node_id: &str) -> proto::envelope::Payload {
             clipboard: true,
             audio: true,
             files: true,
+            supported_codecs: vec![
+                proto::CodecFormatEnum::RawCodec as i32,
+                proto::CodecFormatEnum::DeflateCodec as i32,
+                proto::CodecFormatEnum::Vp9Codec as i32,
+            ],
         }),
     })
 }

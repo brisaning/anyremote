@@ -10,6 +10,7 @@ use anyremote_capture::{CaptureError, Frame, PixelFormat};
 pub enum CodecFormat {
     Raw = 0,
     Deflate = 1,
+    Vp9 = 2,
 }
 
 impl CodecFormat {
@@ -17,6 +18,7 @@ impl CodecFormat {
         match v {
             0 => Some(Self::Raw),
             1 => Some(Self::Deflate),
+            2 => Some(Self::Vp9),
             _ => None,
         }
     }
@@ -143,6 +145,10 @@ impl VideoDecoder for NativeDecoder {
                     .map_err(|e| CodecError::Decode(e.to_string()))?;
                 out
             }
+            CodecFormat::Vp9 => {
+                // Gateado por feature `vpx` (ciclo C3-bis): sin libvpx, se rechaza explícitamente.
+                return Err(CodecError::Unsupported(CodecFormat::Vp9));
+            }
         };
         if data.len() != expect {
             return Err(CodecError::Decode(format!(
@@ -159,11 +165,30 @@ impl VideoDecoder for NativeDecoder {
     }
 }
 
+/// Encoder que rechaza explícitamente un formato no soportado en este build.
+pub struct UnsupportedEncoder {
+    format: CodecFormat,
+}
+
+impl VideoEncoder for UnsupportedEncoder {
+    fn encode(&mut self, _frame: &Frame) -> Result<EncodedFrame, CodecError> {
+        Err(CodecError::Unsupported(self.format))
+    }
+
+    fn format(&self) -> CodecFormat {
+        self.format
+    }
+}
+
 /// Fábrica de encoders por formato.
 pub fn encoder_for(format: CodecFormat) -> Box<dyn VideoEncoder> {
     match format {
         CodecFormat::Raw => Box::new(RawEncoder::new()),
         CodecFormat::Deflate => Box::new(DeflateEncoder::new(6)),
+        // C3-bis: se reemplaza por Vp9Encoder con feature `vpx` (libvpx).
+        CodecFormat::Vp9 => Box::new(UnsupportedEncoder {
+            format: CodecFormat::Vp9,
+        }),
     }
 }
 
