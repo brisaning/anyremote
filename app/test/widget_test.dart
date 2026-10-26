@@ -34,8 +34,14 @@ void main() {
     await tester.enterText(find.byType(TextField), '127.0.0.1,21118');
     await tester.tap(find.widgetWithText(FilledButton, 'Conectar'));
     await tester.pump();
-    expect(find.textContaining('anyremoted.exe no encontrado'), findsOneWidget);
+    expect(find.textContaining('anyremoted.exe no encontrado'), findsWidgets);
     expect(find.textContaining('Daemon no encontrado'), findsOneWidget);
+
+    // Perfiles (C6): control de actualización presente; sin daemon → traza.
+    expect(find.byTooltip('Actualizar perfiles'), findsOneWidget);
+    await tester.tap(find.byTooltip('Actualizar perfiles'));
+    await tester.pump();
+    expect(find.textContaining('perfiles: anyremoted.exe no encontrado'), findsWidgets);
 
     // Botón de par local presente (listener autocontenido).
     expect(find.widgetWithText(OutlinedButton, 'Escuchar (red)'), findsOneWidget);
