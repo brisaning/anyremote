@@ -45,3 +45,7 @@ Task de vídeo → canal `VideoMsg{Frame|Event}` → loop de sesión (con backpr
 ## Limitaciones
 - VP9 `ReconfigureParams` solo ajusta tasa (sin cambio de calidad/q-step) — suficiente para el gate.
 - `Ctrl-C` en Windows sobre el daemon CLI cierra con Bye; el kill desde la app usa stdin (documentado).
+
+## Confirmación de campo (usuario)
+
+- **2026-10-26**: el usuario ejecutó la prueba de v0.3.0 en LAN **con éxito** — cierre ordenado (bye), reanudación y visor con métricas verificados en campo.
