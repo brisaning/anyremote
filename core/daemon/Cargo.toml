@@ -1,0 +1,22 @@
+[package]
+name = "anyremote-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "anyremoted"
+path = "src/main.rs"
+
+[dependencies]
+anyremote-transport = { workspace = true }
+anyremote-session = { workspace = true }
+anyremote-identity = { workspace = true }
+anyremote-clipboard = { workspace = true }
+anyremote-filexfer = { workspace = true }
+anyremote-profiles = { workspace = true }
+anyremote-telemetry = { workspace = true }
+tokio = { version = "1", features = ["net", "io-util", "macros", "rt-multi-thread", "time"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
+serde_json = "1"

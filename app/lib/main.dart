@@ -1,11 +1,13 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
-/// anyremote — shell de escritorio v0.1.0 (ciclo UI inicial).
+/// anyremote — shell de escritorio v0.1.0 con integración daemon (`anyremoted`).
 ///
-/// Alcance honesto: UI de conexión/estado con versión visible. El enlace real
-/// llega con la integración daemon (ARSP sobre `core/`; ciclos C7/C8).
-/// Los ciclos S0–C3-bis se prueban hoy con los binarios Rust
-/// (`cargo run -p anyremote-transport --example session_demo`).
+/// Conexión real: la app spawnea `anyremoted connect <target>`, lee sus eventos
+/// JSONL por stdout y refleja estado/registro en vivo. Ciclos S0–C8 en el backend.
 void main() {
   runApp(const AnyremoteApp());
 }
@@ -13,6 +15,15 @@ void main() {
 const String kVersion = String.fromEnvironment('APP_VERSION', defaultValue: '0.1.0');
 const String kGitRev = String.fromEnvironment('GIT_REV', defaultValue: 'desconocido');
 const String kFlutterBuild = String.fromEnvironment('FLUTTER_BUILD', defaultValue: 'unknown');
+
+/// Ubica `anyremoted.exe`: env ANYREMOTE_DAEMON (override) o junto al ejecutable.
+String resolveDaemonPath() {
+  final override = Platform.environment['ANYREMOTE_DAEMON'];
+  if (override != null && override.isNotEmpty) return override;
+  final exe = Platform.resolvedExecutable;
+  final dir = exe.substring(0, exe.lastIndexOf(Platform.pathSeparator));
+  return '$dir${Platform.pathSeparator}anyremoted.exe';
+}
 
 class AnyremoteApp extends StatelessWidget {
   const AnyremoteApp({super.key});
@@ -45,36 +56,135 @@ class _HomePageState extends State<HomePage> {
   final TextEditingController _target = TextEditingController(text: '');
   String _status = 'Desconectado';
   Color _statusColor = Colors.grey;
+  Process? _daemon;
   final List<String> _log = [
     '[build] anyremote $kVersion · rev $kGitRev',
     '[build] Flutter $kFlutterBuild · windows-x64',
-    '[core] ciclos S0..C3-bis: sesión ARSP, autenticación mutua, vídeo VP9 (37 fps @720p)',
-    '[ui] shell v0 — enlace daemon pendiente (integración C7/C8)',
+    '[core] ciclos S0..C8 completos · daemon anyremoted integrado',
   ];
 
-  void _connect() {
-    final target = _target.text.trim();
+  void _append(String line) {
+    setState(() => _log.add(line));
+  }
+
+  void _setStatus(String text, Color color) {
     setState(() {
-      _status = 'Enlace no disponible';
-      _statusColor = Colors.orange;
-      _log.add('[ui] intento de conexión a "${target.isEmpty ? '(vacío)' : target}" — daemon no integrado en v0.1.0');
+      _status = text;
+      _statusColor = color;
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('v0.1.0 es UI shell: el enlace real llega con la integración daemon (ciclo C7).'),
-        duration: Duration(seconds: 4),
-      ),
-    );
+  }
+
+  void _handleEvent(String line) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty) return;
+    if (trimmed.startsWith('{')) {
+      try {
+        final ev = jsonDecode(trimmed) as Map<String, dynamic>;
+        final kind = ev['event'] as String? ?? 'unknown';
+        switch (kind) {
+          case 'connecting':
+            _append('[daemon] conectando a ${ev['target']}…');
+            _setStatus('Conectando', Colors.orange);
+          case 'session_active':
+            _append('[daemon] SESIÓN ACTIVA con ${ev['peer']} (${ev['role']})');
+            _setStatus('Conectado', Colors.green);
+          case 'heartbeat':
+            _setStatus('Conectado · rtt ${ev['rtt_ms']} ms', Colors.green);
+          case 'file_ack':
+            _append('[daemon] archivo confirmado por el receptor (hash ${ev['sha256']})');
+          case 'file_received':
+            _append('[daemon] archivo recibido: ${ev['name']} (${ev['bytes']} B)');
+          case 'clipboard_synced':
+            _append('[daemon] portapapeles sincronizado (${ev['dir']})');
+          case 'closed':
+            _append('[daemon] sesión cerrada: ${ev['reason']}');
+            _setStatus('Desconectado', Colors.grey);
+          case 'error':
+            _append('[daemon] error: ${ev['detail']}');
+            _setStatus('Error', Colors.red);
+          default:
+            _append('[daemon] $kind');
+        }
+        return;
+      } catch (_) {
+        // cae al log crudo
+      }
+    }
+    _append('[daemon] $trimmed');
+  }
+
+  Future<void> _connect() async {
+    final target = _target.text.trim();
+    if (target.isEmpty) {
+      _append('[ui] indica un destino host:puerto o alias de perfil');
+      return;
+    }
+    if (_daemon != null) {
+      _append('[ui] ya hay una sesión en curso — pulsa Detener primero');
+      return;
+    }
+    final daemon = resolveDaemonPath();
+    if (!File(daemon).existsSync()) {
+      _append('[ui] anyremoted.exe no encontrado en $daemon');
+      _setStatus('Daemon no encontrado', Colors.orange);
+      return;
+    }
+    _append('[ui] lanzando anyremoted connect $target');
+    try {
+      final proc = await Process.start(
+        daemon,
+        ['connect', target, '--clipboard', 'win'],
+        mode: ProcessStartMode.normal,
+      );
+      setState(() => _daemon = proc);
+      _setStatus('Conectando', Colors.orange);
+
+      proc.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen(_handleEvent);
+      proc.stderr
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) => _append('[daemon-err] $line'));
+      final code = await proc.exitCode;
+      if (mounted) {
+        setState(() => _daemon = null);
+        _append('[ui] daemon finalizado (código $code)');
+        if (_status != 'Error') _setStatus('Desconectado', Colors.grey);
+      }
+    } catch (e) {
+      _append('[ui] error al lanzar daemon: $e');
+      _setStatus('Error', Colors.red);
+    }
+  }
+
+  Future<void> _stop() async {
+    final proc = _daemon;
+    if (proc == null) return;
+    _append('[ui] deteniendo daemon…');
+    proc.kill(ProcessSignal.sigterm);
+    final code = await proc.exitCode.timeout(const Duration(seconds: 5), onTimeout: () {
+      proc.kill(ProcessSignal.sigkill);
+      return -9;
+    });
+    if (mounted) {
+      setState(() => _daemon = null);
+      _append('[ui] daemon detenido (código $code)');
+      _setStatus('Desconectado', Colors.grey);
+    }
   }
 
   @override
   void dispose() {
+    _daemon?.kill(ProcessSignal.sigkill);
     _target.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final running = _daemon != null;
     return Scaffold(
       appBar: AppBar(
         title: Row(
@@ -123,9 +233,10 @@ class _HomePageState extends State<HomePage> {
                           flex: 3,
                           child: TextField(
                             controller: _target,
+                            enabled: !running,
                             decoration: const InputDecoration(
                               labelText: 'ID remoto o dirección (host:puerto)',
-                              hintText: 'p. ej. 192.168.1.10:21118',
+                              hintText: 'p. ej. 127.0.0.1:21118',
                               border: OutlineInputBorder(),
                               isDense: true,
                             ),
@@ -134,16 +245,22 @@ class _HomePageState extends State<HomePage> {
                         ),
                         const SizedBox(width: 12),
                         FilledButton.icon(
-                          onPressed: _connect,
+                          onPressed: running ? null : _connect,
                           icon: const Icon(Icons.link),
                           label: const Text('Conectar'),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton.icon(
+                          onPressed: running ? _stop : null,
+                          icon: const Icon(Icons.stop),
+                          label: const Text('Detener'),
                         ),
                       ],
                     ),
                     const SizedBox(height: 10),
-                    const Text(
-                      'Mi identidad: se generará al integrar el daemon (ed25519 + ID Base32, D-03).',
-                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    Text(
+                      'Daemon: ${resolveDaemonPath()}',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
                     ),
                   ],
                 ),

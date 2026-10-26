@@ -55,6 +55,66 @@ pub fn client_config(trusted: &CertificateDer<'static>) -> Result<ClientConfig, 
         .with_no_client_auth())
 }
 
+/// Re-exporta pki-types para consumidores (daemon).
+pub use rustls::pki_types;
+
+/// ServerConfig desde cert/key ya cargados (cert-store persistido).
+pub fn server_config_from(
+    cert: CertificateDer<'static>,
+    key: PrivateKeyDer<'static>,
+) -> Result<ServerConfig, TransportError> {
+    ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key)
+        .map_err(|e| TransportError::Config(e.to_string()))
+}
+
+/// Certificado auto-firmado persistido en el directorio de configuración.
+///
+/// Confianza v0.1 (localhost): `server_cert.pem`/`server_key.pem` compartidos por
+/// ambos roles en la misma máquina; el cliente lo usa como root store (validación
+/// real). Cross-machine: distribuir `server_cert.pem` (limitación documentada).
+pub mod cert_store {
+    use std::path::Path;
+
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    use super::TransportError;
+
+    const CERT_FILE: &str = "server_cert.pem";
+    const KEY_FILE: &str = "server_key.pem";
+
+    pub fn ensure(dir: &Path) -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>), TransportError> {
+        std::fs::create_dir_all(dir).map_err(|e| TransportError::Io(e.to_string()))?;
+        let cp = dir.join(CERT_FILE);
+        let kp = dir.join(KEY_FILE);
+        if cp.exists() && kp.exists() {
+            let cert_pem = std::fs::read_to_string(&cp).map_err(|e| TransportError::Io(e.to_string()))?;
+            let key_pem = std::fs::read_to_string(&kp).map_err(|e| TransportError::Io(e.to_string()))?;
+            let cert = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+                .next()
+                .ok_or_else(|| TransportError::Config("server_cert.pem sin certificados".into()))?
+                .map_err(|e| TransportError::Config(format!("PEM cert: {e}")))?;
+            let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
+                .map_err(|e| TransportError::Config(format!("PEM key: {e}")))?
+                .ok_or_else(|| TransportError::Config("server_key.pem sin clave privada".into()))?;
+            return Ok((cert, key));
+        }
+
+        let generated = rcgen::generate_simple_self_signed(vec![
+            "localhost".to_string(),
+            "127.0.0.1".to_string(),
+        ])
+        .map_err(|e| TransportError::Cert(e.to_string()))?;
+        let cert = CertificateDer::from(generated.cert.der().to_vec());
+        let key = PrivateKeyDer::Pkcs8(generated.key_pair.serialize_der().into());
+        std::fs::write(&cp, generated.cert.pem()).map_err(|e| TransportError::Io(e.to_string()))?;
+        std::fs::write(&kp, generated.key_pair.serialize_pem())
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        Ok((cert, key))
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum TransportError {
     Cert(String),

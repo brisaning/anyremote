@@ -91,6 +91,19 @@ impl ClipboardBackend for MemoryClipboard {
     }
 }
 
+/// Permite `ClipboardSyncEngine<Box<dyn ClipboardBackend>>` (backends dinámicos, daemon).
+impl<B: ClipboardBackend + ?Sized> ClipboardBackend for Box<B> {
+    fn read_text(&mut self) -> Result<Option<String>, ClipboardError> {
+        (**self).read_text()
+    }
+    fn write_text(&mut self, text: &str) -> Result<(), ClipboardError> {
+        (**self).write_text(text)
+    }
+    fn description(&self) -> String {
+        (**self).description()
+    }
+}
+
 /// Estadísticas del motor (evidencia del gate).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SyncStats {

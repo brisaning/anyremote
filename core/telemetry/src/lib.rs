@@ -66,7 +66,14 @@ impl SessionLog {
     /// Abre/crea `dir/audit-<unix_ms>.jsonl`.
     pub fn open(dir: &Path) -> Result<Self, TelemetryError> {
         std::fs::create_dir_all(dir).map_err(|e| TelemetryError::Io(e.to_string()))?;
-        let path = dir.join(format!("audit-{}.jsonl", now_unix_ms()));
+        let path = dir.join(format!(
+            "audit-{}-{}.jsonl",
+            now_unix_ms(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
         let file = OpenOptions::new()
             .create_new(true)
             .append(true)
