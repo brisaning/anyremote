@@ -7,6 +7,8 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+pub mod arsp;
+
 /// Máximo de un frame ARSP (16 MiB) — cota de recurso del protocolo.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 

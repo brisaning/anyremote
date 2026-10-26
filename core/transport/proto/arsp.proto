@@ -1,0 +1,62 @@
+// ARSP — anyremote session protocol (D-05). Esquema propio; patrones de referencia:
+// H-RD-01 (handshake sesión), H-RD-03 (permisos), RF-01. Clean-room D-01.
+syntax = "proto3";
+package arsp;
+
+// Envelope: marco lógico de cada mensaje de sesión sobre un frame de transporte.
+message Envelope {
+  uint64 seq = 1;
+  oneof payload {
+    Hello hello = 10;
+    Welcome welcome = 11;
+    PermissionRequest permission_request = 12;
+    PermissionResponse permission_response = 13;
+    Heartbeat heartbeat = 14;
+    Bye bye = 15;
+  }
+}
+
+// Controlador -> controlado al abrir sesión.
+message Hello {
+  uint32 proto_version = 1;
+  string node_id = 2;
+  string session_hint = 3;
+}
+
+// Controlado -> controlador: acepta la sesión y publica capacidades.
+message Welcome {
+  uint32 proto_version = 1;
+  string node_id = 2;
+  SessionCapabilities capabilities = 3;
+}
+
+message SessionCapabilities {
+  bool keyboard = 1;
+  bool mouse = 2;
+  bool clipboard = 3;
+  bool audio = 4;
+  bool files = 5;
+}
+
+// Controlado -> controlador: solicita permisos concretos (D-07, denegado por defecto).
+message PermissionRequest {
+  repeated string permissions = 1;
+}
+
+// Controlador -> controlado: concesión explícita por permiso.
+message PermissionResponse {
+  bool granted = 1;
+  repeated string permissions = 2;
+}
+
+// Latidos con eco para métricas de enlace (RTT) — RF-05 base.
+message Heartbeat {
+  uint64 seq = 1;
+  int64 sent_unix_ms = 2;
+  bool echo = 3;
+}
+
+// Cierre ordenado de sesión.
+message Bye {
+  string reason = 1;
+}

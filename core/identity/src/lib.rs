@@ -14,8 +14,7 @@ impl NodeId {
     pub const LEN: usize = 10;
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-    /// Validación de forma: 10 caracteres Crockford-estrictos Base32 (A–Z, 2–7).
+    }    /// Validación de forma: 10 caracteres Crockford-estrictos Base32 (A–Z, 2–7).
     pub fn parse(s: &str) -> Result<Self, IdentityError> {
         let ok = s.len() == Self::LEN
             && s.chars().all(|c| matches!(c, 'A'..='Z' | '2'..='7'));
@@ -24,6 +23,12 @@ impl NodeId {
         } else {
             Err(IdentityError::MalformedId)
         }
+    }
+}
+
+impl std::fmt::Display for NodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 

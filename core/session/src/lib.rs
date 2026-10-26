@@ -64,6 +64,22 @@ impl PermissionSet {
     }
 }
 
+/// Métricas básicas de enlace de una sesión (gate C1; base de RF-05/D-10).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LinkStats {
+    pub heartbeats_ok: u64,
+    pub last_rtt_ms: Option<u64>,
+    pub min_rtt_ms: Option<u64>,
+}
+
+impl LinkStats {
+    pub fn record_rtt(&mut self, rtt_ms: u64) {
+        self.heartbeats_ok += 1;
+        self.last_rtt_ms = Some(rtt_ms);
+        self.min_rtt_ms = Some(self.min_rtt_ms.map_or(rtt_ms, |m| m.min(rtt_ms)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +118,16 @@ mod tests {
     fn permissions_default_deny() {
         let p = PermissionSet::default();
         assert!(!p.keyboard && !p.mouse && !p.clipboard && !p.audio && !p.files);
+    }
+
+    #[test]
+    fn link_stats_track_rtt() {
+        let mut s = LinkStats::default();
+        s.record_rtt(12);
+        s.record_rtt(5);
+        s.record_rtt(9);
+        assert_eq!(s.heartbeats_ok, 3);
+        assert_eq!(s.last_rtt_ms, Some(9));
+        assert_eq!(s.min_rtt_ms, Some(5));
     }
 }
