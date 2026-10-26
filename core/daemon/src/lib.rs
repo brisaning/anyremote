@@ -70,6 +70,9 @@ pub enum ClipboardMode {
     Off,
     Memory,
     Win,
+    /// Diagnóstico: primeras lecturas OK y después fallos simulados
+    /// (reproduce bloqueos reales de portapapeles para tests de resiliencia).
+    Flaky,
 }
 
 impl ClipboardMode {
@@ -78,8 +81,9 @@ impl ClipboardMode {
             "off" => Ok(Self::Off),
             "memory" => Ok(Self::Memory),
             "win" => Ok(Self::Win),
+            "flaky" => Ok(Self::Flaky),
             other => Err(DaemonError::Config(format!(
-                "--clipboard inválido: {other} (off|memory|win)"
+                "--clipboard inválido: {other} (off|memory|win|flaky)"
             ))),
         }
     }
@@ -160,6 +164,13 @@ fn make_clipboard(cfg: &DaemonConfig) -> Result<BoxedClip, DaemonError> {
             current: cfg.clipboard_seed.clone(),
             writes: 0,
         })),
+        ClipboardMode::Flaky => Ok(Box::new(FlakyClipboard {
+            seed: cfg
+                .clipboard_seed
+                .clone()
+                .unwrap_or_else(|| "semilla".into()),
+            reads: 0,
+        })),
         ClipboardMode::Win => {
             #[cfg(windows)]
             {
@@ -172,6 +183,34 @@ fn make_clipboard(cfg: &DaemonConfig) -> Result<BoxedClip, DaemonError> {
                 Err(DaemonError::Config("--clipboard win no soportado aquí".into()))
             }
         }
+    }
+}
+
+/// Diagnóstico: simula bloqueos reales de portapapeles (primeras ops OK, luego error).
+struct FlakyClipboard {
+    seed: String,
+    reads: u32,
+}
+
+impl anyremote_clipboard::ClipboardBackend for FlakyClipboard {
+    fn read_text(&mut self) -> Result<Option<String>, anyremote_clipboard::ClipboardError> {
+        self.reads += 1;
+        if self.reads <= 1 {
+            return Ok(Some(self.seed.clone()));
+        }
+        Err(anyremote_clipboard::ClipboardError::Platform(
+            "bloqueo simulado de portapapeles (modo flaky)".into(),
+        ))
+    }
+
+    fn write_text(&mut self, _text: &str) -> Result<(), anyremote_clipboard::ClipboardError> {
+        Err(anyremote_clipboard::ClipboardError::Platform(
+            "bloqueo simulado de portapapeles (modo flaky)".into(),
+        ))
+    }
+
+    fn description(&self) -> String {
+        "flaky".into()
     }
 }
 
@@ -375,7 +414,18 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
 
         match attempt {
             Ok(Ok(Established::Active(mut ch))) => {
-                return active_controlled(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id).await;
+                // Errores de sesión en curso → cierre limpio auditable (no matan el listener como proceso con pánico).
+                return match active_controlled(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id).await {
+                    Ok(o) => Ok(o),
+                    Err(e) => {
+                        log.record(AuditEventKind::Error, &session_id,
+                            serde_json::json!({"session_error": e.to_string()}))?;
+                        emit.emit(ev("closed", serde_json::json!({"reason": format!("session_error: {e}")})));
+                        report.finish();
+                        log.record(AuditEventKind::Disconnected, &session_id, report.disconnect_event())?;
+                        Ok(RunOutcome { report, events: emit.events, clipboard_final: None })
+                    }
+                };
             }
             Ok(Ok(Established::Denied)) => {
                 // Cliente descartado tras auditoría → sigue escuchando.
@@ -422,6 +472,34 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
     })
 }
 
+/// Resultado de recibir una oferta completa: (contenido, transfer_id).
+/// Error: (transfer_id, detalle) para poder enviar el nack.
+async fn receive_file_offer(
+    ch: &mut arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>,
+    files: &mut FileReceiver,
+    o: proto::FileOffer,
+) -> Result<(Vec<u8>, u64), (u64, String)> {
+    let meta = arsp::file_offer_from_wire(o).map_err(|e| (0u64, e.to_string()))?;
+    let tid = meta.transfer_id;
+    let size = meta.size;
+    files.accept_offer(meta).map_err(|e| (tid, e.to_string()))?;
+    while files.next_offset(tid).map_err(|e| (tid, e.to_string()))? < size {
+        let c = ch.recv().await.map_err(|e| (tid, e.to_string()))?;
+        match c.payload {
+            Some(proto::envelope::Payload::FileChunk(fc)) => {
+                files
+                    .write_chunk(fc.transfer_id, fc.offset, &fc.data)
+                    .map_err(|e| (tid, e.to_string()))?;
+            }
+            _ => return Err((tid, "esperaba FileChunk".into())),
+        }
+    }
+    files
+        .finish(tid)
+        .map_err(|e| (tid, e.to_string()))
+        .map(|data| (data, tid))
+}
+
 async fn active_controlled(
     ch: &mut arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>,
     log: &mut SessionLog,
@@ -435,6 +513,8 @@ async fn active_controlled(
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(cfg.max_secs);
     let mut clip_tick = tokio::time::interval(std::time::Duration::from_millis(500));
     let state = SessionState::Active;
+    // Un fallo de portapapeles NO mata la sesión: se desactiva el subsistema (v0.1.4).
+    let mut clip_off = false;
 
     loop {
         tokio::select! {
@@ -451,52 +531,63 @@ async fn active_controlled(
                 };
                 match env.payload {
                     Some(proto::envelope::Payload::Heartbeat(h)) if !h.echo => {
-                        ch.send(proto::envelope::Payload::Heartbeat(proto::Heartbeat {
+                        if let Err(e) = ch.send(proto::envelope::Payload::Heartbeat(proto::Heartbeat {
                             seq: h.seq,
                             sent_unix_ms: h.sent_unix_ms,
                             echo: true,
-                        })).await?;
+                        })).await {
+                            if conn_gone(&e) {
+                                log.record(AuditEventKind::Disconnected, session_id,
+                                    serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                                emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                                break;
+                            }
+                            return Err(e.into());
+                        }
                         report.record_bytes_recv(0);
                     }
                     Some(proto::envelope::Payload::Heartbeat(_)) => {}
                     Some(proto::envelope::Payload::Clipboard(w)) => {
                         let content = arsp::clipboard_from_wire(w)?;
-                        if engine.apply_remote(&content)? {
-                            log.record(AuditEventKind::ClipboardSync, session_id,
-                                serde_json::json!({"dir":"in","bytes": content.text.len()}))?;
-                            report.record_bytes_recv(content.text.len());
-                            emit.emit(ev("clipboard_synced", serde_json::json!({"dir":"in"})));
+                        match engine.apply_remote(&content) {
+                            Ok(true) => {
+                                log.record(AuditEventKind::ClipboardSync, session_id,
+                                    serde_json::json!({"dir":"in","bytes": content.text.len()}))?;
+                                report.record_bytes_recv(content.text.len());
+                                emit.emit(ev("clipboard_synced", serde_json::json!({"dir":"in"})));
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                // Resiliencia: el portapapeles local falló → se desactiva, la sesión sigue.
+                                clip_off = true;
+                                log.record(AuditEventKind::Error, session_id,
+                                    serde_json::json!({"clipboard": format!("{e:?}"), "dir":"in"}))?;
+                                emit.emit(ev("clipboard_error", serde_json::json!({"dir":"in","detail": format!("{e:?}")})));
+                            }
                         }
                     }
                     Some(proto::envelope::Payload::FileOffer(o)) => {
-                        let meta = arsp::file_offer_from_wire(o)?;
-                        let (tid, size) = (meta.transfer_id, meta.size);
-                        match files.accept_offer(meta.clone()) {
-                            Ok(()) => {
-                                while files.next_offset(tid)? < size {
-                                    let c = ch.recv().await?;
-                                    if let Some(proto::envelope::Payload::FileChunk(fc)) = c.payload {
-                                        files.write_chunk(fc.transfer_id, fc.offset, &fc.data)?;
-                                    } else {
-                                        return Err(DaemonError::Config("esperaba FileChunk".into()));
-                                    }
-                                }
-                                let data = files.finish(tid)?;
+                        match receive_file_offer(ch, &mut files, o).await {
+                            Ok(data) => {
+                                let tid_meta = data.1;
+                                let data = data.0;
                                 let hex = sha256_hex(&data);
-                                ch.send(proto::envelope::Payload::FileDone(
-                                    arsp::file_done_to_wire(tid, true, &hex),
-                                )).await?;
+                                let _ = ch.send(proto::envelope::Payload::FileDone(
+                                    arsp::file_done_to_wire(tid_meta, true, &hex),
+                                )).await;
                                 report.record_file();
                                 log.record(AuditEventKind::FileTransfer, session_id,
-                                    serde_json::json!({"dir":"in","name": meta.name, "bytes": data.len(), "sha256": hex}))?;
-                                emit.emit(ev("file_received", serde_json::json!({"name": meta.name, "bytes": data.len()})));
+                                    serde_json::json!({"dir":"in","bytes": data.len(), "sha256": hex}))?;
+                                emit.emit(ev("file_received", serde_json::json!({"bytes": data.len()})));
                             }
-                            Err(e) => {
-                                ch.send(proto::envelope::Payload::FileDone(
-                                    arsp::file_done_to_wire(tid, false, &format!("{e:?}")),
-                                )).await?;
+                            Err((tid, detail)) => {
+                                // Resiliencia: transferencia fallida → nack + sesión sigue.
+                                let _ = ch.send(proto::envelope::Payload::FileDone(
+                                    arsp::file_done_to_wire(tid, false, &detail),
+                                )).await;
                                 log.record(AuditEventKind::Error, session_id,
-                                    serde_json::json!({"file_reject": format!("{e:?}")}))?;
+                                    serde_json::json!({"file": detail.clone()}))?;
+                                emit.emit(ev("file_error", serde_json::json!({"detail": detail})));
                             }
                         }
                     }
@@ -511,14 +602,45 @@ async fn active_controlled(
                     other => return Err(DaemonError::Config(format!("payload inesperado: {other:?}"))),
                 }
             }
-            _ = clip_tick.tick(), if cfg.clipboard != ClipboardMode::Off => {
-                if let Some(content) = engine.detect_local_change()? {
-                    ch.send(proto::envelope::Payload::Clipboard(
-                        arsp::clipboard_to_wire(&content)?,
-                    )).await?;
-                    log.record(AuditEventKind::ClipboardSync, session_id,
-                        serde_json::json!({"dir":"out","bytes": content.text.len()}))?;
-                    emit.emit(ev("clipboard_synced", serde_json::json!({"dir":"out"})));
+            _ = clip_tick.tick(), if cfg.clipboard != ClipboardMode::Off && !clip_off => {
+                match engine.detect_local_change() {
+                    Ok(Some(content)) => {
+                        match arsp::clipboard_to_wire(&content) {
+                            Ok(w) => match ch.send(proto::envelope::Payload::Clipboard(w)).await {
+                                Ok(()) => {
+                                    log.record(AuditEventKind::ClipboardSync, session_id,
+                                        serde_json::json!({"dir":"out","bytes": content.text.len()}))?;
+                                    emit.emit(ev("clipboard_synced", serde_json::json!({"dir":"out"})));
+                                }
+                                Err(e) if conn_gone(&e) => {
+                                    log.record(AuditEventKind::Disconnected, session_id,
+                                        serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                                    emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                                    break;
+                                }
+                                Err(e) => {
+                                    clip_off = true;
+                                    log.record(AuditEventKind::Error, session_id,
+                                        serde_json::json!({"clipboard": format!("{e:?}"), "dir":"out"}))?;
+                                    emit.emit(ev("clipboard_error", serde_json::json!({"dir":"out","detail": format!("{e:?}")})));
+                                }
+                            },
+                            Err(e) => {
+                                clip_off = true;
+                                log.record(AuditEventKind::Error, session_id,
+                                    serde_json::json!({"clipboard": format!("{e:?}"), "dir":"out"}))?;
+                                emit.emit(ev("clipboard_error", serde_json::json!({"dir":"out","detail": format!("{e:?}")})));
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        // Resiliencia: lectura local falló → desactiva portapapeles, la sesión sigue.
+                        clip_off = true;
+                        log.record(AuditEventKind::Error, session_id,
+                            serde_json::json!({"clipboard": format!("{e:?}"), "dir":"out"}))?;
+                        emit.emit(ev("clipboard_error", serde_json::json!({"dir":"out","detail": format!("{e:?}")})));
+                    }
                 }
             }
             _ = tokio::time::sleep_until(deadline) => {
@@ -535,7 +657,16 @@ async fn active_controlled(
 
     report.finish();
     log.record(AuditEventKind::Disconnected, session_id, report.disconnect_event())?;
-    let clipboard_final = engine.text()?;
+    // La lectura final del portapapeles NO debe romper el cierre (modo flaky/bloqueo real).
+    let clipboard_final = match engine.text() {
+        Ok(t) => t,
+        Err(e) => {
+            log.record(AuditEventKind::Error, session_id,
+                serde_json::json!({"clipboard": format!("{e:?}"), "dir":"final"}))?;
+            emit.emit(ev("clipboard_error", serde_json::json!({"dir":"final","detail": format!("{e:?}")})));
+            None
+        }
+    };
     Ok(RunOutcome {
         report: report.clone(),
         events: emit.events.clone(),
@@ -668,7 +799,18 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     }
     log.record(AuditEventKind::PermissionGranted, &session_id, serde_json::json!({"perms": allowed}))?;
 
-    active_controller(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, &peer_id.node_id.to_string()).await
+    match active_controller(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, &peer_id.node_id.to_string()).await {
+        Ok(o) => Ok(o),
+        Err(e) => {
+            // Errores de sesión en curso → cierre limpio auditable.
+            log.record(AuditEventKind::Error, &session_id,
+                serde_json::json!({"session_error": e.to_string()}))?;
+            emit.emit(ev("closed", serde_json::json!({"reason": format!("session_error: {e}")})));
+            report.finish();
+            log.record(AuditEventKind::Disconnected, &session_id, report.disconnect_event())?;
+            Ok(RunOutcome { report, events: emit.events, clipboard_final: None })
+        }
+    }
 }
 
 async fn active_controller(
@@ -687,6 +829,8 @@ async fn active_controller(
     let mut stats = LinkStats::default();
     let mut next_seq: u64 = 1;
     let state = SessionState::Active;
+    // Resiliencia de portapapeles (v0.1.4): un fallo desactiva el subsistema, no la sesión.
+    let mut clip_off = false;
 
     // C5: envío de archivo opcional tras activar.
     let mut pending_file: Option<(u64, String, String)> = None;
@@ -740,10 +884,20 @@ async fn active_controller(
                     Some(proto::envelope::Payload::Heartbeat(_)) => {}
                     Some(proto::envelope::Payload::Clipboard(w)) => {
                         let content = arsp::clipboard_from_wire(w)?;
-                        if engine.apply_remote(&content)? {
-                            log.record(AuditEventKind::ClipboardSync, session_id,
-                                serde_json::json!({"dir":"in","bytes": content.text.len()}))?;
-                            emit.emit(ev("clipboard_synced", serde_json::json!({"dir":"in"})));
+                        match engine.apply_remote(&content) {
+                            Ok(true) => {
+                                log.record(AuditEventKind::ClipboardSync, session_id,
+                                    serde_json::json!({"dir":"in","bytes": content.text.len()}))?;
+                                emit.emit(ev("clipboard_synced", serde_json::json!({"dir":"in"})));
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                // Resiliencia: aplicar el portapapeles local falló → desactiva, la sesión sigue.
+                                clip_off = true;
+                                log.record(AuditEventKind::Error, session_id,
+                                    serde_json::json!({"clipboard": format!("{e:?}"), "dir":"in"}))?;
+                                emit.emit(ev("clipboard_error", serde_json::json!({"dir":"in","detail": format!("{e:?}")})));
+                            }
                         }
                     }
                     Some(proto::envelope::Payload::FileDone(d)) => {
@@ -778,21 +932,60 @@ async fn active_controller(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
-                ch.send(proto::envelope::Payload::Heartbeat(proto::Heartbeat {
+                if let Err(e) = ch.send(proto::envelope::Payload::Heartbeat(proto::Heartbeat {
                     seq: next_seq,
                     sent_unix_ms: now,
                     echo: false,
-                })).await?;
+                })).await {
+                    if conn_gone(&e) {
+                        log.record(AuditEventKind::Disconnected, session_id,
+                            serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                        emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                        break;
+                    }
+                    return Err(e.into());
+                }
                 next_seq += 1;
             }
-            _ = clip_tick.tick(), if cfg.clipboard != ClipboardMode::Off => {
-                if let Some(content) = engine.detect_local_change()? {
-                    ch.send(proto::envelope::Payload::Clipboard(
-                        arsp::clipboard_to_wire(&content)?,
-                    )).await?;
-                    log.record(AuditEventKind::ClipboardSync, session_id,
-                        serde_json::json!({"dir":"out","bytes": content.text.len()}))?;
-                    emit.emit(ev("clipboard_synced", serde_json::json!({"dir":"out"})));
+            _ = clip_tick.tick(), if cfg.clipboard != ClipboardMode::Off && !clip_off => {
+                match engine.detect_local_change() {
+                    Ok(Some(content)) => {
+                        match arsp::clipboard_to_wire(&content) {
+                            Ok(w) => match ch.send(proto::envelope::Payload::Clipboard(w)).await {
+                                Ok(()) => {
+                                    log.record(AuditEventKind::ClipboardSync, session_id,
+                                        serde_json::json!({"dir":"out","bytes": content.text.len()}))?;
+                                    emit.emit(ev("clipboard_synced", serde_json::json!({"dir":"out"})));
+                                }
+                                Err(e) if conn_gone(&e) => {
+                                    log.record(AuditEventKind::Disconnected, session_id,
+                                        serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                                    emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                                    break;
+                                }
+                                Err(e) => {
+                                    clip_off = true;
+                                    log.record(AuditEventKind::Error, session_id,
+                                        serde_json::json!({"clipboard": format!("{e:?}"), "dir":"out"}))?;
+                                    emit.emit(ev("clipboard_error", serde_json::json!({"dir":"out","detail": format!("{e:?}")})));
+                                }
+                            },
+                            Err(e) => {
+                                clip_off = true;
+                                log.record(AuditEventKind::Error, session_id,
+                                    serde_json::json!({"clipboard": format!("{e:?}"), "dir":"out"}))?;
+                                emit.emit(ev("clipboard_error", serde_json::json!({"dir":"out","detail": format!("{e:?}")})));
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        // Resiliencia: lectura local falló → desactiva portapapeles, la sesión sigue.
+                        clip_off = true;
+                        log.record(AuditEventKind::Error, session_id,
+                            serde_json::json!({"clipboard": format!("{e:?}"), "dir":"out"}))?;
+                        emit.emit(ev("clipboard_error", serde_json::json!({"dir":"out","detail": format!("{e:?}")})));
+                    }
                 }
             }
             _ = tokio::time::sleep_until(deadline) => {
@@ -818,7 +1011,16 @@ async fn active_controller(
     )?;
     report.finish();
     log.record(AuditEventKind::Disconnected, session_id, report.disconnect_event())?;
-    let clipboard_final = engine.text()?;
+    // La lectura final del portapapeles NO debe romper el cierre (modo flaky/bloqueo real).
+    let clipboard_final = match engine.text() {
+        Ok(t) => t,
+        Err(e) => {
+            log.record(AuditEventKind::Error, session_id,
+                serde_json::json!({"clipboard": format!("{e:?}"), "dir":"final"}))?;
+            emit.emit(ev("clipboard_error", serde_json::json!({"dir":"final","detail": format!("{e:?}")})));
+            None
+        }
+    };
     Ok(RunOutcome {
         report: report.clone(),
         events: emit.events.clone(),

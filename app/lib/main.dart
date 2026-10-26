@@ -115,6 +115,14 @@ class _HomePageState extends State<HomePage> {
             _append('[daemon] archivo recibido: ${ev['name']} (${ev['bytes']} B)');
           case 'clipboard_synced':
             _append('[daemon] portapapeles sincronizado (${ev['dir']})');
+          case 'clipboard_error':
+            _append('[daemon] portapapeles desactivado en esta sesión (${ev['dir']}): ${ev['detail']}');
+          case 'file_error':
+            _append('[daemon] transferencia fallida (la sesión continúa): ${ev['detail']}');
+          case 'client_failed':
+            _append('[daemon] cliente rechazado desde ${ev['peer']}: ${ev['detail']} (el listener sigue escuchando)');
+          case 'cert_pinned':
+            _append('[daemon] certificado del servidor pineado para ${ev['target']}');
           case 'closed':
             _append('[daemon] sesión cerrada: ${ev['reason']}');
             _setStatus('Desconectado', Colors.grey);

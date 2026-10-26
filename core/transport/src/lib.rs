@@ -257,6 +257,12 @@ pub enum TransportError {
     Eof,
 }
 
+impl std::fmt::Display for TransportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
 /// Escribe un frame: longitud u32 big-endian + payload.
 pub async fn write_frame<W: AsyncWrite + Unpin>(
     w: &mut W,
