@@ -152,6 +152,51 @@ pub fn clipboard_from_wire(
     })
 }
 
+/// Oferta de archivo → wire (nombre ya saneado por el emisor).
+pub fn file_offer_to_wire(meta: &anyremote_filexfer::FileMeta) -> proto::FileOffer {
+    proto::FileOffer {
+        transfer_id: meta.transfer_id,
+        name: meta.name.clone(),
+        size: meta.size,
+        sha256: meta.sha256.to_vec(),
+    }
+}
+
+/// Wire → oferta de archivo con validación (nombre saneado, digest de 32 bytes).
+pub fn file_offer_from_wire(v: proto::FileOffer) -> Result<anyremote_filexfer::FileMeta, TransportError> {
+    let name = anyremote_filexfer::sanitize_name(&v.name)
+        .map_err(|e| TransportError::Wire(format!("nombre de oferta: {e}")))?;
+    let sha: [u8; 32] = v
+        .sha256
+        .as_slice()
+        .try_into()
+        .map_err(|n| TransportError::Wire(format!("sha256 con {n} bytes (se esperaban 32)")))?;
+    Ok(anyremote_filexfer::FileMeta {
+        transfer_id: v.transfer_id,
+        name,
+        size: v.size,
+        sha256: sha,
+    })
+}
+
+/// Chunk de archivo → wire.
+pub fn file_chunk_to_wire(transfer_id: u64, offset: u64, data: &[u8]) -> proto::FileChunk {
+    proto::FileChunk {
+        transfer_id,
+        offset,
+        data: data.to_vec(),
+    }
+}
+
+/// Resultado de transferencia → wire (`detail`: hash hex o `resume:{offset}` / error).
+pub fn file_done_to_wire(transfer_id: u64, ok: bool, detail: &str) -> proto::FileDone {
+    proto::FileDone {
+        transfer_id,
+        ok,
+        detail: detail.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

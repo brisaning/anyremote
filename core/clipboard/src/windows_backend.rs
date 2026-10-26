@@ -56,7 +56,7 @@ impl ClipboardBackend for WinClipboard {
                 let end = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
                 slice[..end].to_vec()
             };
-            unsafe { GlobalUnlock(global) };
+            let _ = unsafe { GlobalUnlock(global) };
             Ok(Some(String::from_utf16_lossy(&wide)))
         })
     }
@@ -76,7 +76,7 @@ impl ClipboardBackend for WinClipboard {
             }
             unsafe {
                 std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, ptr as *mut u8, bytes);
-                GlobalUnlock(mem);
+                let _ = GlobalUnlock(mem);
             }
             // SetClipboardData asume la propiedad de `mem` en éxito.
             unsafe { SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(mem.0))) }.map_err(|e| {

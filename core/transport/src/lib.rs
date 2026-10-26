@@ -62,6 +62,8 @@ pub enum TransportError {
     Io(String),
     FrameTooLarge(usize),
     Auth(String),
+    /// Mensaje wire malformado o con campos inválidos.
+    Wire(String),
     Eof,
 }
 

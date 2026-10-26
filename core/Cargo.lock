@@ -49,6 +49,10 @@ dependencies = [
 [[package]]
 name = "anyremote-filexfer"
 version = "0.1.0"
+dependencies = [
+ "data-encoding",
+ "sha2",
+]
 
 [[package]]
 name = "anyremote-identity"
@@ -87,6 +91,7 @@ dependencies = [
  "anyremote-capture",
  "anyremote-clipboard",
  "anyremote-codec",
+ "anyremote-filexfer",
  "anyremote-identity",
  "anyremote-input",
  "anyremote-session",
