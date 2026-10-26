@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "fecha": "2026-10-26",
+  "fase": "0-preparacion",
+  "artefactos": {
+    "anydesk": {
+      "ruta": "D:\Users\Usuario\Downloads\Utilidades\escritorio-remoto\AnyDesk.exe",
+      "tamano_bytes": 8553912,
+      "sha256": "2a85e3bc09a2c8b6707cd56ec464be42705a5849f1a8a5b38c66b56b2c07b124",
+      "comando_verificacion": "sha256sum AnyDesk.exe"
+    },
+    "rustdesk": {
+      "ruta": "C:\proyectos\fixed\rustdesk",
+      "commit": "59f2953c94b8373f124dc38d4fd0635098f7c5cd",
+      "commit_fecha": "2026-10-26T17:23:08+08:00",
+      "rama": "master",
+      "remoto": "https://github.com/rustdesk/rustdesk.git",
+      "licencia": "AGPL-3.0",
+      "comando_verificacion": "git rev-parse HEAD"
+    }
+  },
+  "herramientas": {
+    "rea_cli": "6.8.0",
+    "rea_mcp": { "estado": "connected", "tools": 229, "doctor": "healthy", "catalog_digest": "fe938a7c6eba3763b22ae2022de76dc4a7812d35d86f1d4efd36b9962b04da0b" },
+    "codebase_memory_mcp": { "estado": "connected", "binario": "0.12.1", "tools": 17 },
+    "obsidian_vault_mcp": { "estado": "connected", "version": "1.2.1", "vault": "D:\Users\Usuario\OneDrive\Obsidian\anyremote" }
+  },
+  "decisiones": { "D-01": "clean-room desde patrones", "D-02": "Rust core + UI Flutter" },
+  "nota_legal": "L-02 (dictamen legal) pendiente — mitigado por D-01 clean-room; requerido antes de cierre de Fase 2"
+}
