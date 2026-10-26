@@ -98,11 +98,11 @@ class _HomePageState extends State<HomePage> {
         final kind = ev['event'] as String? ?? 'unknown';
         switch (kind) {
           case 'listening':
-            _append('[daemon] escuchando en ${ev['bind']} (node ${ev['node_id']})');
+            _append('[daemon] anyremoted v${ev['daemon'] ?? '?'} escuchando en ${ev['bind']} (node ${ev['node_id']})');
             if (_daemon == null) _setStatus('Escuchando (red)', Colors.teal);
             _showLanIps();
           case 'connecting':
-            _append('[daemon] conectando a ${ev['target']}…');
+            _append('[daemon] anyremoted v${ev['daemon'] ?? '?'} conectando a ${ev['target']}…');
             _setStatus('Conectando', Colors.orange);
           case 'session_active':
             _append('[daemon] SESIÓN ACTIVA con ${ev['peer']} (${ev['role']})');

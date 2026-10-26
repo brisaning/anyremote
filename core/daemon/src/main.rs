@@ -57,6 +57,7 @@ fn normalize_cli_target(s: &str) -> String {
 
 #[tokio::main]
 async fn main() {
+    eprintln!("anyremoted {}", anyremote_daemon::DAEMON_VERSION);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("help").to_string();
     let cfg_dir = config_dir(flag_value(&args, "--config-dir"));

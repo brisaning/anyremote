@@ -91,6 +91,9 @@ impl ClipboardMode {
 
 pub type EventSink = Box<dyn FnMut(String) + Send + Sync>;
 
+/// Versión del binario daemon (viajada en los eventos para diagnóstico de campo).
+pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub struct DaemonConfig {
     /// listen: dirección de enlace. connect: ignorado.
     pub bind: String,
@@ -363,7 +366,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         .unwrap_or_default();
     emit.emit(ev(
         "listening",
-        serde_json::json!({ "bind": bind_addr, "node_id": identity.node_id().to_string() }),
+        serde_json::json!({ "bind": bind_addr, "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION }),
     ));
 
     let acceptor = TlsAcceptor::from(Arc::new(srv_cfg));
@@ -694,7 +697,7 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
         &session_id,
         serde_json::json!({"target": target.clone()}),
     )?;
-    emit.emit(ev("connecting", serde_json::json!({ "target": target.clone(), "node_id": identity.node_id().to_string() })));
+    emit.emit(ev("connecting", serde_json::json!({ "target": target.clone(), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION })));
 
     // Raíz de confianza: pin local si existe; si no, la recibe por bootstrap del
     // par y se persiste SOLO tras completar la autenticación mutua (C2).
