@@ -134,6 +134,13 @@ class _HomePageState extends State<HomePage> {
     '1080p': '1920x1080',
     'Nativa': 'native',
   };
+
+  /// Tope de ancho de banda por calidad en kbps (QW-3: `--max-bitrate`).
+  static const Map<String, int> _qualityKbps = {
+    '720p': 3000,
+    '1080p': 6000,
+    'Nativa': 8000,
+  };
   /// Botón mantenido en el visor (0/1/2) para emitir su `up` al soltar.
   int? _heldButton;
   /// Contador visible de eventos de entrada (enviados por el visor o
@@ -364,6 +371,7 @@ class _HomePageState extends State<HomePage> {
         '--video', 'on',
         '--video-size', _qualities[_videoQuality] ?? '1280x720',
         '--video-fps', '15',
+        '--max-bitrate', '${_qualityKbps[_videoQuality] ?? 3000}',
         '--codec', 'vp9',
         // C-2: la CAPACIDAD está siempre disponible; el estado real lo fija
         // `{"perm":...}` (se envía ya y en cada cambio de casilla → los

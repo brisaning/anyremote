@@ -40,7 +40,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | Ajustes de campo v0.6.1 (diagnóstico 2026-10-27) | ✅ gate verde · 🟡 pendiente LAN | `campo-v0.6.1` · `evidence/audio-gate.md` §Diagnóstico |
 | Fix control 720p/1080p v0.6.2 | ✅ gate verde · 🟡 pendiente verificar en campo | `coords-v0.6.2` · `evidence/control-coords-gate.md` |
 | C-2 permisos dinámicos + micrófono v0.7.0 | ✅ gate verde · 🟡 pendiente campo | `perm-dinamicas-v0.7.0` · `evidence/dynamic-perms-gate.md` |
-| **Pendientes** | 🟡 re-verificación de audio en LAN (v0.6.1) · acuse de inyección · identidad persistente · WAN · CI | [README § Pendientes](../README.md#pendientes) |
+| C-3 rendimiento (quick wins) v0.7.1 | ✅ gate verde · 🟡 pendiente verificar en campo | `perf-v0.7.1` · `evidence/perf-audit.md` |
+| **Pendientes** | 🟡 re-verificación en LAN (v0.7.x) · rendimiento medio/largo (HW encode, UDP, adaptación por red) · acuse de inyección · identidad persistente · CI | [README § Pendientes](../README.md#pendientes) |
 
 ---
 

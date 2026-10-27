@@ -5,8 +5,8 @@
 use std::collections::VecDeque;
 
 use shiguredo_libvpx::{
-    CodecConfig, Decoder, DecoderCodec, DecoderConfig, EncodeOptions, Encoder, EncoderConfig,
-    EncodingDeadline, ImageData, ImageFormat, RateControlMode, Vp9Config,
+    CodecConfig, ContentType, Decoder, DecoderCodec, DecoderConfig, EncodeOptions, Encoder,
+    EncoderConfig, EncodingDeadline, ImageData, ImageFormat, RateControlMode, Vp9Config,
 };
 
 use anyremote_capture::{Frame, PixelFormat};
@@ -89,6 +89,9 @@ pub struct Vp9Encoder {
     pending: VecDeque<Vec<u8>>,
     width: u32,
     height: u32,
+    /// FPS nominal de la sesión (QW-4): libvpx asume 30 por defecto y con un
+    /// fps real distinto el VBV queda mal temporizado (peor calidad/latencia).
+    fps: u32,
 }
 
 impl Vp9Encoder {
@@ -100,6 +103,7 @@ impl Vp9Encoder {
             pending: VecDeque::new(),
             width: 0,
             height: 0,
+            fps: 30,
         }
     }
 
@@ -109,8 +113,22 @@ impl Vp9Encoder {
                 width as usize,
                 height as usize,
                 ImageFormat::I420,
-                CodecConfig::Vp9(Vp9Config::default()),
+                CodecConfig::Vp9(Vp9Config {
+                    // QW-4: optimizar para CONTENIDO DE PANTALLA (texto/ventanas)
+                    // y paralelismo por filas — patrón RustDesk vpxcodec.
+                    tune_content: Some(ContentType::Screen),
+                    row_mt: true,
+                    ..Default::default()
+                }),
             );
+            // QW-4: fps real de la sesión (no el 30 por defecto del wrapper).
+            cfg.fps_numerator = self.fps.max(1) as usize;
+            cfg.fps_denominator = 1;
+            // QW-4: hilos = CPU disponible (tope 4: más hilos solo añaden latencia).
+            cfg.threads = std::thread::available_parallelism()
+                .ok()
+                .map(|n| std::num::NonZeroUsize::new(n.get().min(4)))
+                .flatten();
             // Bitrate proporcional al área (~3 bits/px/frame → comprime ~10x a 30fps).
             cfg.target_bitrate = (width as usize * height as usize * 3).max(150_000);
             cfg.deadline = EncodingDeadline::Realtime;
@@ -172,6 +190,12 @@ impl VideoEncoder for Vp9Encoder {
 
     fn format(&self) -> CodecFormat {
         CodecFormat::Vp9
+    }
+
+    /// QW-4: fija el fps nominal ANTES del primer frame (si el encoder ya
+    /// existe se recrea en el siguiente cambio de escala con el fps correcto).
+    fn set_fps(&mut self, fps: u32) {
+        self.fps = fps.max(1);
     }
 
     fn set_target_bitrate(&mut self, bps: usize) -> bool {

@@ -53,6 +53,9 @@ pub trait VideoEncoder: Send {
     fn set_target_bitrate(&mut self, _bps: usize) -> bool {
         false
     }
+    /// FPS nominal de la sesión (QW-4): el códec lo usa para temporizar su
+    /// control de tasa. Por defecto no-op.
+    fn set_fps(&mut self, _fps: u32) {}
 }
 
 pub trait VideoDecoder: Send {

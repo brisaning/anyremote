@@ -25,7 +25,7 @@
 |RF-04 Perfiles|✅ (C6 + UI v0.4.0)|`c6-gate`, `ui-batch-gate`|
 |RF-05 Registro|✅ (C7)|`c7-gate`|
 |RF-06 Trazabilidad|✅ (fases 0–6 + evidencia versionada)|`evidence/`|
-|Pendientes globales|Audio: re-verificación LAN (loopback+micrófono listos) · rendimiento (informe QW) · acuse de inyección · identidad persistente · WAN · CI|README § Pendientes|
+|Pendientes globales|Re-verificación LAN v0.7.x · rendimiento medio/largo (HW/UDP/red) · acuse de inyección · identidad persistente · CI|README § Pendientes|
 
 ---
 

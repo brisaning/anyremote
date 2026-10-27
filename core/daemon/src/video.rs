@@ -106,16 +106,19 @@ pub struct AdaptState {
 }
 
 impl AdaptState {
-    pub fn new(size: (u32, u32)) -> Self {
-        let bps = (size.0 as usize * size.1 as usize * 3).max(150_000);
+    /// `max_bps` (QW-3): tope de ancho de banda (bps). Sin tope, el techo es
+    /// `bps*4` (el adaptativo puede rampar mucho en resoluciones altas).
+    pub fn new(size: (u32, u32), max_bps: Option<usize>) -> Self {
+        let base = (size.0 as usize * size.1 as usize * 3).max(150_000);
+        let cap = max_bps.unwrap_or(base * 4).max(150_000);
         Self {
             ema_ms: 0.0,
-            bps,
+            bps: base.min(cap),
             size,
             initial_size: size,
             frames_since: 0,
-            max_bps: bps * 4,
-            min_bps: 200_000,
+            max_bps: cap,
+            min_bps: 200_000.min(cap),
         }
     }
 
@@ -198,6 +201,7 @@ pub fn spawn_video_task(
     size: (u32, u32),
     fps: u64,
     codec: CodecFormat,
+    max_bps: Option<usize>,
     out: mpsc::Sender<VideoMsg>,
     preview: PreviewServer,
     stop: Arc<AtomicBool>,
@@ -215,6 +219,8 @@ pub fn spawn_video_task(
             VideoMode::Auto => best_capturer(w.max(64), h.max(64)),
         };
         let mut encoder = encoder_for(codec);
+        // QW-4: el códec debe conocer el fps real (control de tasa).
+        encoder.set_fps(fps.max(1) as u32);
         let mut adapt: Option<AdaptState> = None;
         let budget_ms = 1000.0 / fps.max(1) as f64;
         let mut seq: u32 = 0;
@@ -236,7 +242,11 @@ pub fn spawn_video_task(
             }
             let frame = scale_frame(&captured, w, h);
             if adapt.is_none() {
-                adapt = Some(AdaptState::new((w, h)));
+                adapt = Some(AdaptState::new((w, h), max_bps));
+                // QW-3: aplica el tope inicial (o el bitrate base) al encoder.
+                if let Some(st) = adapt.as_ref() {
+                    let _ = encoder.set_target_bitrate(st.bps);
+                }
             }
 
             let t0 = std::time::Instant::now();
@@ -274,6 +284,7 @@ pub fn spawn_video_task(
                                     PlatformCapturer::TestPattern(TestPatternCapturer::new(w, h));
                             }
                             encoder = encoder_for(codec); // recreado con la nueva escala
+                            encoder.set_fps(fps.max(1) as u32);
                             let _ = out.try_send(VideoMsg::Event(json!({
                                 "event": "video_adapt", "reason": dec.reason,
                                 "size": format!("{}x{}", w, h),
@@ -330,8 +341,39 @@ mod tests {
     }
 
     #[test]
+    fn max_bitrate_caps_initial_and_ceiling() {
+        // Sin tope: techo = bps*4 (comportamiento previo).
+        let free = AdaptState::new((1920, 1080), None);
+        let base = (1920 * 1080 * 3) as usize;
+        assert_eq!(free.bps, base);
+        assert_eq!(free.max_bps, base * 4);
+        // Con tope: el bitrate inicial y el techo respetan el tope (QW-3).
+        let capped = AdaptState::new((1920, 1080), Some(1_000_000));
+        assert_eq!(capped.bps, 1_000_000, "inicial acotado al tope");
+        assert_eq!(capped.max_bps, 1_000_000);
+        // El suelo nunca supera el tope.
+        let tiny = AdaptState::new((320, 180), Some(100_000));
+        assert!(tiny.min_bps <= tiny.max_bps);
+        // Recuperación sin pasarse del tope.
+        let mut st = AdaptState::new((640, 360), Some(500_000));
+        st.bps = 400_000;
+        let mut saw = None;
+        for _ in 0..60 {
+            if let Some(d) = st.observe(1.0, 66.0) {
+                saw = Some(d);
+                break;
+            }
+        }
+        if let Some(d) = saw {
+            if let Some(bps) = d.target_bps {
+                assert!(bps <= 500_000, "no debe pasar del tope: {bps}");
+            }
+        }
+    }
+
+    #[test]
     fn adapt_low_bitrate_first_then_scale_under_pressure() {
-        let mut s = AdaptState::new((960, 540));
+        let mut s = AdaptState::new((960, 540), None);
         let budget = 66.0;
         let initial_bps = s.bps;
         // Presión sostenida: primero baja bitrate…

@@ -186,13 +186,19 @@ pub struct OpusCodec {
 
 impl OpusCodec {
     pub fn new() -> Result<Self, AudioError> {
+        let mut enc = opus::Encoder::new(
+            AUDIO_RATE,
+            opus::Channels::Mono,
+            opus::Application::Audio,
+        )
+        .map_err(codec_err)?;
+        // QW-2 (ahorro de ancho de banda): bitrate explicito, DTX (el silencio
+        // no ocupa) y complejidad media (menos CPU del anfitrion).
+        let _ = enc.set_bitrate(opus::Bitrate::Bits(48_000));
+        let _ = enc.set_dtx(true);
+        let _ = enc.set_complexity(5);
         Ok(Self {
-            enc: opus::Encoder::new(
-                AUDIO_RATE,
-                opus::Channels::Mono,
-                opus::Application::Audio,
-            )
-            .map_err(codec_err)?,
+            enc,
             dec: opus::Decoder::new(AUDIO_RATE, opus::Channels::Mono).map_err(codec_err)?,
             seq: 0,
         })
@@ -698,6 +704,18 @@ mod tests {
         assert_eq!(AudioSource::parse("MIC").unwrap(), AudioSource::Microphone);
         assert!(AudioSource::parse("hdmi").is_err());
         assert_eq!(AudioSource::System.as_str(), "system");
+    }
+
+    #[test]
+    fn opus_is_tuned_for_bandwidth() {
+        // QW-2: bitrate explicito + DTX (silencio sin costo) + complejidad media.
+        let mut c = OpusCodec::new().expect("opus");
+        assert!(matches!(
+            c.enc.get_bitrate().ok(),
+            Some(opus::Bitrate::Bits(48_000))
+        ));
+        assert_eq!(c.enc.get_dtx().ok(), Some(true));
+        assert_eq!(c.enc.get_complexity().ok(), Some(5));
     }
 
     #[test]
