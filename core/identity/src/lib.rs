@@ -14,10 +14,10 @@ impl NodeId {
     pub const LEN: usize = 10;
     pub fn as_str(&self) -> &str {
         &self.0
-    }    /// Validación de forma: 10 caracteres Crockford-estrictos Base32 (A–Z, 2–7).
+    }
+    /// Validación de forma: 10 caracteres Crockford-estrictos Base32 (A–Z, 2–7).
     pub fn parse(s: &str) -> Result<Self, IdentityError> {
-        let ok = s.len() == Self::LEN
-            && s.chars().all(|c| matches!(c, 'A'..='Z' | '2'..='7'));
+        let ok = s.len() == Self::LEN && s.chars().all(|c| matches!(c, 'A'..='Z' | '2'..='7'));
         if ok {
             Ok(Self(s.to_ascii_uppercase()))
         } else {
@@ -192,8 +192,10 @@ impl TrustStore {
             let Some((id, pk)) = line.split_once('=') else {
                 continue;
             };
-            let (Ok(id), Ok(raw)) = (NodeId::parse(id), data_encoding::HEXLOWER.decode(pk.as_bytes()))
-            else {
+            let (Ok(id), Ok(raw)) = (
+                NodeId::parse(id),
+                data_encoding::HEXLOWER.decode(pk.as_bytes()),
+            ) else {
                 continue;
             };
             let Ok(pk) = <[u8; 32]>::try_from(raw.as_slice()) else {
@@ -308,10 +310,7 @@ mod tests {
 
     #[test]
     fn identity_persists_and_regenerates_on_corruption() {
-        let dir = std::env::temp_dir().join(format!(
-            "anyremote-id-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("anyremote-id-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         // Primera carga → genera y persiste.
@@ -336,10 +335,7 @@ mod tests {
 
     #[test]
     fn trust_store_roundtrip_and_tofu_remember() {
-        let dir = std::env::temp_dir().join(format!(
-            "anyremote-trust-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("anyremote-trust-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let a = Identity::generate();
 

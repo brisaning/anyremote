@@ -8,11 +8,14 @@ use anyremote_transport::arsp::{self, proto};
 use anyremote_transport::auth;
 use anyremote_transport::{client_config, generate_loopback_cert, server_config, TransportError};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::{TlsAcceptor, TlsConnector, client::TlsStream};
+use tokio_rustls::{client::TlsStream, TlsAcceptor, TlsConnector};
 
 type Tls = TlsStream<TcpStream>;
 
-async fn connect_channel(addr: std::net::SocketAddr, cfg: rustls::ClientConfig) -> (ChannelWrap, Vec<u8>) {
+async fn connect_channel(
+    addr: std::net::SocketAddr,
+    cfg: rustls::ClientConfig,
+) -> (ChannelWrap, Vec<u8>) {
     let tcp = TcpStream::connect(addr).await.expect("connect");
     let sni = rustls::pki_types::ServerName::try_from("localhost").unwrap();
     let tls = TlsConnector::from(Arc::new(cfg))
@@ -67,7 +70,9 @@ async fn e2e_mutual_auth_with_trust_store() {
         assert_eq!(peer.node_id.to_string(), controller_id_task);
         assert!(peer.trusted, "el controlador registrado debe ser trusted");
 
-        auth::send_auth(&mut ch, &controlled, &binding).await.expect("enviar auth");
+        auth::send_auth(&mut ch, &controlled, &binding)
+            .await
+            .expect("enviar auth");
         peer.node_id.to_string()
     });
 
@@ -124,7 +129,10 @@ async fn auth_rejects_tampered_proof_and_foreign_binding() {
         };
         ch.0.send(payload).await.expect("enviar prueba falsa");
 
-        let err = server.await.expect("tarea servidor").expect_err("debe rechazar");
+        let err = server
+            .await
+            .expect("tarea servidor")
+            .expect_err("debe rechazar");
         assert!(
             matches!(err, TransportError::Auth(_)),
             "error inesperado: {err:?}"
@@ -163,7 +171,9 @@ async fn auth_gate_limits_attempts() {
     let (mut ch, binding) = connect_channel(addr, cli_cfg).await;
     let attacker = Identity::generate();
     for _ in 0..auth::MAX_AUTH_FAILURES {
-        ch.0.send(forged_auth(&attacker, &binding)).await.expect("enviar");
+        ch.0.send(forged_auth(&attacker, &binding))
+            .await
+            .expect("enviar");
     }
 
     let err = server.await.expect("tarea servidor");

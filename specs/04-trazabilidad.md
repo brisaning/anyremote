@@ -49,14 +49,15 @@
 | C-4 fix vídeo estático v0.7.2 | Campo (sin vídeo en LAN) | captura/encode en **hilo propio** (los bloqueos de 500 ms de DXGI ya no estrangulan el bucle de sesión) + **reenvío del último frame a 1 fps** en pantalla estática | `video-estatico-v0.7.2` | `evidence/video-static-gate.md` |
 | C-5 diagnóstico anfitrión v0.7.3 | Campo (combo «control remoto+micrófono» sin vídeo) | `panic.log` (hook global), `ui.log` persistente de la app con `args`/código de salida, **un solo spawn de captura por sesión**, **el anfitrión no muestra su propia pantalla** | `diag-host-v0.7.3` | `evidence/host-debug-gate.md` |
 | C-6 identidad + trust v0.8.0 | RF-03 (D-03) | `identity.key` persistente (mismo `NodeId` entre arranques) · `trusted.ids` con **TOFU** (`peer_trusted=true` en la 2ª sesión, ambos roles) · `session_active` con `peer_trusted` visible en la app | `identidad-v0.8.0` | `evidence/identity-gate.md` |
+| C-7 menores + CI v0.8.1 | RF-02a + RNF | **acuse `InputAck`** (el visor cuenta inyectadas y ve rechazos) · **F1..F12** (30..41) · clippy a 0 + rustfmt del workspace + workflow CI (fmt/clippy/test en windows-latest) | `menores-v0.8.1` | `evidence/menores-gate.md` |
 
 **PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) — `main` = `2230df1`.
 
 ## Pendientes (estado actual)
 
 1. Audio: re-validar en LAN la cadena completa con v0.7.3+ (loopback + micrófono + toggles ya verificados por separado); resampler de mayor orden.
-2. **Acuse de inyección al controlador** (hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor solo cuenta lo enviado).
+2. ~~Acuse de inyección al controlador~~ ✅ resuelto en v0.8.1 (acuse `InputAck` por evento + contador real de inyectadas en la app).
 3. ~~Identidad persistente + trust por dispositivo~~ ✅ resuelto en v0.8.0 (C-6); queda el uso futuro: conectar por ID estable.
-4. WAN (firewall/UPnP/NAT) y gates de CI (`clippy`/`fmt`).
-5. Teclas F1..F12, Insert, PageUp/Down y bloqueos en la tabla de entrada.
+4. WAN (firewall/UPnP/NAT) — los gates de CI quedaron ✅ en v0.8.1 (`.github/workflows/ci.yml`).
+5. ~~Teclas F1..F12~~ ✅ resueltas en v0.8.1 (códigos 30..41); quedan Insert, PageUp/Down y bloqueos.
 6. Ver [README § Pendientes](../README.md#pendientes) para el panel completo.

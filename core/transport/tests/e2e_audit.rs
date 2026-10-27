@@ -55,7 +55,8 @@ async fn e2e_audit_events_and_diagnostic_report() {
             while recv.next_offset(9).expect("conocido") < size {
                 let chunk = ch.recv().await.expect("chunk");
                 if let Some(proto::envelope::Payload::FileChunk(c)) = chunk.payload {
-                    recv.write_chunk(c.transfer_id, c.offset, &c.data).expect("chunk");
+                    recv.write_chunk(c.transfer_id, c.offset, &c.data)
+                        .expect("chunk");
                 } else {
                     panic!("esperaba FileChunk");
                 }
@@ -71,7 +72,10 @@ async fn e2e_audit_events_and_diagnostic_report() {
         }
 
         let bye = ch.recv().await.expect("bye");
-        assert!(matches!(bye.payload, Some(proto::envelope::Payload::Bye(_))));
+        assert!(matches!(
+            bye.payload,
+            Some(proto::envelope::Payload::Bye(_))
+        ));
     });
 
     // ---- Controlador: ejecuta la sesión auditable ----
@@ -150,13 +154,15 @@ async fn e2e_audit_events_and_diagnostic_report() {
     let sender = FileSender::new(TransferPolicy::default());
     let meta = sender.offer(9, "audit.txt", data).expect("oferta");
     let digest = sha256_hex(data);
-    ch.send(proto::envelope::Payload::FileOffer(arsp::file_offer_to_wire(&meta)))
-        .await
-        .expect("offer");
+    ch.send(proto::envelope::Payload::FileOffer(
+        arsp::file_offer_to_wire(&meta),
+    ))
+    .await
+    .expect("offer");
     for (off, chunk) in sender.chunks_from(data, 0, 8) {
-        ch.send(proto::envelope::Payload::FileChunk(arsp::file_chunk_to_wire(
-            9, off, chunk,
-        )))
+        ch.send(proto::envelope::Payload::FileChunk(
+            arsp::file_chunk_to_wire(9, off, chunk),
+        ))
         .await
         .expect("chunk");
     }
@@ -183,8 +189,12 @@ async fn e2e_audit_events_and_diagnostic_report() {
     .await
     .expect("bye");
     report.finish();
-    log.record(AuditEventKind::Disconnected, SESSION, report.disconnect_event())
-        .expect("ev5");
+    log.record(
+        AuditEventKind::Disconnected,
+        SESSION,
+        report.disconnect_event(),
+    )
+    .expect("ev5");
 
     controlled.await.expect("tarea controlado");
 

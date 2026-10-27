@@ -60,7 +60,9 @@ fn string_literals(line: &str) -> Vec<&str> {
 
 #[test]
 fn no_hardcoded_secrets_in_workspace_source() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("core/");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("core/");
     let mut files = Vec::new();
     walk(root, &mut files);
     assert!(files.len() > 20, "árbol fuente sospechosamente pequeño");
@@ -130,7 +132,9 @@ fn no_hardcoded_secrets_in_workspace_source() {
 fn tls_configuration_never_uses_dangerous_verifier() {
     // Regla de política explícita además del escaneo: el cliente de anyremote
     // valida contra root store (loopback: cert auto-firmado distribuido en banda).
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("core/");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("core/");
     let lib = root.join("transport").join("src").join("lib.rs");
     let text = fs::read_to_string(&lib).expect("transport lib");
     assert!(

@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use anyremote_identity::Identity;
 use anyremote_session::{PermissionSet, SessionEvent, SessionState};
-use anyremote_transport::{client_config, generate_loopback_cert, read_frame, server_config, write_frame};
+use anyremote_transport::{
+    client_config, generate_loopback_cert, read_frame, server_config, write_frame,
+};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
@@ -32,8 +34,14 @@ async fn main() {
         println!("[transport] conexión entrante de {peer} — completando handshake TLS…");
         let mut tls = acceptor.accept(tcp).await.expect("aceptar TLS");
         let ping = read_frame(&mut tls).await.expect("leer ping");
-        println!("[servidor] recibió frame cifrado: {:?} ({} bytes)", String::from_utf8_lossy(&ping), ping.len());
-        write_frame(&mut tls, b"anyremote::pong::concedido").await.expect("escribir pong");
+        println!(
+            "[servidor] recibió frame cifrado: {:?} ({} bytes)",
+            String::from_utf8_lossy(&ping),
+            ping.len()
+        );
+        write_frame(&mut tls, b"anyremote::pong::concedido")
+            .await
+            .expect("escribir pong");
         println!("[servidor] envió concesión de permisos");
     });
 
@@ -46,17 +54,25 @@ async fn main() {
     state = state.transition(SessionEvent::HandshakeOk).unwrap();
     println!("[sesión] Handshaking -> AwaitingPermission");
     let perms = PermissionSet::none();
-    println!("[permisos] denegados por defecto: keyboard={} mouse={} clipboard={}", perms.keyboard, perms.mouse, perms.clipboard);
+    println!(
+        "[permisos] denegados por defecto: keyboard={} mouse={} clipboard={}",
+        perms.keyboard, perms.mouse, perms.clipboard
+    );
 
-    write_frame(&mut tls, b"anyremote::ping").await.expect("enviar ping");
+    write_frame(&mut tls, b"anyremote::ping")
+        .await
+        .expect("enviar ping");
     println!("[cliente] envió ping cifrado");
     let pong = read_frame(&mut tls).await.expect("leer pong");
-    println!("[cliente] respuesta cifrada: {:?}", String::from_utf8_lossy(&pong));
+    println!(
+        "[cliente] respuesta cifrada: {:?}",
+        String::from_utf8_lossy(&pong)
+    );
 
     state = state.transition(SessionEvent::PermissionGranted).unwrap();
     println!("[sesión] AwaitingPermission -> Active");
     state = state.transition(SessionEvent::StartClose).unwrap();
-    state = state.transition(SessionEvent::Closed).unwrap();
+    state.transition(SessionEvent::Closed).unwrap();
     println!("[sesión] Active -> Closing -> Closed");
     server.await.expect("tarea servidor");
 

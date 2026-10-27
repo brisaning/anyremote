@@ -3,12 +3,13 @@
 //! sesión activo (D-07). Clean-room D-01.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS,
-    VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_MENU,
-    VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP, VkKeyScanW,
+    SendInput, VkKeyScanW, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+    MOUSE_EVENT_FLAGS, VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1,
+    VK_F10, VK_F11, VK_F12, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME,
+    VK_LEFT, VK_MENU, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
 };
 
 use crate::{InputError, InputEvent, InputInjector, Key, MouseButton};
@@ -51,20 +52,32 @@ fn vk_for(key: Key) -> Result<(u16, bool), InputError> {
             }
             ((packed as u16) & 0xff, ((packed as u16) & 0x100) != 0)
         }
-        Key::Ctrl => (VK_CONTROL.0 as u16, false),
-        Key::Alt => (VK_MENU.0 as u16, false),
-        Key::Shift => (VK_SHIFT.0 as u16, false),
-        Key::Escape => (VK_ESCAPE.0 as u16, false),
-        Key::Tab => (VK_TAB.0 as u16, false),
-        Key::Enter => (VK_RETURN.0 as u16, false),
+        Key::Ctrl => (VK_CONTROL.0, false),
+        Key::Alt => (VK_MENU.0, false),
+        Key::Shift => (VK_SHIFT.0, false),
+        Key::Escape => (VK_ESCAPE.0, false),
+        Key::Tab => (VK_TAB.0, false),
+        Key::Enter => (VK_RETURN.0, false),
         Key::Backspace => (0x08, false),
-        Key::Delete => (VK_DELETE.0 as u16, false),
-        Key::Left => (VK_LEFT.0 as u16, true),
-        Key::Right => (VK_RIGHT.0 as u16, true),
-        Key::Up => (VK_UP.0 as u16, true),
-        Key::Down => (VK_DOWN.0 as u16, true),
-        Key::Home => (VK_HOME.0 as u16, true),
-        Key::End => (VK_END.0 as u16, true),
+        Key::Delete => (VK_DELETE.0, false),
+        Key::Left => (VK_LEFT.0, true),
+        Key::Right => (VK_RIGHT.0, true),
+        Key::Up => (VK_UP.0, true),
+        Key::Down => (VK_DOWN.0, true),
+        Key::Home => (VK_HOME.0, true),
+        Key::End => (VK_END.0, true),
+        Key::F1 => (VK_F1.0, false),
+        Key::F2 => (VK_F2.0, false),
+        Key::F3 => (VK_F3.0, false),
+        Key::F4 => (VK_F4.0, false),
+        Key::F5 => (VK_F5.0, false),
+        Key::F6 => (VK_F6.0, false),
+        Key::F7 => (VK_F7.0, false),
+        Key::F8 => (VK_F8.0, false),
+        Key::F9 => (VK_F9.0, false),
+        Key::F10 => (VK_F10.0, false),
+        Key::F11 => (VK_F11.0, false),
+        Key::F12 => (VK_F12.0, false),
     };
     Ok((vk, shift))
 }
@@ -72,10 +85,10 @@ fn vk_for(key: Key) -> Result<(u16, bool), InputError> {
 fn key_input(vk: u16, up: bool, extended: bool) -> INPUT {
     let mut flags = KEYBD_EVENT_FLAGS(0);
     if up {
-        flags = flags | KEYEVENTF_KEYUP;
+        flags |= KEYEVENTF_KEYUP;
     }
     if extended {
-        flags = flags | KEYEVENTF_EXTENDEDKEY;
+        flags |= KEYEVENTF_EXTENDEDKEY;
     }
     INPUT {
         r#type: INPUT_KEYBOARD,
@@ -162,7 +175,7 @@ impl SendInputInjector {
         );
         let mut inputs = Vec::with_capacity(2);
         if shift {
-            inputs.push(key_input(VK_SHIFT.0 as u16, up, false));
+            inputs.push(key_input(VK_SHIFT.0, up, false));
         }
         inputs.push(key_input(vk, up, extended));
         Self::send(&inputs)

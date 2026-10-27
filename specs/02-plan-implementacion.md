@@ -44,7 +44,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-4 fix vídeo estático v0.7.2 (campo) | ✅ gate verde · 🟡 pendiente revalidar en LAN | `video-estatico-v0.7.2` · `evidence/video-static-gate.md` |
 | C-5 diagnóstico del anfitrión v0.7.3 | ✅ gate verde · ✅ **validada en campo (prueba sin error)** | `diag-host-v0.7.3` · `evidence/host-debug-gate.md` |
 | C-6 identidad persistente + trust v0.8.0 | ✅ gate verde · 🟡 pendiente campo | `identidad-v0.8.0` · `evidence/identity-gate.md` |
-| **Pendientes** | 🟡 re-verificación en LAN · rendimiento medio/largo (HW, UDP, red — §7) · acuse de inyección · CI · menores (F1-F12, resampler) | [README § Pendientes](../README.md#pendientes) |
+| C-7 menores + CI v0.8.1 | ✅ gate verde (acuse, F1..F12, clippy 0/fmt 0/CI) | `menores-v0.8.1` · `evidence/menores-gate.md` |
+| **Pendientes** | 🟡 re-verificación en LAN · rendimiento medio/largo (HW, UDP, red — §7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 

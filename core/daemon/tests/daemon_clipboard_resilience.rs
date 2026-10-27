@@ -15,7 +15,9 @@ fn mk(tag: &str) -> std::path::PathBuf {
 }
 
 async fn free_port() -> u16 {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("probe");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("probe");
     let p = l.local_addr().expect("addr").port();
     drop(l);
     p
@@ -53,8 +55,14 @@ async fn clipboard_faults_do_not_kill_the_session() {
     let controller = tokio::spawn(async move { run_connect(connect_cfg).await });
 
     // AMBOS lados deben terminar limpiamente (Ok), no con error/crash.
-    let ctl = controller.await.expect("join ctl").expect("sesión controlador completa");
-    let srv = listen.await.expect("join listener").expect("listener completa (no murió por clipboard)");
+    let ctl = controller
+        .await
+        .expect("join ctl")
+        .expect("sesión controlador completa");
+    let srv = listen
+        .await
+        .expect("join listener")
+        .expect("listener completa (no murió por clipboard)");
 
     let ctl_text = ctl_events.lock().unwrap().join("\n");
     let srv_text = listen_events.lock().unwrap().join("\n");
@@ -86,7 +94,8 @@ async fn clipboard_faults_do_not_kill_the_session() {
         "receptor: sesión activa\n{srv_text}"
     );
     assert!(
-        srv_text.contains("\"event\":\"clipboard_error\"") || srv_text.contains("\"event\":\"closed\""),
+        srv_text.contains("\"event\":\"clipboard_error\"")
+            || srv_text.contains("\"event\":\"closed\""),
         "receptor: debe registrar el fallo de aplicación o cerrar ordenado:\n{srv_text}"
     );
     assert!(

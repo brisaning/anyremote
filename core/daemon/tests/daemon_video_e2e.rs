@@ -4,8 +4,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use anyremote_daemon::{run_connect, run_listen, ClipboardMode, DaemonConfig, video::VideoMode};
 use anyremote_codec::CodecFormat;
+use anyremote_daemon::{run_connect, run_listen, video::VideoMode, ClipboardMode, DaemonConfig};
 
 fn mk(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("anyremote-m2-{tag}-{}", std::process::id()));
@@ -15,7 +15,9 @@ fn mk(tag: &str) -> std::path::PathBuf {
 }
 
 async fn free_port() -> u16 {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("probe");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("probe");
     let p = l.local_addr().expect("addr").port();
     drop(l);
     p
@@ -101,15 +103,30 @@ async fn m2_video_streams_and_preview_delivers_frames() {
     };
     let controller = tokio::spawn(async move { run_connect(connect_cfg).await });
 
-    let ctl = controller.await.expect("join ctl").expect("sesión completa");
-    let srv = listen.await.expect("join listener").expect("listener completa");
-    let header = preview_reader.await.expect("join preview").expect("preview entregó cabecera");
+    let ctl = controller
+        .await
+        .expect("join ctl")
+        .expect("sesión completa");
+    let srv = listen
+        .await
+        .expect("join listener")
+        .expect("listener completa");
+    let header = preview_reader
+        .await
+        .expect("join preview")
+        .expect("preview entregó cabecera");
 
     // --- Vídeo fluyó por la sesión y se decodificó ---
     let ctl_text = ctl_events.lock().unwrap().join("\n");
     let srv_text = listen_events.lock().unwrap().join("\n");
-    assert!(srv_text.contains("\"event\":\"video_start\""), "listener inicia vídeo:\n{srv_text}");
-    assert!(ctl_text.contains("\"event\":\"video_stats\""), "controlador decodifica y reporta:\n{ctl_text}");
+    assert!(
+        srv_text.contains("\"event\":\"video_start\""),
+        "listener inicia vídeo:\n{srv_text}"
+    );
+    assert!(
+        ctl_text.contains("\"event\":\"video_stats\""),
+        "controlador decodifica y reporta:\n{ctl_text}"
+    );
     assert!(ctl.report.bytes_recv > 0, "bytes de vídeo recibidos");
     assert!(srv.report.bytes_sent > 0, "bytes de vídeo enviados");
 

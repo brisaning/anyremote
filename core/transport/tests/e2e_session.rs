@@ -51,9 +51,11 @@ async fn e2e_session_establishment_with_metrics() {
         state = state.transition(SessionEvent::HandshakeOk).unwrap();
         assert_eq!(state, SessionState::AwaitingPermission);
 
-        ch.send(proto::envelope::Payload::PermissionRequest(proto::PermissionRequest {
-            permissions: vec!["keyboard".into(), "mouse".into()],
-        }))
+        ch.send(proto::envelope::Payload::PermissionRequest(
+            proto::PermissionRequest {
+                permissions: vec!["keyboard".into(), "mouse".into()],
+            },
+        ))
         .await
         .expect("perm req");
         let resp = ch.recv().await.expect("perm resp");
@@ -121,10 +123,12 @@ async fn e2e_session_establishment_with_metrics() {
         req.payload,
         Some(proto::envelope::Payload::PermissionRequest(_))
     ));
-    ch.send(proto::envelope::Payload::PermissionResponse(proto::PermissionResponse {
-        granted: true,
-        permissions: vec!["keyboard".into(), "mouse".into()],
-    }))
+    ch.send(proto::envelope::Payload::PermissionResponse(
+        proto::PermissionResponse {
+            granted: true,
+            permissions: vec!["keyboard".into(), "mouse".into()],
+        },
+    ))
     .await
     .expect("grant");
     state = state.transition(SessionEvent::PermissionGranted).unwrap();
@@ -160,7 +164,10 @@ async fn e2e_session_establishment_with_metrics() {
     .await
     .expect("bye");
     state = state.transition(SessionEvent::StartClose).unwrap();
-    assert_eq!(state.transition(SessionEvent::Closed).unwrap(), SessionState::Closed);
+    assert_eq!(
+        state.transition(SessionEvent::Closed).unwrap(),
+        SessionState::Closed
+    );
 
     controlled.await.expect("tarea controlado");
 }

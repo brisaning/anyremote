@@ -1,5 +1,7 @@
 # anyremote
 
+[![CI](https://github.com/brisaning/anyremote/actions/workflows/ci.yml/badge.svg)](https://github.com/brisaning/anyremote/actions/workflows/ci.yml)
+
 Aplicativo de **escritorio remoto** (controlador ↔ controlado) construido con **Organic Driven Development**: cada requisito creció desde una semilla validada (evidencia RE) en ciclos cortos con gate, evidencia y tag.
 
 > **Estado del proyecto → sección [Estado](#estado)** · Specs vivos: [`specs/01-requerimientos.md`](specs/01-requerimientos.md) · [`specs/02-plan-implementacion.md`](specs/02-plan-implementacion.md) · [`specs/04-trazabilidad.md`](specs/04-trazabilidad.md) · Evidencia: [`evidence/`](evidence/) · Normas: [`AGENTS.md`](AGENTS.md)
@@ -10,9 +12,9 @@ _Última actualización: 2026-10-26_
 
 | Campo | Valor |
 |---|---|
-| Versión actual | **v0.8.0** (`anyremote_app.exe` + `anyremoted.exe`) |
+| Versión actual | **v0.8.1** (`anyremote_app.exe` + `anyremoted.exe`) |
 | Ramas | `main` = `2230df1` (PR #13) · `develop` = `2239170` (tag `diag-host-v0.7.3`) |
-| Gates actuales | **Rust 42 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 4/4 |
+| Gates actuales | **Rust 42 suites / 0 fallos** · **clippy 0 avisos** (`-D warnings`) · **fmt 0 diffs** · `flutter analyze` limpio · `flutter test` 4/4 · CI en `.github/workflows/ci.yml` |
 | Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · **control remoto teclado/ratón (v0.5.0)** · vídeo en pantalla estática fix v0.7.2 · sesión sana con `source=system` (107 frames + `bye`) · **✅ combo «control remoto + micrófono» verificada sin error con v0.7.3** (PR #13) · 🟡 pendiente revalidación audio/720p/Nativa en LAN |
 | PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (v0.6.2 coords) · #10 (v0.7.0 dinámico) · #11 (v0.7.1 perf) · #12 (v0.7.2 fix vídeo estático) · **#13 (v0.7.3 diagnóstico)** |
 
@@ -22,7 +24,7 @@ _Última actualización: 2026-10-26_
 |---|---|---|
 | RF-01 Sesiones iniciar/aceptar | ✅ | C1 (+C2) `evidence/*` |
 | RF-02a Pantalla + códec | ✅ | C3/C3-bis (VP9 37 fps@720p) + M2 visor |
-| RF-02a Entrada de teclado/ratón en sesión | ✅ (v0.5.0) — denegada por defecto (D-07); coordenadas **normalizadas 0..65535** (v0.6.2) y **toggle dinámico en caliente** (v0.7.0) | `evidence/input-session-gate.md`, `evidence/control-coords-gate.md`, `evidence/dynamic-perms-gate.md` |
+| RF-02a Entrada de teclado/ratón en sesión | ✅ (v0.5.0) — D-07 por defecto; coordenadas **normalizadas 0..65535** (v0.6.2); **toggles dinámicos** (v0.7.0); **acuse de inyección** al visor y **F1..F12** (v0.8.1) | `evidence/input-session-gate.md`, `evidence/control-coords-gate.md`, `evidence/dynamic-perms-gate.md`, `evidence/menores-gate.md` |
 | Audio en sesión (capacidad D-05/D-07) | ✅ (v0.6.1 → **v0.7.0**): **loopback (audio del sistema)** + **micrófono** como fuentes (mezclables con `--audio-source system,mic`), Opus 48 kHz; toggles **dinámicos en caliente** | `evidence/audio-gate.md`, `evidence/dynamic-perms-gate.md` |
 | RF-02b Portapapeles | ✅ | C4 (contención de formatos) |
 | RF-02c Archivos | ✅ | C5 + reanudación persistente (v0.3.0) |
@@ -33,13 +35,11 @@ _Última actualización: 2026-10-26_
 
 ### Pendientes
 
-1. **Audio**: re-verificar en LAN (v0.7.x: loopback + micrófono + toggles + gate de silencio ya implementado); resampler de mayor orden.
-2. **Acuse de inyección al visor**: hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor cuenta únicamente lo que envía.
-3. **WAN**: firewall/UPnP/NAT (hoy LAN + regla `netsh` manual documentada).
-4. **Rendimiento (informe `evidence/perf-audit.md`)**: quick wins en v0.7.1 (frames sin cambios, gate de silencio, tope de bitrate, tuning libvpx); quedan **aceleración por hardware, adaptación por red, UDP/QUIC y cursor separado** (§5 del informe, requieren decisión de alcance).
-5. Gates de CI (`clippy`/`fmt`) y build reproducible.
-6. Render a alta resolución → posible paso a widget `Texture` si el fps de render limita.
-7. Tabla de entrada: teclas F1..F12, Insert, PageUp/Down, caps/num lock.
+1. **Audio**: re-verificar en LAN (v0.7.x: loopback + micrófono + toggles + gate de silencio ya implementados); **resampler de mayor orden** (único menor: plan definido — `rubato`, esfuerzo M, pendiente de que el campo lo pida).
+2. **WAN**: firewall/UPnP/NAT (hoy LAN + regla `netsh` manual documentada).
+3. **Rendimiento**: quick wins aplicados en v0.7.1 (frames sin cambios, gate de silencio, tope de bitrate, tuning libvpx); el backlog de **aceleración por hardware, adaptación por red, UDP/QUIC y cursor separado** está en **`specs/02` §7** (requieren decisión de alcance).
+4. Render a alta resolución → posible paso a widget `Texture` si el fps de render limita.
+5. Tabla de entrada: Insert, PageUp/Down y bloqueos (F1..F12 ✅ v0.8.1).
 
 ## Qué es
 

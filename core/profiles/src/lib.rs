@@ -164,7 +164,8 @@ impl ProfilesStore {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
-        let raw = std::fs::read_to_string(&self.path).map_err(|e| ProfileError::Io(e.to_string()))?;
+        let raw =
+            std::fs::read_to_string(&self.path).map_err(|e| ProfileError::Io(e.to_string()))?;
         let file: ProfilesFile =
             toml::from_str(&raw).map_err(|e| ProfileError::Corrupt(e.to_string()))?;
         for p in &file.profiles {

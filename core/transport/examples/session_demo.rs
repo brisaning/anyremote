@@ -24,7 +24,11 @@ async fn main() {
     println!("=== anyremote C1 — sesión ARSP entre dos nodos (RF-01) ===");
     let controller = Identity::generate();
     let controlled = Identity::generate();
-    println!("[ids] controlador={} controlado={}", controller.node_id(), controlled.node_id());
+    println!(
+        "[ids] controlador={} controlado={}",
+        controller.node_id(),
+        controlled.node_id()
+    );
 
     let cert = generate_loopback_cert().expect("cert");
     let srv_cfg = server_config(&cert).expect("cfg srv");
@@ -74,20 +78,27 @@ async fn main() {
         state = state.transition(SessionEvent::HandshakeOk).unwrap();
         println!("[controlado] Welcome enviado — sesión en AwaitingPermission");
 
-        ch.send(proto::envelope::Payload::PermissionRequest(proto::PermissionRequest {
-            permissions: vec!["keyboard".into(), "mouse".into()],
-        }))
+        ch.send(proto::envelope::Payload::PermissionRequest(
+            proto::PermissionRequest {
+                permissions: vec!["keyboard".into(), "mouse".into()],
+            },
+        ))
         .await
         .expect("perm");
         println!("[controlado] solicitados permisos: keyboard, mouse");
         let resp = ch.recv().await.expect("resp");
         if let Some(proto::envelope::Payload::PermissionResponse(r)) = resp.payload {
-            println!("[controlado] respuesta: granted={} perms={:?}", r.granted, r.permissions);
+            println!(
+                "[controlado] respuesta: granted={} perms={:?}",
+                r.granted, r.permissions
+            );
             state = state.transition(SessionEvent::PermissionGranted).unwrap();
         }
 
         for _ in 0..4 {
-            if let Some(proto::envelope::Payload::Heartbeat(h)) = ch.recv().await.expect("hb").payload {
+            if let Some(proto::envelope::Payload::Heartbeat(h)) =
+                ch.recv().await.expect("hb").payload
+            {
                 ch.send(proto::envelope::Payload::Heartbeat(proto::Heartbeat {
                     seq: h.seq,
                     sent_unix_ms: h.sent_unix_ms,
@@ -134,16 +145,21 @@ async fn main() {
     let welcome = ch.recv().await.expect("welcome");
     arsp::check_version(&welcome).expect("versión welcome");
     state = state.transition(SessionEvent::HandshakeOk).unwrap();
-    println!("[controlador] Welcome de {} — AwaitingPermission", arsp::announced_node_id(&welcome).unwrap_or_default());
+    println!(
+        "[controlador] Welcome de {} — AwaitingPermission",
+        arsp::announced_node_id(&welcome).unwrap_or_default()
+    );
 
     let req = ch.recv().await.expect("req");
     if let Some(proto::envelope::Payload::PermissionRequest(r)) = req.payload {
         println!("[controlador] solicitado conceder: {:?}", r.permissions);
     }
-    ch.send(proto::envelope::Payload::PermissionResponse(proto::PermissionResponse {
-        granted: true,
-        permissions: vec!["keyboard".into(), "mouse".into()],
-    }))
+    ch.send(proto::envelope::Payload::PermissionResponse(
+        proto::PermissionResponse {
+            granted: true,
+            permissions: vec!["keyboard".into(), "mouse".into()],
+        },
+    ))
     .await
     .expect("grant");
     state = state.transition(SessionEvent::PermissionGranted).unwrap();
@@ -159,14 +175,19 @@ async fn main() {
         }))
         .await
         .expect("hb");
-        if let Some(proto::envelope::Payload::Heartbeat(h)) = ch.recv().await.expect("echo").payload {
+        if let Some(proto::envelope::Payload::Heartbeat(h)) = ch.recv().await.expect("echo").payload
+        {
             let rtt = (now_ms() - h.sent_unix_ms).max(0) as u64;
             stats.record_rtt(rtt);
             println!("[métricas] heartbeat #{i} rtt={rtt} ms");
         }
     }
-    println!("[métricas] heartbeats_ok={} rtt_min={} rtt_ult={}",
-        stats.heartbeats_ok, stats.min_rtt_ms.unwrap_or(0), stats.last_rtt_ms.unwrap_or(0));
+    println!(
+        "[métricas] heartbeats_ok={} rtt_min={} rtt_ult={}",
+        stats.heartbeats_ok,
+        stats.min_rtt_ms.unwrap_or(0),
+        stats.last_rtt_ms.unwrap_or(0)
+    );
 
     ch.send(proto::envelope::Payload::Bye(proto::Bye {
         reason: "demo completada".into(),

@@ -20,7 +20,10 @@ const KEYFRAME_INTERVAL: u32 = 60;
 pub fn bgra_to_i420(width: u32, height: u32, bgra: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let w = width as usize;
     let h = height as usize;
-    debug_assert!(w % 2 == 0 && h % 2 == 0, "dimensiones pares requeridas (4:2:0)");
+    debug_assert!(
+        w.is_multiple_of(2) && h.is_multiple_of(2),
+        "dimensiones pares requeridas (4:2:0)"
+    );
     let mut y = vec![0u8; w * h];
     let cw = w / 2;
     let mut u = vec![0u8; cw * (h / 2)];
@@ -32,7 +35,7 @@ pub fn bgra_to_i420(width: u32, height: u32, bgra: &[u8]) -> (Vec<u8>, Vec<u8>, 
             let b = bgra[i] as i32;
             let g = bgra[i + 1] as i32;
             let r = bgra[i + 2] as i32;
-            let yy = ((77 * r + 150 * g + 29 * b) >> 8); // rango completo sin offset
+            let yy = (77 * r + 150 * g + 29 * b) >> 8; // rango completo sin offset
             y[row * w + col] = yy.clamp(0, 255) as u8;
             if row % 2 == 0 && col % 2 == 0 {
                 let mut sb = 0i32;
@@ -59,7 +62,15 @@ pub fn bgra_to_i420(width: u32, height: u32, bgra: &[u8]) -> (Vec<u8>, Vec<u8>, 
 }
 
 /// I420 → BGRA8 (BT.601; croma por muestreo simple).
-pub fn i420_to_bgra(width: usize, height: usize, y: &[u8], u: &[u8], v: &[u8], y_s: usize, c_s: usize) -> Vec<u8> {
+pub fn i420_to_bgra(
+    width: usize,
+    height: usize,
+    y: &[u8],
+    u: &[u8],
+    v: &[u8],
+    y_s: usize,
+    c_s: usize,
+) -> Vec<u8> {
     let mut out = vec![0u8; width * height * 4];
     for row in 0..height {
         for col in 0..width {
@@ -127,8 +138,7 @@ impl Vp9Encoder {
             // QW-4: hilos = CPU disponible (tope 4: más hilos solo añaden latencia).
             cfg.threads = std::thread::available_parallelism()
                 .ok()
-                .map(|n| std::num::NonZeroUsize::new(n.get().min(4)))
-                .flatten();
+                .and_then(|n| std::num::NonZeroUsize::new(n.get().min(4)));
             // Bitrate proporcional al área (~3 bits/px/frame → comprime ~10x a 30fps).
             cfg.target_bitrate = (width as usize * height as usize * 3).max(150_000);
             cfg.deadline = EncodingDeadline::Realtime;
@@ -166,8 +176,14 @@ impl VideoEncoder for Vp9Encoder {
             let force = self.since_key == 0 || self.since_key >= KEYFRAME_INTERVAL;
             inner
                 .encode(
-                    &ImageData::I420 { y: &y, u: &u, v: &v },
-                    &EncodeOptions { force_keyframe: force },
+                    &ImageData::I420 {
+                        y: &y,
+                        u: &u,
+                        v: &v,
+                    },
+                    &EncodeOptions {
+                        force_keyframe: force,
+                    },
                 )
                 .map_err(|e| CodecError::Encode(format!("encode: {e:?}")))?;
             self.since_key += 1;
@@ -258,7 +274,15 @@ impl VideoDecoder for Vp9Decoder {
                 frame.width, frame.height
             )));
         }
-        let data = i420_to_bgra(w, h, img.y_plane(), img.u_plane(), img.v_plane(), img.y_stride(), img.u_stride());
+        let data = i420_to_bgra(
+            w,
+            h,
+            img.y_plane(),
+            img.u_plane(),
+            img.v_plane(),
+            img.y_stride(),
+            img.u_stride(),
+        );
         self.width = w as u32;
         self.height = h as u32;
         Ok(Frame {
@@ -281,14 +305,22 @@ mod tests {
         let w = 64u32;
         let h = 64u32;
         let mut bgra = vec![0u8; (w * h * 4) as usize];
-        for px in bgra.chunks_exact_mut(4) {
+        for px in bgra.as_chunks_mut::<4>().0 {
             px[0] = 40;
             px[1] = 160;
             px[2] = 220;
             px[3] = 255;
         }
         let (y, u, v) = bgra_to_i420(w, h, &bgra);
-        let back = i420_to_bgra(w as usize, h as usize, &y, &u, &v, w as usize, w as usize / 2);
+        let back = i420_to_bgra(
+            w as usize,
+            h as usize,
+            &y,
+            &u,
+            &v,
+            w as usize,
+            w as usize / 2,
+        );
         let px = &back[0..3];
         // Tolerancia razonable (redondeo BT.601 ida/vuelta).
         assert!(px[0].abs_diff(40) <= 3, "B {}", px[0]);

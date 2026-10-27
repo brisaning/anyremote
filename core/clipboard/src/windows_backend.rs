@@ -7,7 +7,9 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
     SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 
 use crate::{ClipboardBackend, ClipboardError};
@@ -79,9 +81,8 @@ impl ClipboardBackend for WinClipboard {
                 let _ = GlobalUnlock(mem);
             }
             // SetClipboardData asume la propiedad de `mem` en éxito.
-            unsafe { SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(mem.0))) }.map_err(|e| {
-                ClipboardError::Platform(format!("SetClipboardData: {e}"))
-            })?;
+            unsafe { SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(mem.0))) }
+                .map_err(|e| ClipboardError::Platform(format!("SetClipboardData: {e}")))?;
             Ok(())
         })
     }
@@ -115,7 +116,10 @@ fn windows_clipboard_roundtrip_only_when_opted_in() {
     let mut c = WinClipboard::new();
     let original = c.read_text().unwrap();
     c.write_text("anyremote-roundtrip").unwrap();
-    assert_eq!(c.read_text().unwrap().as_deref(), Some("anyremote-roundtrip"));
+    assert_eq!(
+        c.read_text().unwrap().as_deref(),
+        Some("anyremote-roundtrip")
+    );
     if let Some(orig) = original {
         let _ = c.write_text(&orig); // restaurar
     }

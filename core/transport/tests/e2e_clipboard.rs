@@ -25,7 +25,10 @@ async fn e2e_clipboard_bidirectional_with_format_containment() {
         let mut eng = ClipboardSyncEngine::new(MemoryClipboard::with_text("saludo del controlado"));
 
         // 1) Envía su cambio local inicial.
-        let out = eng.detect_local_change().expect("detect 1").expect("hay cambio");
+        let out = eng
+            .detect_local_change()
+            .expect("detect 1")
+            .expect("hay cambio");
         ch.send(proto::envelope::Payload::Clipboard(
             arsp::clipboard_to_wire(&out).expect("wire"),
         ))
@@ -40,7 +43,10 @@ async fn e2e_clipboard_bidirectional_with_format_containment() {
         };
         let content = arsp::clipboard_from_wire(wire).expect("from wire");
         assert!(eng.apply_remote(&content).expect("aplicar"));
-        assert_eq!(eng.backend().current.as_deref(), Some("hola desde controlador"));
+        assert_eq!(
+            eng.backend().current.as_deref(),
+            Some("hola desde controlador")
+        );
 
         // 3) Tras aplicar, detectar NO debe reenviar (eco suprimido).
         assert!(eng.detect_local_change().expect("detect 2").is_none());
@@ -48,7 +54,10 @@ async fn e2e_clipboard_bidirectional_with_format_containment() {
 
         // 4) Cambio local real del controlado → envía.
         eng.backend_mut().current = Some("respuesta del controlado".into());
-        let out2 = eng.detect_local_change().expect("detect 3").expect("cambio 2");
+        let out2 = eng
+            .detect_local_change()
+            .expect("detect 3")
+            .expect("cambio 2");
         ch.send(proto::envelope::Payload::Clipboard(
             arsp::clipboard_to_wire(&out2).expect("wire"),
         ))
@@ -94,7 +103,10 @@ async fn e2e_clipboard_bidirectional_with_format_containment() {
     };
     let content = arsp::clipboard_from_wire(wire).expect("from wire");
     assert!(eng.apply_remote(&content).expect("aplicar saludo"));
-    assert_eq!(eng.backend().current.as_deref(), Some("saludo del controlado"));
+    assert_eq!(
+        eng.backend().current.as_deref(),
+        Some("saludo del controlado")
+    );
 
     // 2) Cambio local del controlador → envía.
     eng.backend_mut().current = Some("hola desde controlador".into());
@@ -142,5 +154,8 @@ async fn e2e_clipboard_bidirectional_with_format_containment() {
     let final_controlled = controlled.await.expect("tarea controlado");
     assert_eq!(final_controlled, "respuesta del controlado");
     // Ambos lados coinciden (sincronización bidireccional completa).
-    assert_eq!(eng.backend().current.as_deref(), Some("respuesta del controlado"));
+    assert_eq!(
+        eng.backend().current.as_deref(),
+        Some("respuesta del controlado")
+    );
 }

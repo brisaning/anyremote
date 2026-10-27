@@ -124,7 +124,12 @@ impl FileSender {
     }
 
     /// Ofrece un archivo (construye meta con digest real).
-    pub fn offer(&self, transfer_id: u64, name: &str, data: &[u8]) -> Result<FileMeta, TransferError> {
+    pub fn offer(
+        &self,
+        transfer_id: u64,
+        name: &str,
+        data: &[u8],
+    ) -> Result<FileMeta, TransferError> {
         let meta = FileMeta {
             transfer_id,
             name: sanitize_name(name)?,
@@ -198,7 +203,8 @@ impl TransferStore {
             self.clear(m.transfer_id);
             return Ok(None);
         }
-        let buf = std::fs::read(self.part(m.transfer_id)).map_err(|e| TransferError::Io(e.to_string()))?;
+        let buf = std::fs::read(self.part(m.transfer_id))
+            .map_err(|e| TransferError::Io(e.to_string()))?;
         if buf.len() as u64 > m.size {
             self.clear(m.transfer_id);
             return Ok(None);
@@ -214,7 +220,8 @@ impl TransferStore {
             .append(true)
             .open(self.part(id))
             .map_err(|e| TransferError::Io(e.to_string()))?;
-        f.write_all(data).map_err(|e| TransferError::Io(e.to_string()))
+        f.write_all(data)
+            .map_err(|e| TransferError::Io(e.to_string()))
     }
 
     pub fn clear(&self, id: u64) {
@@ -296,7 +303,12 @@ impl FileReceiver {
 
     /// Escribe un chunk. Los offsets deben ser contiguos al confirmado;
     /// un offset adelantado reporta `Offset { expected }` (base de la reanudación).
-    pub fn write_chunk(&mut self, transfer_id: u64, offset: u64, data: &[u8]) -> Result<u64, TransferError> {
+    pub fn write_chunk(
+        &mut self,
+        transfer_id: u64,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<u64, TransferError> {
         let p = self
             .incoming
             .get_mut(&transfer_id)
@@ -351,7 +363,11 @@ impl FileReceiver {
     }
 
     /// Finaliza y escribe en `dir/name` (nombre saneado — sin traversal).
-    pub fn finish_to_file(&mut self, transfer_id: u64, dir: &Path) -> Result<PathBuf, TransferError> {
+    pub fn finish_to_file(
+        &mut self,
+        transfer_id: u64,
+        dir: &Path,
+    ) -> Result<PathBuf, TransferError> {
         // finish consume el estado; validamos nombre antes desde la copia local.
         let name = {
             let p = self
@@ -393,20 +409,28 @@ mod tests {
         });
         let small = meta(1, "a.bin", &[0u8; 10]);
         let big = meta(2, "b.bin", &[0u8; 101]);
-        assert!(sender.validate_batch(&[small.clone(), small.clone()]).is_ok());
+        assert!(sender
+            .validate_batch(&[small.clone(), small.clone()])
+            .is_ok());
         assert_eq!(
             sender.validate_batch(&[small.clone(), small.clone(), small.clone()]),
             Err(TransferError::TooManyFiles { limit: 2, got: 3 })
         );
         assert_eq!(
             sender.validate_batch(&[big]),
-            Err(TransferError::TooLarge { limit: 100, got: 101 })
+            Err(TransferError::TooLarge {
+                limit: 100,
+                got: 101
+            })
         );
         let disabled = FileSender::new(TransferPolicy {
             enabled: false,
             ..Default::default()
         });
-        assert_eq!(disabled.validate_batch(&[small]), Err(TransferError::Disabled));
+        assert_eq!(
+            disabled.validate_batch(&[small]),
+            Err(TransferError::Disabled)
+        );
     }
 
     #[test]
@@ -432,7 +456,7 @@ mod tests {
     #[test]
     fn chunked_transfer_with_hash_and_resume() {
         let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
-        let mut sender_side = FileSender::new(TransferPolicy::default());
+        let sender_side = FileSender::new(TransferPolicy::default());
         let offer = sender_side.offer(7, "informe.bin", &data).unwrap();
         let mut recv = FileReceiver::new(TransferPolicy::default());
         recv.accept_offer(offer.clone()).unwrap();
@@ -466,7 +490,7 @@ mod tests {
     #[test]
     fn corrupted_content_fails_hash() {
         let data = b"contenido original";
-        let mut sender_side = FileSender::new(TransferPolicy::default());
+        let sender_side = FileSender::new(TransferPolicy::default());
         let offer = sender_side.offer(1, "f.txt", data).unwrap();
         let mut recv = FileReceiver::new(TransferPolicy::default());
         recv.accept_offer(offer).unwrap();
@@ -484,7 +508,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("anyremote-c5-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let data = b"archivo real de prueba";
-        let mut s = FileSender::new(TransferPolicy::default());
+        let s = FileSender::new(TransferPolicy::default());
         let offer = s.offer(9, "prueba.txt", data).unwrap();
         let mut r = FileReceiver::new(TransferPolicy::default());
         r.accept_offer(offer).unwrap();
@@ -506,7 +530,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("anyremote-c5-store-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let data: Vec<u8> = (0..70_000u32).map(|i| (i % 199) as u8).collect();
-        let mut s = FileSender::new(TransferPolicy::default());
+        let s = FileSender::new(TransferPolicy::default());
         let offer = s.offer(42, "lote.bin", &data).unwrap();
 
         // Sesión 1: recibe 2 chunks y "muere" sin finish.
@@ -518,7 +542,10 @@ mod tests {
         let confirmed = r1.next_offset(42).unwrap();
         assert!(confirmed > 0 && (confirmed as usize) < data.len());
         drop(r1);
-        assert!(dir.join("42.part").exists() && dir.join("42.meta").exists(), "parcial persistido");
+        assert!(
+            dir.join("42.part").exists() && dir.join("42.meta").exists(),
+            "parcial persistido"
+        );
 
         // Sesión 2: receptor NUEVO → reanuda desde el parcial.
         let mut r2 = FileReceiver::new_with_store(TransferPolicy::default(), dir.clone());
@@ -534,7 +561,10 @@ mod tests {
         let got = r2.finish(42).unwrap();
         assert_eq!(got.len(), data.len());
         assert_eq!(sha256_hex(&got), HEXLOWER.encode(&offer.sha256));
-        assert!(!dir.join("42.part").exists(), "los temporales se limpian al finish");
+        assert!(
+            !dir.join("42.part").exists(),
+            "los temporales se limpian al finish"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

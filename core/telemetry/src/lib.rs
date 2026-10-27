@@ -222,12 +222,24 @@ mod tests {
     fn events_roundtrip_as_jsonl() {
         let dir = temp_dir("round");
         let mut log = SessionLog::open(&dir).unwrap();
-        log.record(AuditEventKind::SessionStarted, "s-1", json!({"target": "1.2.3.4:21118"}))
-            .unwrap();
-        log.record(AuditEventKind::PermissionGranted, "s-1", json!({"perms": ["keyboard"]}))
-            .unwrap();
-        log.record(AuditEventKind::Disconnected, "s-1", json!({"reason": "bye"}))
-            .unwrap();
+        log.record(
+            AuditEventKind::SessionStarted,
+            "s-1",
+            json!({"target": "1.2.3.4:21118"}),
+        )
+        .unwrap();
+        log.record(
+            AuditEventKind::PermissionGranted,
+            "s-1",
+            json!({"perms": ["keyboard"]}),
+        )
+        .unwrap();
+        log.record(
+            AuditEventKind::Disconnected,
+            "s-1",
+            json!({"reason": "bye"}),
+        )
+        .unwrap();
 
         let events = SessionLog::read_all(log.path()).unwrap();
         assert_eq!(events.len(), 3);

@@ -13,7 +13,10 @@ use anyremote_transport::arsp::{self, proto};
 use tokio::io::DuplexStream;
 
 fn big_hello(i: usize) -> proto::envelope::Payload {
-    arsp::hello("NODETEST12", &format!("hint-grande-{i}-{}", "x".repeat(3000)))
+    arsp::hello(
+        "NODETEST12",
+        &format!("hint-grande-{i}-{}", "x".repeat(3000)),
+    )
 }
 
 #[tokio::test]
@@ -53,6 +56,10 @@ async fn recv_survives_constant_select_cancellation() {
         }
     }
 
-    assert_eq!(got, (1..=10).collect::<Vec<_>>(), "secuencias completas y en orden");
+    assert_eq!(
+        got,
+        (1..=10).collect::<Vec<_>>(),
+        "secuencias completas y en orden"
+    );
     sender.await.expect("emisor");
 }

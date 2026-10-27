@@ -16,7 +16,9 @@ fn mk(tag: &str) -> PathBufFix {
 }
 
 async fn free_port() -> u16 {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("probe");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("probe");
     let p = l.local_addr().expect("addr").port();
     drop(l);
     p
@@ -54,7 +56,9 @@ async fn listener_survives_aborted_clients_and_serves_the_next_one() {
     let mut bad2 = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .expect("connect bad2");
-    bad2.write_all(b"GARBAGE-NO-ES-CERT\n").await.expect("write");
+    bad2.write_all(b"GARBAGE-NO-ES-CERT\n")
+        .await
+        .expect("write");
     drop(bad2);
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -74,7 +78,10 @@ async fn listener_survives_aborted_clients_and_serves_the_next_one() {
     };
     let controller = tokio::spawn(async move { run_connect(connect_cfg).await });
 
-    let ctl = controller.await.expect("join ctl").expect("cliente bueno OK");
+    let ctl = controller
+        .await
+        .expect("join ctl")
+        .expect("cliente bueno OK");
     let ev_text = ctl_events.lock().unwrap().join("\n");
     assert!(
         ev_text.contains("\"event\":\"session_active\""),
