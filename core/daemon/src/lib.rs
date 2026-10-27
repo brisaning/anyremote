@@ -928,7 +928,7 @@ async fn active_controlled(
             "width": cfg.video_size.0, "height": cfg.video_size.1,
             "fps": cfg.video_fps, "codec": format!("{:?}", cfg.codec),
         })));
-        spawn_video_task(
+        let _video_thread = spawn_video_task(
             cfg.video,
             cfg.video_size,
             cfg.video_fps,
