@@ -160,3 +160,25 @@ SEMILLA (hallazgo aprobado) → BROTE (slice mínimo funcional)
 1. Ejecutar **Fase 0**: `baseline.json`, scaffold de `evidence/`, commit.
 2. **Fase 1**: indexación de `rustdesk/` con codebase-memory — gate absoluto antes de RE o diseño.
 3. Encadenar Fases 2–6; luego ciclos S0→C8 (§3).
+
+## 7. Propuestas futuras (requieren decisión de alcance)
+
+Identificadas en `evidence/perf-audit.md` (§5) a partir de la auditoría de
+RustDesk y de nuestro pipeline. **No se abordan hasta decisión explícita** por
+su coste o riesgo; la lista queda aquí como backlog de rendimiento/capacidad:
+
+| Propuesta | Esfuerzo | Impacto | Riesgos / notas |
+|---|---|---|---|
+| **Aceleración por hardware** (NVENC/AMF/QSV/Media Foundation) | L | Alto | Cambia el contrato de `VideoEncoder` (entrada GPU; hoy el readback en `core/capture/dxgi.rs` es obligatorio); **fallback a libvpx obligatorio** (patrón RustDesk `video_service.rs`); limpieza legal: clean-room desde APIs públicas — no copiar el fork AGPL `hwcodec` |
+| **Adaptación por red** (RTT/pérdida, no solo tiempo de codificación) | M | Alto | Los latidos ya miden RTT; añadir señal de enlace a `AdaptState` con política estable (umbrales, confirmación en 2–3 muestras, cooldown; patrón `video_qos.rs`: bitrate primero, fps con suelo). Riesgo: oscilación |
+| **Transporte UDP (KCP) / QUIC** | L | Alto | Rediseño de seguridad: la autenticación se ancla hoy al binding sobre **TLS/TCP** → UDP exige DTLS/Noise + renegociación; NAT/firewall (mantener TCP como fallback, como RustDesk con `disable-udp`); pérdida → ARQ |
+| **Cursor propio (overlay no embebido)** | M | Alto | Ahorraría re-codificar por cada movimiento de ratón y haría **visible el cursor remoto** (DXGI nunca lo incluye en el frame); requiere mensaje de protocolo + render en la app |
+| VP8 como opción de CPU barata | M | Medio | `shiguredo_libvpx` ya lo soporta (`Vp8Config.static_threshold`) → exponer `--codec vp8` (proto + negociación) |
+| Captura/encode con buffers reutilizados | M | Medio | El vídeo ya corre en hilo propio (v0.7.2); queda eliminar las allocaciones por frame en `bgra_to_i420`/`scale_frame` |
+| libyuv/SIMD en vez de `bgra_to_i420` scalar | M | Medio | Dependencia nativa de build (patrón `libs/scrap/build.rs`) o crate `yuv` |
+| Cambiar la resolución del host en sesión | L | Medio | Requiere restauración garantizada (incluso si el proceso muere) + permiso D-07 nuevo |
+| Codificación por regiones sucias | L | Bajo | **Ni RustDesk lo implementa** (solo un comentario) → pospuesto |
+| Profundidad de color reducida (16/8 bits) | L | Bajo | VP9 ya submuestrea 4:2:0 → ahorro marginal |
+
+**Orden recomendado** (impacto/esfuerzo): adaptación por red → aceleración por
+hardware → cursor propio → UDP/QUIC.
