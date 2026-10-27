@@ -136,9 +136,10 @@ pub struct DaemonConfig {
     /// RF audio (D-07): modo de audio de sesión — `listen`: fuente de captura,
     /// `connect`: reproductor. `Off` por defecto; `Test` sin hardware (gates).
     pub audio: AudioMode,
-    /// Fuente de captura en `listen`: **`System` por defecto** (loopback: lo que
-    /// suena en los altavoces); `Microphone` solo si se pide `--audio-source mic`.
-    pub audio_source: AudioSource,
+    /// Fuente de captura en `listen`: `System` por defecto (loopback: lo que
+    /// suena en los altavoces); `--audio-source mic|system,mic` para cambiarlo.
+    /// Con varias fuentes se mezclan (C-2).
+    pub audio_sources: Vec<AudioSource>,
     /// Fuente de cierre externa (tests): envía "bye" al canal de cierre.
     pub bye_source: Option<tokio::sync::mpsc::Receiver<String>>,
 }
@@ -163,7 +164,7 @@ impl DaemonConfig {
             allow_input: false,
             input_backend: InputBackend::Windows,
             audio: AudioMode::Off,
-            audio_source: AudioSource::default(),
+            audio_sources: vec![AudioSource::System],
             bye_source: None,
         }
     }
@@ -243,6 +244,161 @@ fn parse_input_line(line: &str) -> Result<Option<proto::InputEventMsg>, String> 
         return Err("evento de entrada no soportado (código o carácter)".into());
     }
     Ok(Some(msg))
+}
+
+/// Comando de permisos DINÁMICOS del anfitrión por stdin (C-2):
+/// `{"perm":{"input":bool,"audio":bool,"mic":bool}}` — los tres campos viajan
+/// siempre (los ausentes valen `false`). `Ok(None)` = no es un comando de
+/// permisos; `Err` = detalle para auditar.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct PermSpec {
+    input: bool,
+    audio: bool,
+    mic: bool,
+}
+
+fn parse_perm_line(line: &str) -> Result<Option<PermSpec>, String> {
+    let v: serde_json::Value = serde_json::from_str(line).map_err(|e| format!("json: {e}"))?;
+    let Some(p) = v.get("perm") else {
+        return Ok(None);
+    };
+    Ok(Some(PermSpec {
+        input: p.get("input").and_then(|x| x.as_bool()).unwrap_or(false),
+        audio: p.get("audio").and_then(|x| x.as_bool()).unwrap_or(false),
+        mic: p.get("mic").and_then(|x| x.as_bool()).unwrap_or(false),
+    }))
+}
+
+/// Arranca la captura de audio con las fuentes dadas; traza `audio_start` (y
+/// `audio_error` por fuente no disponible — la captura degrada, no falla).
+fn spawn_audio_capture(
+    mode: AudioMode,
+    sources: &[AudioSource],
+    session_id: &str,
+    log: &mut SessionLog,
+    emit: &mut Emit,
+) -> Option<(AudioCapture, mpsc::Receiver<Vec<i16>>)> {
+    let (tx, rx) = mpsc::channel::<Vec<i16>>(16);
+    match AudioCapture::start(mode, sources, tx) {
+        Ok(cap) => {
+            for w in cap.warnings() {
+                // Un fallo de auditoría no debe bloquear el audio (resiliencia).
+                let _ = log.record(
+                    AuditEventKind::Error,
+                    session_id,
+                    serde_json::json!({"audio": w}),
+                );
+                emit.emit(ev("audio_error", serde_json::json!({"detail": w})));
+            }
+            emit.emit(ev(
+                "audio_start",
+                serde_json::json!({
+                    "mode": format!("{mode:?}"),
+                    "source": sources.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(","),
+                    "rate": anyremote_audio::AUDIO_RATE,
+                }),
+            ));
+            Some((cap, rx))
+        }
+        Err(e) => {
+            let _ = log.record(
+                AuditEventKind::Error,
+                session_id,
+                serde_json::json!({"audio": e.to_string()}),
+            );
+            emit.emit(ev(
+                "audio_error",
+                serde_json::json!({"detail": e.to_string()})),
+            );
+            None
+        }
+    }
+}
+
+/// Estado dinámico de permisos del anfitrión (C-2): toggles en caliente que la
+/// UI envía por stdin durante la sesión. El techo D-07 sigue siendo la
+/// concesión del handshake (`granted`) AND los flags de arranque (capacidad);
+/// la excepción es audio: compartir tu audio/micrófono es decisión de quien
+/// comparte, así que activarlo en caliente no exige el grant inicial.
+struct DynamicPerms {
+    /// Toggle de entrada (siempre ANDado con `--allow-input` y el grant).
+    input_on: bool,
+    /// Fuentes de audio activas (vacío = sin captura).
+    sources: Vec<AudioSource>,
+    /// El anfitrión activó audio en caliente → sin exigir el grant inicial.
+    runtime_enabled: bool,
+    granted_audio: bool,
+}
+
+impl DynamicPerms {
+    fn new(cfg: &DaemonConfig, granted: &[String]) -> Self {
+        let granted_audio = granted.iter().any(|p| p == "audio");
+        let sources = if cfg.audio != AudioMode::Off && granted_audio {
+            cfg.audio_sources.clone()
+        } else {
+            Vec::new()
+        };
+        Self {
+            input_on: cfg.allow_input,
+            sources,
+            runtime_enabled: false,
+            granted_audio,
+        }
+    }
+
+    /// Aplica un comando de la UI y (re)arranca o detiene la captura.
+    #[allow(clippy::too_many_arguments)]
+    fn apply(
+        &mut self,
+        perm: PermSpec,
+        cfg: &DaemonConfig,
+        session_id: &str,
+        capture: &mut Option<AudioCapture>,
+        pcm_rx: &mut Option<mpsc::Receiver<Vec<i16>>>,
+        log: &mut SessionLog,
+        emit: &mut Emit,
+    ) {
+        self.input_on = cfg.allow_input && perm.input;
+        let mut wanted = Vec::new();
+        if perm.audio {
+            wanted.push(AudioSource::System);
+        }
+        if perm.mic {
+            wanted.push(AudioSource::Microphone);
+        }
+        if !wanted.is_empty() {
+            self.runtime_enabled = true;
+        }
+        let allowed = cfg.audio != AudioMode::Off
+            && !wanted.is_empty()
+            && (self.granted_audio || self.runtime_enabled);
+        let wanted: Vec<AudioSource> = if allowed { wanted } else { Vec::new() };
+        if wanted != self.sources {
+            // Detener la captura actual (Drop une el hilo) y arrancar la nueva.
+            *capture = None;
+            *pcm_rx = None;
+            if wanted.is_empty() {
+                emit.emit(ev(
+                    "audio_stopped",
+                    serde_json::json!({"reason": "permisos"}),
+                ));
+            } else if let Some((cap, rx)) =
+                spawn_audio_capture(cfg.audio, &wanted, session_id, log, emit)
+            {
+                *capture = Some(cap);
+                *pcm_rx = Some(rx);
+            }
+            self.sources = wanted;
+        }
+        emit.emit(ev(
+            "permissions_updated",
+            serde_json::json!({
+                "input": self.input_on,
+                "audio": self.sources.iter().any(|s| *s == AudioSource::System),
+                "mic": self.sources.iter().any(|s| *s == AudioSource::Microphone),
+            }),
+        ));
+    }
 }
 
 /// Política de transferencia derivada de la configuración del daemon.
@@ -685,36 +841,54 @@ async fn active_controlled(
     let state = SessionState::Active;
     // Un fallo de portapapeles NO mata la sesión: se desactiva el subsistema (v0.1.4).
     let mut clip_off = false;
-    // RF-02a (D-07): sin `--allow-input` no hay inyector → toda entrada se deniega.
-    let mut injector = cfg.allow_input.then(|| make_injector(cfg.input_backend));
-    // RF audio (D-07): codec listo y captura SOLO con `--audio` + permiso `audio`.
+    // RF-02a (D-07): inyector siempre disponible; lo gobierna el toggle
+    // dinámico `perms.input_on` ANDado con `--allow-input` y la concesión.
+    let mut injector = make_injector(cfg.input_backend);
+    // RF audio (D-07): codec + estado dinámico de permisos del anfitrión (C-2).
     let mut codec = (cfg.audio != AudioMode::Off)
         .then(OpusCodec::new)
         .transpose()
         .map_err(|e| DaemonError::Config(e.to_string()))?;
+    let mut perms = DynamicPerms::new(cfg, granted);
     let mut audio_capture: Option<AudioCapture> = None;
     let mut pcm_rx: Option<mpsc::Receiver<Vec<i16>>> = None;
-    if cfg.audio != AudioMode::Off {
-        if granted.iter().any(|p| p == "audio") {
-            let (tx, rx) = mpsc::channel::<Vec<i16>>(16);
-            match AudioCapture::start(cfg.audio, cfg.audio_source, tx) {
-                Ok(cap) => {
-                    audio_capture = Some(cap);
-                    pcm_rx = Some(rx);
-                    emit.emit(ev("audio_start", serde_json::json!({
-                        "mode": format!("{:?}", cfg.audio),
-                        "source": cfg.audio_source.as_str(),
-                        "rate": anyremote_audio::AUDIO_RATE,
-                    })));
-                }
-                Err(e) => {
-                    log.record(AuditEventKind::Error, session_id,
-                        serde_json::json!({"audio": e.to_string()}))?;
-                    emit.emit(ev("audio_error", serde_json::json!({"detail": e.to_string()})));
+    if cfg.audio != AudioMode::Off && !perms.granted_audio {
+        emit.emit(ev(
+            "audio_denied",
+            serde_json::json!({"reason": "no_concedido"}),
+        ));
+    }
+    // Estado inicial dinámico: la UI escribe `{"perm":...}` al arrancar el
+    // listener; se aplica ANTES del primer evento de la sesión (sin carrera
+    // con la primera entrada que llegue del controlador).
+    let mut pending_bye: Option<String> = None;
+    while let Ok(line) = bye_rx.try_recv() {
+        match parse_perm_line(&line) {
+            Ok(Some(perm)) => {
+                perms.apply(
+                    perm,
+                    cfg,
+                    session_id,
+                    &mut audio_capture,
+                    &mut pcm_rx,
+                    log,
+                    emit,
+                );
+            }
+            _ => {
+                if pending_bye.is_none() {
+                    pending_bye = Some(line);
                 }
             }
-        } else {
-            emit.emit(ev("audio_denied", serde_json::json!({"reason": "no_concedido"})));
+        }
+    }
+    // Captura inicial si ningún comando la decidió ya.
+    if audio_capture.is_none() && !perms.sources.is_empty() {
+        if let Some((cap, rx)) =
+            spawn_audio_capture(cfg.audio, &perms.sources, session_id, log, emit)
+        {
+            audio_capture = Some(cap);
+            pcm_rx = Some(rx);
         }
     }
 
@@ -736,6 +910,17 @@ async fn active_controlled(
     }
 
     loop {
+        // Cierre encolado antes de la sesión (p. ej. `bye` escrito al arrancar
+        // el listener): se cumple al iniciar ésta.
+        if let Some(reason) = pending_bye.take() {
+            let reason = if reason.trim().is_empty() { "stdin".to_string() } else { reason };
+            let _ = ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: reason.clone() })).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            log.record(AuditEventKind::Disconnected, session_id,
+                serde_json::json!({"reason": reason, "role": "listener"}))?;
+            emit.emit(ev("closed", serde_json::json!({"reason": reason})));
+            break;
+        }
         tokio::select! {
             env = ch.recv() => {
                 let env = match env {
@@ -825,15 +1010,15 @@ async fn active_controlled(
                             continue;
                         };
                         let need = input_permission(&iev);
-                        let allowed = injector.is_some() && granted.iter().any(|p| p == need);
+                        let allowed = perms.input_on && granted.iter().any(|p| p == need);
                         if !allowed {
                             log.record(AuditEventKind::InputDenied, session_id,
-                                serde_json::json!({"perm": need, "allow_input": cfg.allow_input}))?;
+                                serde_json::json!({"perm": need, "allow_input": perms.input_on}))?;
                             emit.emit(ev("input_denied",
-                                serde_json::json!({"perm": need, "allow_input": cfg.allow_input})));
+                                serde_json::json!({"perm": need, "allow_input": perms.input_on})));
                             continue;
                         }
-                        match injector.as_mut().expect("inyector presente").inject(&iev) {
+                        match injector.inject(&iev) {
                             Ok(()) => {
                                 // Clave `input` (no `event`: `ev()` propagaría la colisión y
                                 // taparía el tipo de evento en la UI).
@@ -951,9 +1136,25 @@ async fn active_controlled(
                     }
                 }
             }
-            reason = bye_rx.recv(), if !bye_done => {
-                let Some(reason) = reason else { bye_done = true; continue; };
-                let reason = if reason.trim().is_empty() { "stdin".to_string() } else { reason };
+            line = bye_rx.recv(), if !bye_done => {
+                let Some(line) = line else { bye_done = true; continue; };
+                // C-2: comandos dinámicos de permisos del anfitrión (stdin de la
+                // UI) → aplicados en caliente sin reconectar.
+                if line.trim_start().starts_with('{') {
+                    match parse_perm_line(&line) {
+                        Ok(Some(perm)) => {
+                            perms.apply(perm, cfg, session_id, &mut audio_capture, &mut pcm_rx,
+                                log, emit);
+                            continue;
+                        }
+                        Ok(None) => {} // JSON sin `perm` → se trata como cierre (compat.)
+                        Err(detail) => {
+                            emit.emit(ev("input_error", serde_json::json!({"detail": detail})));
+                            continue;
+                        }
+                    }
+                }
+                let reason = if line.trim().is_empty() { "stdin".to_string() } else { line };
                 let _ = ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: reason.clone() })).await;
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await; // gracia de cierre
                 log.record(AuditEventKind::Disconnected, session_id,
@@ -1130,10 +1331,14 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
         });
     }
     log.record(AuditEventKind::PermissionGranted, &session_id, serde_json::json!({"perms": allowed}))?;
-    // RF audio: sin `audio` concedido no se abre reproductor (D-07).
+    // RF audio (C-2): el reproductor queda PREPARADO aunque el anfitrión no
+    // comparta al inicio — si lo activa en caliente durante la sesión, sonará.
+    // El `audio_denied` inicial es informativo (no llegan frames hasta que comparte).
     if cfg.audio != AudioMode::Off && !allowed.iter().any(|p| p == "audio") {
-        cfg.audio = AudioMode::Off;
-        emit.emit(ev("audio_denied", serde_json::json!({"reason": "no_concedido"})));
+        emit.emit(ev("audio_denied", serde_json::json!({
+            "reason": "no_concedido_inicial",
+            "detail": "si el anfitrión comparte durante la sesión se reproducirá",
+        })));
     }
 
     match active_controller(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, &peer_id.node_id.to_string(), bye_rx).await {

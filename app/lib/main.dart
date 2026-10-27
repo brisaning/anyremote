@@ -124,6 +124,7 @@ class _HomePageState extends State<HomePage> {
   bool _sessionActive = false;
   bool _acceptRemoteControl = false;
   bool _shareAudio = false;
+  bool _shareMic = false;
   /// Calidad del vídeo que comparte el listener. **720p por defecto**: en la
   /// prueba de campo de 2026-10-27 `native` solo alcanzó ~4.6 fps en el
   /// anfitrión y el enlace marcó RTT 57–782 ms (vídeo demasiado pesado).
@@ -271,7 +272,16 @@ class _HomePageState extends State<HomePage> {
                 ? '[daemon] audio compartido desde ${ev['source']} (${ev['rate']} Hz)'
                 : '[daemon] reproducción de audio activada (${ev['rate']} Hz)');
           case 'audio_denied':
-            _append('[daemon] audio no concedido en esta sesión (D-07: el anfitrión debe compartirlo con "Compartir audio")');
+            _append(ev['detail'] != null
+                ? '[daemon] audio no concedido al inicio: ${ev['detail']}'
+                : '[daemon] audio no concedido (D-07: activa "Audio del sistema" o "Micrófono" en el anfitrión)');
+          case 'permissions_updated':
+            // C-2: los toggles cambiaron en caliente (se aplica sin reconectar).
+            _append('[daemon] permisos actualizados: control ${ev['input'] == true ? 'activado' : 'desactivado'}'
+                ' · audio ${ev['audio'] == true ? 'activo' : 'inactivo'}'
+                ' · mic ${ev['mic'] == true ? 'activo' : 'inactivo'}');
+          case 'audio_stopped':
+            _append('[daemon] audio detenido (permisos actualizados)');
           case 'audio_stats':
             // Diagnóstico en la cabecera del visor: rms≈ 0 = silencio (el
             // anfitrión no está reproduciendo nada o no está compartiendo).
@@ -315,6 +325,26 @@ class _HomePageState extends State<HomePage> {
 
   String get _daemonBin => resolveDaemonPath();
 
+  /// C-2: envía el estado de los tres toggles al listener
+  /// (`{"perm":{"input":bool,"audio":bool,"mic":bool}}`). El daemon lo aplica
+  /// **en caliente durante la sesión** (sin reconectar) y, si aún no hay
+  /// sesión, queda encolado y se aplica al abrirla.
+  void _sendPerms() {
+    final proc = _listener;
+    if (proc == null) return;
+    try {
+      proc.stdin.writeln(jsonEncode({
+        'perm': {
+          'input': _acceptRemoteControl,
+          'audio': _shareAudio,
+          'mic': _shareMic,
+        },
+      }));
+    } catch (e) {
+      if (mounted) _append('[ui] no se pudieron enviar los permisos: $e');
+    }
+  }
+
   Future<void> _startLocalListen() async {
     if (_listener != null) {
       _append('[ui] el listener local ya corre');
@@ -335,20 +365,24 @@ class _HomePageState extends State<HomePage> {
         '--video-size', _qualities[_videoQuality] ?? '1280x720',
         '--video-fps', '15',
         '--codec', 'vp9',
+        // C-2: la CAPACIDAD está siempre disponible; el estado real lo fija
+        // `{"perm":...}` (se envía ya y en cada cambio de casilla → los
+        // toggles son dinámicos durante la sesión, D-07 en caliente).
+        '--allow-input',
+        '--audio', 'on',
+        '--audio-source', 'system,mic',
       ];
-      // RF-02a (D-07): la entrada remota solo se acepta si el usuario la activa.
-      if (_acceptRemoteControl) args.add('--allow-input');
-      // RF audio (D-07): compartir micrófono solo si el usuario lo activa.
-      if (_shareAudio) args.addAll(['--audio', 'on']);
       final proc = await Process.start(
         _daemonBin,
         args,
         mode: ProcessStartMode.normal,
       );
       setState(() => _listener = proc);
+      _sendPerms(); // estado inicial de los toggles (se aplica al abrir sesión)
       final activos = <String>[
         if (_acceptRemoteControl) 'control remoto',
-        if (_shareAudio) 'audio',
+        if (_shareAudio) 'audio del sistema',
+        if (_shareMic) 'micrófono',
       ];
       _append('[ui] listener de red lanzado (0.0.0.0:21118 — vídeo $_videoQuality@15 vp9'
           '${activos.isEmpty
@@ -782,55 +816,46 @@ class _HomePageState extends State<HomePage> {
                       ],
                     ),
                     const SizedBox(height: 4),
-                    // D-07: sin marcar, el listener rechaza la entrada (RF-02a)
-                    // y no comparte audio (RF audio).
+                    // C-2: los tres toggles son DINÁMICOS — se aplican en
+                    // caliente durante la sesión (el anfitrión manda sobre lo
+                    // que comparte; D-07 en caliente).
                     Row(
                       children: [
                         Checkbox(
                           value: _acceptRemoteControl,
-                          onChanged: _listener != null
-                              ? null // no se cambia con el listener ya lanzado
-                              : (v) => setState(() => _acceptRemoteControl = v ?? false),
+                          onChanged: (v) {
+                            setState(() => _acceptRemoteControl = v ?? false);
+                            _sendPerms();
+                          },
                           visualDensity: VisualDensity.compact,
                           materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
-                        const Text('Aceptar control remoto',
+                        const Text('Control remoto',
                             style: TextStyle(fontSize: 12)),
                         const SizedBox(width: 10),
                         Checkbox(
                           value: _shareAudio,
-                          onChanged: _listener != null
-                              ? null // no se cambia con el listener ya lanzado
-                              : (v) => setState(() => _shareAudio = v ?? false),
+                          onChanged: (v) {
+                            setState(() => _shareAudio = v ?? false);
+                            _sendPerms();
+                          },
                           visualDensity: VisualDensity.compact,
                           materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
-                        const Text('Compartir audio',
+                        const Text('Audio del sistema',
                             style: TextStyle(fontSize: 12)),
                         const SizedBox(width: 10),
-                        const Text('vídeo:',
-                            style: TextStyle(fontSize: 12)),
-                        const SizedBox(width: 4),
-                        // Calidad:720p por defecto (nativo resultó demasiado
-                        // pesado para el anfitrión en la prueba de campo).
-                        DropdownButton<String>(
-                          value: _videoQuality,
-                          items: _qualities.keys
-                              .map((q) => DropdownMenuItem(
-                                    value: q,
-                                    child:
-                                        Text(q, style: const TextStyle(fontSize: 12)),
-                                  ))
-                              .toList(),
-                          onChanged: _listener != null
-                              ? null
-                              : (v) {
-                                  if (v != null) {
-                                    setState(() => _videoQuality = v);
-                                  }
-                                },
-                          isDense: true,
+                        Checkbox(
+                          value: _shareMic,
+                          onChanged: (v) {
+                            setState(() => _shareMic = v ?? false);
+                            _sendPerms();
+                          },
+                          visualDensity: VisualDensity.compact,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
+                        const Text('Micrófono',
+                            style: TextStyle(fontSize: 12)),
                       ],
                     ),
                     const SizedBox(height: 10),
@@ -858,6 +883,29 @@ class _HomePageState extends State<HomePage> {
                         if (_aliases.isNotEmpty)
                           Text('${_aliases.length} perfil(es)',
                               style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                        const SizedBox(width: 14),
+                        const Text('vídeo:',
+                            style: TextStyle(fontSize: 12)),
+                        const SizedBox(width: 4),
+                        // Calidad: 720p por defecto (nativo resultó demasiado
+                        // pesado para el anfitrión en la prueba de campo).
+                        DropdownButton<String>(
+                          value: _videoQuality,
+                          items: _qualities.keys
+                              .map((q) => DropdownMenuItem(
+                                    value: q,
+                                    child: Text(q, style: const TextStyle(fontSize: 12)),
+                                  ))
+                              .toList(),
+                          onChanged: _listener != null
+                              ? null
+                              : (v) {
+                                  if (v != null) {
+                                    setState(() => _videoQuality = v);
+                                  }
+                                },
+                          isDense: true,
+                        ),
                       ],
                     ),
                     const SizedBox(height: 4),

@@ -90,12 +90,20 @@ async fn main() {
                     std::process::exit(2);
                 });
             }
-            // Fuente: `system` (loopback, defecto: YouTube/altavoces) o `mic`.
+            // Fuentes: `system` (loopback, defecto: YouTube/altavoces), `mic`
+            // o ambas separadas por coma (`system,mic` → se mezclan).
             if let Some(s) = flag_value(&args, "--audio-source") {
-                cfg.audio_source = AudioSource::parse(&s).unwrap_or_else(|e| {
-                    eprintln!("{e}");
-                    std::process::exit(2);
-                });
+                let mut list: Vec<AudioSource> = Vec::new();
+                for part in s.split(',') {
+                    let src = AudioSource::parse(part.trim()).unwrap_or_else(|e| {
+                        eprintln!("{e}");
+                        std::process::exit(2);
+                    });
+                    if !list.contains(&src) {
+                        list.push(src);
+                    }
+                }
+                cfg.audio_sources = list;
             }
             if let Some(v) = flag_value(&args, "--max-secs") {
                 cfg.max_secs = v.parse().unwrap_or(600);
@@ -195,7 +203,7 @@ async fn main() {
         }
         _ => {
             eprintln!("anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio");
-            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--codec vp9|deflate|raw] [--audio off|test|on] [--audio-source system|mic] [--clipboard ...] [--allow-input] [--max-secs n]");
+            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--codec vp9|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n]");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             std::process::exit(2);

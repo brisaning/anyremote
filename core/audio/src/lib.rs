@@ -230,16 +230,23 @@ impl OpusCodec {
 // ---------------------------------------------------------------- captura
 
 /// Captura de audio → PCM 48 kHz mono (20 ms) hacia `out`.
-/// `Test` genera un tono sin tocar hardware; `On` usa el micrófono por defecto.
+/// `Test` genera un tono sin tocar hardware; `On` abre las fuentes pedidas
+/// (mezclándolas si hay varias).
 pub struct AudioCapture {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    warnings: Vec<String>,
 }
 
 impl AudioCapture {
+    /// Inicia la captura con las fuentes dadas (`System` = loopback del
+    /// sistema, `Microphone` = micrófono). Con **varias fuentes se mezclan**
+    /// (suma por muestras a 48 kHz mono). `Test` genera un tono y las ignora.
+    /// Si alguna fuente no está disponible se degrada (se avisa en
+    /// [`AudioCapture::warnings`]); solo falla si NO abre ninguna.
     pub fn start(
         mode: AudioMode,
-        source: AudioSource,
+        sources: &[AudioSource],
         out: tokio::sync::mpsc::Sender<Vec<i16>>,
     ) -> Result<AudioCapture, AudioError> {
         if mode == AudioMode::Off {
@@ -252,25 +259,38 @@ impl AudioCapture {
             return Ok(AudioCapture {
                 stop,
                 thread: Some(thread),
+                warnings: Vec::new(),
             });
         }
-        // `On`: el hilo abre el dispositivo (según `source`) y notifica el
-        // resultado antes de entrar en el bucle (el fallo llega en milisegundos).
-        let (tx, rx) = std::sync::mpsc::channel::<Result<(), AudioError>>();
+        if sources.is_empty() {
+            return Err(AudioError::Config("captura sin fuentes".into()));
+        }
+        // `On`: el hilo abre los dispositivos y notifica el resultado antes de
+        // entrar en el bucle (el fallo llega en milisegundos).
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<String>, AudioError>>();
         let stop2 = stop.clone();
-        let thread = std::thread::spawn(move || match open_capture(source) {
-            Err(e) => {
-                let _ = tx.send(Err(e));
+        let owned: Vec<AudioSource> = sources.to_vec();
+        let thread = std::thread::spawn(move || {
+            let mut opened = Vec::new();
+            let mut warnings = Vec::new();
+            for s in &owned {
+                match open_capture(*s) {
+                    Ok(o) => opened.push((*s, o)),
+                    Err(e) => warnings.push(format!("{}: {e}", s.as_str())),
+                }
             }
-            Ok((stream, raw, channels, rate)) => {
-                let _ = tx.send(Ok(()));
-                capture_loop(stream, raw, channels, rate, out, stop2);
+            if opened.is_empty() {
+                let _ = tx.send(Err(AudioError::Device(warnings.join("; "))));
+            } else {
+                let _ = tx.send(Ok(warnings));
+                capture_loop(opened, out, stop2);
             }
         });
         match rx.recv_timeout(Duration::from_secs(3)) {
-            Ok(Ok(())) => Ok(AudioCapture {
+            Ok(Ok(warnings)) => Ok(AudioCapture {
                 stop,
                 thread: Some(thread),
+                warnings,
             }),
             Ok(Err(e)) => {
                 let _ = thread.join();
@@ -281,6 +301,12 @@ impl AudioCapture {
                 Err(AudioError::Device("el dispositivo no respondió (3 s)".into()))
             }
         }
+    }
+
+    /// Fuentes que no se pudieron abrir (p. ej. sin micrófono): la captura
+    /// continúa con las demás.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 }
 
@@ -293,6 +319,14 @@ impl Drop for AudioCapture {
     }
 }
 
+/// Dispositivo abierto (stream vivo + su buffer crudo + formato).
+struct OpenedCapture {
+    stream: cpal::Stream,
+    raw: Arc<Mutex<Vec<f32>>>,
+    channels: usize,
+    rate: u32,
+}
+
 /// Abre la fuente de captura con SU configuración (WASAPI rechaza tasas ajenas
 /// al formato de mezcla) y devuelve el stream vivo + buffer crudo.
 ///
@@ -301,9 +335,7 @@ impl Drop for AudioCapture {
 /// suena en los altavoces (YouTube, vídeos, llamadas). En un endpoint de render
 /// el formato válido lo da `default_output_config` (`default_input_config`
 /// rechaza los endpoints de render).
-fn open_capture(
-    source: AudioSource,
-) -> Result<(cpal::Stream, Arc<Mutex<Vec<f32>>>, usize, u32), AudioError> {
+fn open_capture(source: AudioSource) -> Result<OpenedCapture, AudioError> {
     let host = cpal::default_host();
     let (dev, supported) = match source {
         AudioSource::System => {
@@ -349,44 +381,110 @@ fn open_capture(
     stream
         .play()
         .map_err(|e| AudioError::Device(e.to_string()))?;
-    Ok((stream, raw, channels, rate))
+    Ok(OpenedCapture {
+        stream,
+        raw,
+        channels,
+        rate,
+    })
 }
 
-/// Drena el dispositivo → mono → resample a 48 kHz → frames de 960 muestras.
+/// Mezcla por muestras: toma el mínimo disponible entre las fuentes CON datos
+/// (suma con saturación) y lo descarta de cada una. Las fuentes vacías no
+/// aportan → una fuente muda o atrasada no bloquea a la otra; la deriva de
+/// relojes se acota en `capture_loop` (tope de buffer).
+pub fn mix_available(sources: &mut [Vec<i16>]) -> Vec<i16> {
+    let n = match sources
+        .iter()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.len())
+        .min()
+    {
+        Some(n) => n.min(FRAME_SAMPLES * 4),
+        None => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut acc = 0i32;
+        for s in sources.iter() {
+            if i < s.len() {
+                acc += s[i] as i32;
+            }
+        }
+        out.push(acc.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+    }
+    for s in sources.iter_mut() {
+        if s.len() >= n {
+            s.drain(..n);
+        }
+    }
+    out
+}
+
+/// Drena los dispositivos → mono → resample a 48 kHz → **mezcla** → frames de
+/// 960 muestras hacia `out`.
 fn capture_loop(
-    stream: cpal::Stream,
-    raw: Arc<Mutex<Vec<f32>>>,
-    channels: usize,
-    rate: u32,
+    sources: Vec<(AudioSource, OpenedCapture)>,
     out: tokio::sync::mpsc::Sender<Vec<i16>>,
     stop: Arc<AtomicBool>,
 ) {
-    let frame_in = ((FRAME_SAMPLES as u64 * rate as u64) / AUDIO_RATE as u64).max(1) as usize;
-    let mut acc: Vec<i16> = Vec::new(); // mono a `rate`
-    let mut pcm48: Vec<i16> = Vec::new(); // ya a 48 kHz
+    struct Feed {
+        frame_in: usize,
+        acc: Vec<i16>,  // mono a la tasa del dispositivo
+        pcm48: Vec<i16>, // ya a 48 kHz
+    }
+    let mut feeds: Vec<Feed> = sources
+        .iter()
+        .map(|(_, o)| Feed {
+            frame_in: ((FRAME_SAMPLES as u64 * o.rate as u64) / AUDIO_RATE as u64).max(1) as usize,
+            acc: Vec::new(),
+            pcm48: Vec::new(),
+        })
+        .collect();
+    let mut pending: Vec<i16> = Vec::new();
+    let cap = FRAME_SAMPLES * 4; // tope por deriva de reloj entre fuentes
     while !stop.load(Ordering::Relaxed) {
-        let chunk = match raw.lock() {
-            Ok(mut g) => std::mem::take(&mut *g),
-            Err(_) => break,
-        };
-        if !chunk.is_empty() {
-            acc.extend_from_slice(&interleaved_to_mono_i16(&chunk, channels));
+        for (i, (_, opened)) in sources.iter().enumerate() {
+            let chunk = match opened.raw.lock() {
+                Ok(mut g) => std::mem::take(&mut *g),
+                Err(_) => return,
+            };
+            let feed = &mut feeds[i];
+            if !chunk.is_empty() {
+                feed.acc
+                    .extend_from_slice(&interleaved_to_mono_i16(&chunk, opened.channels));
+            }
+            while feed.acc.len() >= feed.frame_in {
+                let head: Vec<i16> = feed.acc.drain(..feed.frame_in).collect();
+                if opened.rate == AUDIO_RATE {
+                    feed.pcm48.extend_from_slice(&head);
+                } else {
+                    feed.pcm48
+                        .extend_from_slice(&resample_linear_i16(&head, opened.rate, AUDIO_RATE));
+                }
+            }
+            if feed.pcm48.len() > cap {
+                let excess = feed.pcm48.len() - cap;
+                feed.pcm48.drain(..excess);
+            }
         }
-        while acc.len() >= frame_in {
-            let head: Vec<i16> = acc.drain(..frame_in).collect();
-            if rate == AUDIO_RATE {
-                pcm48.extend_from_slice(&head);
-            } else {
-                pcm48.extend_from_slice(&resample_linear_i16(&head, rate, AUDIO_RATE));
-            }
-            while pcm48.len() >= FRAME_SAMPLES {
-                let frame: Vec<i16> = pcm48.drain(..FRAME_SAMPLES).collect();
-                let _ = out.try_send(frame); // canal lleno → se descarta (backpressure)
-            }
+        let mut bufs: Vec<Vec<i16>> = feeds.iter_mut().map(|f| std::mem::take(&mut f.pcm48)).collect();
+        let mixed = mix_available(&mut bufs);
+        for (i, b) in bufs.into_iter().enumerate() {
+            feeds[i].pcm48 = b; // devuelve lo no consumido (mezcla parcial)
+        }
+        if !mixed.is_empty() {
+            pending.extend_from_slice(&mixed);
+        }
+        while pending.len() >= FRAME_SAMPLES {
+            let frame: Vec<i16> = pending.drain(..FRAME_SAMPLES).collect();
+            let _ = out.try_send(frame); // canal lleno → se descarta (backpressure)
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    drop(stream);
+    for (_, s) in sources {
+        drop(s.stream);
+    }
 }
 
 /// Tono de prueba: 440 Hz a 48 kHz, frames exactos de 960 muestras.
@@ -674,11 +772,49 @@ mod tests {
     #[test]
     fn test_capture_emits_full_pcm_frames() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<i16>>(8);
-        let cap = AudioCapture::start(AudioMode::Test, AudioSource::default(), tx).expect("capture");
+        let cap = AudioCapture::start(AudioMode::Test, &[AudioSource::default()], tx)
+            .expect("capture");
         let frame = rx.blocking_recv().expect("frame");
         assert_eq!(frame.len(), FRAME_SAMPLES);
         assert!(frame.iter().any(|&s| s != 0), "el tono no debe ser silencio");
         drop(cap); // detiene el hilo
+    }
+
+    #[test]
+    fn multi_source_capture_starts_in_test_mode() {
+        // Varias fuentes (sistema + micrófono) → el tono de prueba fluye igual.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<i16>>(8);
+        let cap = AudioCapture::start(
+            AudioMode::Test,
+            &[AudioSource::System, AudioSource::Microphone],
+            tx,
+        )
+        .expect("capture multi-fuente");
+        let frame = rx.blocking_recv().expect("frame");
+        assert_eq!(frame.len(), FRAME_SAMPLES);
+        assert!(cap.warnings().is_empty(), "el modo Test no abre dispositivos");
+        drop(cap);
+    }
+
+    #[test]
+    fn mix_available_sums_skips_empty_and_saturates() {
+        // Solo una fuente con datos → pasa su señal sin bloquearse por la otra.
+        let mut one = vec![vec![10, 20, 30], vec![]];
+        assert_eq!(mix_available(&mut one), vec![10, 20, 30]);
+        assert!(one.iter().all(|s| s.is_empty()));
+
+        // Ambas con datos → suma por muestras; lo no consumido queda pendiente.
+        let mut two = vec![vec![100, 200], vec![1, 2, 3]];
+        assert_eq!(mix_available(&mut two), vec![101, 202]);
+        assert_eq!(two[0], Vec::<i16>::new());
+        assert_eq!(two[1], vec![3]);
+
+        // Suma con saturación (no desborda i16).
+        let mut sat = vec![vec![i16::MAX], vec![10]];
+        assert_eq!(mix_available(&mut sat), vec![i16::MAX]);
+
+        // Sin datos → nada.
+        assert!(mix_available(&mut vec![Vec::<i16>::new(), Vec::new()]).is_empty());
     }
 
     #[test]
