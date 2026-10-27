@@ -44,7 +44,7 @@
 | Audio en sesión v0.6.0 | Capacidad D-05/D-07 | crate `audio` (WASAPI+Opus 48 kHz mono, modo `Test`) · `AudioFrame` validado en transport · permiso `audio` opt-in (`--audio on` / casilla "Compartir audio") · `audio_stats` + `SessionReport.audio_*` | `audio-v0.6.0` | `evidence/audio-gate.md` |
 | Ajustes de campo v0.6.1 | Audio + rendimiento | **loopback (audio del sistema)** como fuente por defecto (`--audio-source system\|mic`) · `audio_stats.rms` + indicador en el visor · calidad de vídeo 720p por defecto (nativo daba 4.6 fps y RTT 57–782 ms) | `campo-v0.6.1` | `evidence/audio-gate.md` §Diagnóstico |
 
-**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) — `main` = `c5792b8`.
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) — `main` = `f4c9970`.
 
 ## Pendientes (estado actual)
 

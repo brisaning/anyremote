@@ -11,10 +11,10 @@ _Última actualización: 2026-10-26_
 | Campo | Valor |
 |---|---|
 | Versión actual | **v0.6.1** (`anyremote_app.exe` + `anyremoted.exe`) |
-| Ramas | `main` = `c5792b8` (PR #7) · `develop` = `2e2cd77` (tag `audio-v0.6.0`; correcciones de campo en `fix/field-audio-quality`) |
+| Ramas | `main` = `f4c9970` (PR #8) · `develop` = `921ef54` (tag `campo-v0.6.1`) |
 | Gates actuales | **Rust 40 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 3/3 |
 | Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · cierre/reanudación · perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** · 🟡 **audio: diagnosticado en campo → loopback v0.6.1 (verificado local, pendiente LAN)** · lentitud diagnosticada → calidad 720p por defecto (v0.6.1) |
-| PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · **#7 (v0.6.0 audio)** |
+| PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · **#8 (v0.6.1 campo)** |
 
 ### Requisitos
 
