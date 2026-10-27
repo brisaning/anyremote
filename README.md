@@ -13,7 +13,7 @@ _Última actualización: 2026-10-26_
 | Versión actual | **v0.5.0** (`anyremote_app.exe` + `anyremoted.exe`) |
 | Ramas | `main` = `34da66e` (PR #6) · `develop` = `dcadc5a` (tag `entrada-v0.5.0`) |
 | Gates actuales | **Rust 37 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 3/3 |
-| Validación de campo | ✅ LAN: sesión estable · portapapeles bidireccional · **visor de pantalla remota** · cierre ordenado · reanudación (v0.3.0+) · resolución nativa + perfiles (v0.4.0) · 🟡 **entrada en sesión (v0.5.0): gate verde, pendiente prueba de campo** |
+| Validación de campo | ✅ LAN: sesión estable · portapapeles bidireccional · **visor de pantalla remota** · cierre ordenado · reanudación (v0.3.0+) · resolución nativa + perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** |
 | PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · **#6 (v0.5.0 entrada)** |
 
 ### Requisitos
@@ -33,7 +33,7 @@ _Última actualización: 2026-10-26_
 ### Pendientes
 
 1. **Audio en sesión** (micrófono/sistema + codec Opus — semilla H-RD `audio_capture`).
-2. **Prueba de campo de la entrada (v0.5.0)**: verificar en LAN control real + denegación sin `--allow-input`; después, **acuse de inyección al visor** (hoy el `input_injected`/`input_denied` solo lo ve el anfitrión).
+2. **Acuse de inyección al visor**: hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor cuenta únicamente lo que envía.
 3. **Identidad persistente + trust por dispositivo**: cada arranque genera un ID nuevo (`peer_trusted` siempre false) → persistir la clave en el directorio de config y confiar por ID conocido.
 4. **WAN**: firewall/UPnP/NAT (hoy LAN + regla `netsh` manual documentada).
 5. Gates de CI (`clippy`/`fmt`) y build reproducible.

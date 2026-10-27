@@ -47,7 +47,7 @@
 ## Pendientes (estado actual)
 
 1. Audio en sesión (semilla H-RD `audio_capture`/`CapturePcm`, codec Opus).
-2. Entrada v0.5.0: prueba de campo en LAN + **acuse de inyección al controlador** (hoy `input_injected`/`input_denied` solo los audita el anfitrión).
+2. **Acuse de inyección al controlador** (hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor solo cuenta lo enviado).
 3. Identidad persistente + trust por dispositivo (hoy: ID efímero, `peer_trusted` siempre false).
 4. WAN (firewall/UPnP/NAT) y gates de CI (`clippy`/`fmt`).
 5. Teclas F1..F12, Insert, PageUp/Down y bloqueos en la tabla de entrada.

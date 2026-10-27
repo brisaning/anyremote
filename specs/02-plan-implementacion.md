@@ -35,7 +35,7 @@ _Última actualización: 2026-10-26 · v0.5.0 · `main`=34da66e · `develop`=dca
 | Hito M2 Visor remoto | ✅ validado en campo | `m2-video-v0.2.0`, `integracion-v0.2.1` |
 | Lote calidad/robustez v0.3.0 | ✅ validado en campo | `calidad-v0.3.0` · PR #3 |
 | Lote UI v0.4.0 (nativo+perfiles) | ✅ | `ui-v0.4.0` · PR #4 |
-| Entrada en sesión v0.5.0 (RF-02a) | ✅ gate verde · 🟡 pendiente campo | `entrada-v0.5.0` · `evidence/input-session-gate.md` |
+| Entrada en sesión v0.5.0 (RF-02a) | ✅ **validada en campo** (control remoto real en LAN) | `entrada-v0.5.0` · `evidence/input-session-gate.md` |
 | **Pendientes** | 🟡 audio · campo v0.5.0 + acuse de inyección · identidad persistente · WAN · CI | [README § Pendientes](../README.md#pendientes) |
 
 ---
