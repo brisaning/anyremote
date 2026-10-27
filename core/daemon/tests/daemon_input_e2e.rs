@@ -17,7 +17,9 @@ fn temp_cfg_dir(tag: &str) -> PathBuf {
 }
 
 async fn free_port() -> u16 {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind probe");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind probe");
     let p = l.local_addr().expect("addr").port();
     drop(l);
     p
@@ -86,18 +88,26 @@ async fn input_partial_grant_injects_keyboard_and_denies_pointer() {
     let port = free_port().await;
 
     let listen_dir = cfg_dir.clone();
-    let listen = tokio::spawn(async move {
-        run_listen(listen_cfg(listen_dir, port, &["keyboard"], true)).await
-    });
+    let listen =
+        tokio::spawn(
+            async move { run_listen(listen_cfg(listen_dir, port, &["keyboard"], true)).await },
+        );
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    let ctl = controller(cfg_dir.clone(), port, &["keyboard"], &[KEY_A, POINTER, "bye"]).await;
+    let ctl = controller(
+        cfg_dir.clone(),
+        port,
+        &["keyboard"],
+        &[KEY_A, POINTER, "bye"],
+    )
+    .await;
     let srv = listen.await.expect("join listener").expect("listener ok");
 
     // El controlado inyecta la tecla y deniega el puntero (D-07 por permiso).
     let ev = srv.events.join("\n");
     assert!(
-        ev.contains("\"event\":\"input_injected\"") && ev.contains("\"input\":\"KeyDown(Char('a'))\""),
+        ev.contains("\"event\":\"input_injected\"")
+            && ev.contains("\"input\":\"KeyDown(Char('a'))\""),
         "falta inyección de la tecla:\n{ev}"
     );
     assert!(
@@ -162,7 +172,10 @@ async fn input_denied_by_default_without_allow_input() {
 
     let kinds = audit_kinds(&cfg_dir);
     assert!(kinds.contains("InputDenied"), "audit: {kinds}");
-    assert!(!kinds.contains("InputInjected"), "audit sin inyecciones: {kinds}");
+    assert!(
+        !kinds.contains("InputInjected"),
+        "audit sin inyecciones: {kinds}"
+    );
 
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }

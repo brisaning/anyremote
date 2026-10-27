@@ -68,7 +68,9 @@ pub fn binding_of_server(stream: &server::TlsStream<TcpStream>) -> Result<Vec<u8
     export(stream.get_ref().1)
 }
 
-fn export(conn: &rustls::ConnectionCommon<impl rustls::SideData>) -> Result<Vec<u8>, TransportError> {
+fn export(
+    conn: &rustls::ConnectionCommon<impl rustls::SideData>,
+) -> Result<Vec<u8>, TransportError> {
     let mut buf = [0u8; 32];
     conn.export_keying_material(&mut buf, BINDING_LABEL.as_bytes(), None)
         .map_err(|e| TransportError::Auth(format!("exportar binding: {e}")))?;

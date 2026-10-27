@@ -15,12 +15,11 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 /// Instala el proveedor crypto `ring` de rustls una sola vez por proceso.
 pub fn install_crypto() {
-    static ONCE: Once = ONCE_INIT;
+    static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
 }
-const ONCE_INIT: Once = Once::new();
 
 /// Certificado auto-firmado del nodo servidor (S0: "handshake simulado" — el DER del cert
 /// se distribuye fuera de banda; C2 lo reemplaza por pinning ed25519 vía `identity`).
@@ -84,13 +83,17 @@ pub mod cert_store {
     const CERT_FILE: &str = "server_cert.pem";
     const KEY_FILE: &str = "server_key.pem";
 
-    pub fn ensure(dir: &Path) -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>), TransportError> {
+    pub fn ensure(
+        dir: &Path,
+    ) -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>), TransportError> {
         std::fs::create_dir_all(dir).map_err(|e| TransportError::Io(e.to_string()))?;
         let cp = dir.join(CERT_FILE);
         let kp = dir.join(KEY_FILE);
         if cp.exists() && kp.exists() {
-            let cert_pem = std::fs::read_to_string(&cp).map_err(|e| TransportError::Io(e.to_string()))?;
-            let key_pem = std::fs::read_to_string(&kp).map_err(|e| TransportError::Io(e.to_string()))?;
+            let cert_pem =
+                std::fs::read_to_string(&cp).map_err(|e| TransportError::Io(e.to_string()))?;
+            let key_pem =
+                std::fs::read_to_string(&kp).map_err(|e| TransportError::Io(e.to_string()))?;
             let cert = cert_from_pem(&cert_pem)?;
             let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
                 .map_err(|e| TransportError::Config(format!("PEM key: {e}")))?
@@ -197,7 +200,9 @@ pub mod cert_store {
         tcp.write_all(b"\n")
             .await
             .map_err(|e| TransportError::Io(e.to_string()))?;
-        tcp.flush().await.map_err(|e| TransportError::Io(e.to_string()))?;
+        tcp.flush()
+            .await
+            .map_err(|e| TransportError::Io(e.to_string()))?;
         Ok(())
     }
 
@@ -210,7 +215,10 @@ pub mod cert_store {
         let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             let mut reader = BufReader::new(&mut *tcp);
             let mut magic = String::new();
-            reader.read_line(&mut magic).await.map_err(|e| TransportError::Io(e.to_string()))?;
+            reader
+                .read_line(&mut magic)
+                .await
+                .map_err(|e| TransportError::Io(e.to_string()))?;
             if magic.trim() != BOOTSTRAP_MAGIC {
                 return Err(TransportError::Config(format!(
                     "bootstrap inesperado: {:?}",
@@ -218,7 +226,8 @@ pub mod cert_store {
                 )));
             }
             let mut len_line = String::new();
-            reader.read_line(&mut len_line)
+            reader
+                .read_line(&mut len_line)
                 .await
                 .map_err(|e| TransportError::Io(e.to_string()))?;
             let len: usize = len_line
@@ -229,7 +238,10 @@ pub mod cert_store {
                 return Err(TransportError::Config("bootstrap excesivo".into()));
             }
             let mut pem = vec![0u8; len];
-            reader.read_exact(&mut pem).await.map_err(|e| TransportError::Io(e.to_string()))?;
+            reader
+                .read_exact(&mut pem)
+                .await
+                .map_err(|e| TransportError::Io(e.to_string()))?;
             let mut nl = [0u8; 1];
             let _ = reader.read_exact(&mut nl).await;
             let pem = String::from_utf8(pem)
@@ -325,13 +337,18 @@ mod tests {
             let mut tls = acceptor.accept(tcp).await.expect("tls accept");
             let ping = read_frame(&mut tls).await.expect("read ping");
             assert_eq!(ping, b"anyremote::ping");
-            write_frame(&mut tls, b"anyremote::pong").await.expect("write pong");
+            write_frame(&mut tls, b"anyremote::pong")
+                .await
+                .expect("write pong");
         });
 
         let connector = TlsConnector::from(std::sync::Arc::new(cli_cfg));
         let tcp = TcpStream::connect(addr).await.expect("connect");
         let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
-        let mut tls = connector.connect(server_name, tcp).await.expect("tls connect");
+        let mut tls = connector
+            .connect(server_name, tcp)
+            .await
+            .expect("tls connect");
 
         let mut state = SessionState::Handshaking;
         state = state.transition(SessionEvent::HandshakeOk).unwrap();
@@ -339,12 +356,17 @@ mod tests {
         state = state.transition(SessionEvent::PermissionGranted).unwrap();
         assert_eq!(state, SessionState::Active);
 
-        write_frame(&mut tls, b"anyremote::ping").await.expect("write ping");
+        write_frame(&mut tls, b"anyremote::ping")
+            .await
+            .expect("write ping");
         let pong = read_frame(&mut tls).await.expect("read pong");
         assert_eq!(pong, b"anyremote::pong");
 
         state = state.transition(SessionEvent::StartClose).unwrap();
-        assert_eq!(state.transition(SessionEvent::Closed).unwrap(), SessionState::Closed);
+        assert_eq!(
+            state.transition(SessionEvent::Closed).unwrap(),
+            SessionState::Closed
+        );
         server.await.expect("server task");
     }
 

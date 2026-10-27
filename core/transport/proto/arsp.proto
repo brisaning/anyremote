@@ -22,6 +22,7 @@ message Envelope {
     FileDone file_done = 21;
     FileReady file_ready = 22;
     AudioFrame audio_frame = 23;
+    InputAck input_ack = 24;
   }
 }
 
@@ -82,6 +83,14 @@ message VideoFrame {
   bytes data = 5;
 }
 
+// Acuse de entrada (RF-02a): el controlado confirma si el evento se INYECTÓ
+// (ok) o por qué se rechazó → el visor sabe si el control realmente actúa.
+message InputAck {
+  bool ok = 1;
+  string perm = 2;   // permiso evaluado (keyboard/mouse); vacío si no llegó a evaluar
+  string detail = 3; // motivo si !ok: toggle_apagado | no_concedido | unsupported | error; vacío si ok
+}
+
 // Evento de entrada remoto (RF-02a; inyección bajo permiso D-07).
 message InputEventMsg {
   oneof ev {
@@ -98,6 +107,7 @@ message Key {
   //   1=escape 2=tab 3=enter 4=backspace 5=delete
   //   6=left 7=right 8=up 9=down 10=home 11=end
   //   20=ctrl 21=alt 22=shift
+  //   30..41 = F1..F12
   uint32 code = 1;
   bool down = 2;
   bool extended = 3;  // reservado (el backend win32 infiere la extensión de la tecla)

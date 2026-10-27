@@ -34,7 +34,9 @@ impl SessionState {
             (S::Handshaking, E::HandshakeOk) => S::AwaitingPermission,
             (S::AwaitingPermission, E::PermissionGranted) => S::Active,
             (S::AwaitingPermission, E::PermissionDenied) => S::Closing,
-            (S::Active, E::StartClose) | (S::AwaitingPermission, E::StartClose) | (S::Handshaking, E::StartClose) => S::Closing,
+            (S::Active, E::StartClose)
+            | (S::AwaitingPermission, E::StartClose)
+            | (S::Handshaking, E::StartClose) => S::Closing,
             (S::Closing, E::Closed) => S::Closed,
             (s, e) => return Err(SessionError::IllegalTransition(s, e)),
         };
@@ -106,7 +108,10 @@ mod tests {
     fn illegal_transitions_are_rejected() {
         assert_eq!(
             S::Handshaking.transition(E::PermissionGranted),
-            Err(SessionError::IllegalTransition(S::Handshaking, E::PermissionGranted))
+            Err(SessionError::IllegalTransition(
+                S::Handshaking,
+                E::PermissionGranted
+            ))
         );
         assert_eq!(
             S::Closed.transition(E::HandshakeOk),

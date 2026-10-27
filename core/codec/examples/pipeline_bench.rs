@@ -43,7 +43,6 @@ fn main() {
     // ---- Brazo VP9 (gate C3-bis): códec con pérdida — verificación geométrica, no byte a byte ----
     #[cfg(feature = "vpx")]
     {
-        use anyremote_codec::VideoEncoder;
         let mut capturer = TestPatternCapturer::new(W, H);
         let mut encoder = anyremote_codec::encoder_for(CodecFormat::Vp9);
         let mut decoder = NativeDecoder::new();
@@ -79,7 +78,10 @@ fn main() {
         println!(
             "[Vp9] encode={enc_fps:.0} fps · decode={dec_fps:.0} fps · pipeline={input_fps:.0} fps · frames={encoded_count}/{decoded_count} · compresión={ratio:.3}x ({encoded_bytes} B)"
         );
-        assert!(enc_fps >= 30.0, "objetivo RNF-02: >=30 fps encode, llegó {enc_fps:.1}");
+        assert!(
+            enc_fps >= 30.0,
+            "objetivo RNF-02: >=30 fps encode, llegó {enc_fps:.1}"
+        );
     }
     println!("=== benchmark completado (integridad verificada en todos los frames) ===");
 }

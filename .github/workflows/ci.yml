@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+# El proyecto es Windows-only (DXGI, WASAPI, SendInput, Flutter Windows):
+# los gates corren en windows-latest (MSVC + Windows SDK + CMake preinstalados;
+# CMake es necesario para libvpx/shiguredo y opusic-sys).
+jobs:
+  rust:
+    name: Rust (fmt + clippy + test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt (formato)
+        run: cargo fmt --check --manifest-path core/Cargo.toml
+      - name: clippy (avisos como errores)
+        run: cargo clippy --workspace --all-targets --manifest-path core/Cargo.toml -- -D warnings
+      - name: tests
+        run: cargo test --workspace --manifest-path core/Cargo.toml
+
+  flutter:
+    name: Flutter (analyze + test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: dependencias
+        run: flutter pub get
+        working-directory: app
+      - name: analyze
+        run: flutter analyze
+        working-directory: app
+      - name: test
+        run: flutter test
+        working-directory: app

@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
 use anyremote_audio::{AudioCapture, AudioMode, AudioPlayback, AudioSource, OpusCodec};
+use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
+use anyremote_codec::VideoDecoder;
 use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender};
 use anyremote_identity::{Identity, TrustStore};
-use anyremote_codec::VideoDecoder;
 use anyremote_input::InputInjector;
 use anyremote_session::{LinkStats, SessionEvent, SessionState};
 use anyremote_telemetry::{AuditEventKind, SessionLog, SessionReport};
@@ -30,7 +30,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 pub mod preview;
 pub mod video;
 
-use video::{spawn_video_task, VideoMsg, VideoMode};
+use video::{spawn_video_task, VideoMode, VideoMsg};
 
 #[derive(Debug)]
 pub enum DaemonError {
@@ -221,7 +221,11 @@ fn parse_input_line(line: &str) -> Result<Option<proto::InputEventMsg>, String> 
                 code: k.get("code").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
                 down: k.get("down").and_then(|x| x.as_bool()).unwrap_or(false),
                 extended: false,
-                ch: k.get("ch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                ch: k
+                    .get("ch")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
             })),
         }
     } else if let Some(p) = spec.get("pointer") {
@@ -328,8 +332,8 @@ fn spawn_audio_capture(
             );
             emit.emit(ev(
                 "audio_error",
-                serde_json::json!({"detail": e.to_string()})),
-            );
+                serde_json::json!({"detail": e.to_string()}),
+            ));
             None
         }
     }
@@ -420,8 +424,8 @@ impl DynamicPerms {
             "permissions_updated",
             serde_json::json!({
                 "input": self.input_on,
-                "audio": self.sources.iter().any(|s| *s == AudioSource::System),
-                "mic": self.sources.iter().any(|s| *s == AudioSource::Microphone),
+                "audio": self.sources.contains(&AudioSource::System),
+                "mic": self.sources.contains(&AudioSource::Microphone),
             }),
         ));
     }
@@ -517,7 +521,9 @@ fn make_clipboard(cfg: &DaemonConfig) -> Result<BoxedClip, DaemonError> {
             }
             #[cfg(not(windows))]
             {
-                Err(DaemonError::Config("--clipboard win no soportado aquí".into()))
+                Err(DaemonError::Config(
+                    "--clipboard win no soportado aquí".into(),
+                ))
             }
         }
     }
@@ -584,20 +590,29 @@ fn transition(state: SessionState, ev: SessionEvent) -> Result<SessionState, Dae
 /// ¿El error indica que el par desapareció (FIN/RST)? → cierre limpio, no error.
 fn conn_gone(e: &anyremote_transport::TransportError) -> bool {
     let s = format!("{e:?}").to_lowercase();
-    ["10053", "10054", "1006", "eof", "anulada", "reset", "closed"].iter().any(|k| s.contains(k))
+    [
+        "10053", "10054", "1006", "eof", "anulada", "reset", "closed",
+    ]
+    .iter()
+    .any(|k| s.contains(k))
 }
 
 /// Resultado del establecimiento con un cliente.
+#[allow(clippy::large_enum_variant)] // `Channel` domina en tamaño; boxear solo añadiría indirección.
 enum Established {
     /// Sesión autenticada y con permisos → `active_controlled` con la
     /// **concesión efectiva** (`granted`, D-07) para validar cada evento de entrada.
-    Active(arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>, Vec<String>),
+    Active(
+        arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>,
+        Vec<String>,
+    ),
     /// Permiso denegado: cliente descartado; el listener sigue vivo.
     Denied,
 }
 
 /// Handshake con UN cliente ya aceptado: bootstrap → TLS → auth (C2) → permisos (C1).
 /// Todo fallo aquí es del cliente (el caller continúa aceptando).
+#[allow(clippy::too_many_arguments)] // capas de sesión: cada parámetro tiene dueño claro.
 async fn establish_controlled(
     mut tcp: TcpStream,
     peer: std::net::SocketAddr,
@@ -623,7 +638,7 @@ async fn establish_controlled(
     let mut gate = auth::AuthGate::new();
     let trust = TrustStore::load(&cfg.config_dir);
     let peer_id = auth::recv_validate_auth(&mut ch, &mut gate, &trust, &binding).await?;
-    auth::send_auth(&mut ch, &identity, &binding).await?;
+    auth::send_auth(&mut ch, identity, &binding).await?;
     // D-03 (TOFU): se recuerda el par autenticado; en la próxima sesión del
     // mismo equipo `peer_trusted` será true.
     TrustStore::remember(&cfg.config_dir, &peer_id.node_id, &peer_id.pubkey);
@@ -640,7 +655,8 @@ async fn establish_controlled(
     // C1: hello/welcome + permisos (el controlado SOLICITA; D-07 por defecto nada activo).
     let hello = ch.recv().await?;
     arsp::check_version(&hello).map_err(DaemonError::Config)?;
-    ch.send(arsp::welcome(&identity.node_id().to_string())).await?;
+    ch.send(arsp::welcome(&identity.node_id().to_string()))
+        .await?;
     let mut requested = cfg.grant.clone();
     if cfg.audio != AudioMode::Off && !requested.iter().any(|p| p == "audio") {
         requested.push("audio".into()); // RF audio: pedir `audio` solo con `--audio`
@@ -669,7 +685,10 @@ async fn establish_controlled(
             session_id,
             serde_json::json!({"from": "controller", "peer": peer.to_string()}),
         )?;
-        emit.emit(ev("client_failed", serde_json::json!({"peer": peer.to_string(), "detail": "permission_denied"})));
+        emit.emit(ev(
+            "client_failed",
+            serde_json::json!({"peer": peer.to_string(), "detail": "permission_denied"}),
+        ));
         return Ok(Established::Denied);
     }
     log.record(
@@ -714,7 +733,8 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
     ));
 
     let acceptor = TlsAcceptor::from(Arc::new(srv_cfg));
-    let listen_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(cfg.max_secs);
+    let listen_deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_secs(cfg.max_secs);
 
     loop {
         let remaining = listen_deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -724,7 +744,10 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                 &session_id,
                 serde_json::json!({"reason":"listen_timeout","role":"listener"}),
             )?;
-            emit.emit(ev("closed", serde_json::json!({"reason": "listen_timeout"})));
+            emit.emit(ev(
+                "closed",
+                serde_json::json!({"reason": "listen_timeout"}),
+            ));
             report.finish();
             break;
         }
@@ -738,7 +761,10 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                     &session_id,
                     serde_json::json!({"reason":"listen_timeout","role":"listener"}),
                 )?;
-                emit.emit(ev("closed", serde_json::json!({"reason": "listen_timeout"})));
+                emit.emit(ev(
+                    "closed",
+                    serde_json::json!({"reason": "listen_timeout"}),
+                ));
                 report.finish();
                 break;
             }
@@ -762,15 +788,40 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         match attempt {
             Ok(Ok(Established::Active(mut ch, granted))) => {
                 // Errores de sesión en curso → cierre limpio auditable (no matan el listener como proceso con pánico).
-                return match active_controlled(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, &granted, bye_rx).await {
+                return match active_controlled(
+                    &mut ch,
+                    &mut log,
+                    &mut report,
+                    &mut emit,
+                    &cfg,
+                    &session_id,
+                    &granted,
+                    bye_rx,
+                )
+                .await
+                {
                     Ok(o) => Ok(o),
                     Err(e) => {
-                        log.record(AuditEventKind::Error, &session_id,
-                            serde_json::json!({"session_error": e.to_string()}))?;
-                        emit.emit(ev("closed", serde_json::json!({"reason": format!("session_error: {e}")})));
+                        log.record(
+                            AuditEventKind::Error,
+                            &session_id,
+                            serde_json::json!({"session_error": e.to_string()}),
+                        )?;
+                        emit.emit(ev(
+                            "closed",
+                            serde_json::json!({"reason": format!("session_error: {e}")}),
+                        ));
                         report.finish();
-                        log.record(AuditEventKind::Disconnected, &session_id, report.disconnect_event())?;
-                        Ok(RunOutcome { report, events: emit.events, clipboard_final: None })
+                        log.record(
+                            AuditEventKind::Disconnected,
+                            &session_id,
+                            report.disconnect_event(),
+                        )?;
+                        Ok(RunOutcome {
+                            report,
+                            events: emit.events,
+                            clipboard_final: None,
+                        })
                     }
                 };
             }
@@ -855,6 +906,7 @@ async fn receive_file_offer<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Un
         .map(|data| (data, tid))
 }
 
+#[allow(clippy::too_many_arguments)] // capas de sesión con dueño claro por parámetro.
 async fn active_controlled(
     ch: &mut arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>,
     log: &mut SessionLog,
@@ -866,7 +918,8 @@ async fn active_controlled(
     mut bye_rx: tokio::sync::mpsc::Receiver<String>,
 ) -> Result<RunOutcome, DaemonError> {
     let mut engine = Engine::new(make_clipboard(cfg)?);
-    let mut files = FileReceiver::new_with_store(file_policy(cfg), cfg.config_dir.join("transfers"));
+    let mut files =
+        FileReceiver::new_with_store(file_policy(cfg), cfg.config_dir.join("transfers"));
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(cfg.max_secs);
     let mut clip_tick = tokio::time::interval(std::time::Duration::from_millis(500));
     let state = SessionState::Active;
@@ -935,11 +988,14 @@ async fn active_controlled(
     if cfg.video != VideoMode::Off {
         let (preview_srv, preview_port, _preview_task) = preview::PreviewServer::start();
         emit.emit(ev("preview", serde_json::json!({ "port": preview_port })));
-        emit.emit(ev("video_start", serde_json::json!({
-            "mode": format!("{:?}", cfg.video),
-            "width": cfg.video_size.0, "height": cfg.video_size.1,
-            "fps": cfg.video_fps, "codec": format!("{:?}", cfg.codec),
-        })));
+        emit.emit(ev(
+            "video_start",
+            serde_json::json!({
+                "mode": format!("{:?}", cfg.video),
+                "width": cfg.video_size.0, "height": cfg.video_size.1,
+                "fps": cfg.video_fps, "codec": format!("{:?}", cfg.codec),
+            }),
+        ));
         let _video_thread = spawn_video_task(
             cfg.video,
             cfg.video_size,
@@ -956,11 +1012,22 @@ async fn active_controlled(
         // Cierre encolado antes de la sesión (p. ej. `bye` escrito al arrancar
         // el listener): se cumple al iniciar ésta.
         if let Some(reason) = pending_bye.take() {
-            let reason = if reason.trim().is_empty() { "stdin".to_string() } else { reason };
-            let _ = ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: reason.clone() })).await;
+            let reason = if reason.trim().is_empty() {
+                "stdin".to_string()
+            } else {
+                reason
+            };
+            let _ = ch
+                .send(proto::envelope::Payload::Bye(proto::Bye {
+                    reason: reason.clone(),
+                }))
+                .await;
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            log.record(AuditEventKind::Disconnected, session_id,
-                serde_json::json!({"reason": reason, "role": "listener"}))?;
+            log.record(
+                AuditEventKind::Disconnected,
+                session_id,
+                serde_json::json!({"reason": reason, "role": "listener"}),
+            )?;
             emit.emit(ev("closed", serde_json::json!({"reason": reason})));
             break;
         }
@@ -1045,35 +1112,67 @@ async fn active_controlled(
                         // El controlado no recibe audio: ignora con seguridad.
                     }
                     Some(proto::envelope::Payload::InputEvent(m)) => {
-                        // RF-02a: entrada del controlador → validar permiso (D-07) → inyectar.
-                        let Some(iev) = arsp::input_event_from_wire(&m) else {
-                            log.record(AuditEventKind::InputDenied, session_id,
-                                serde_json::json!({"reason": "unsupported"}))?;
-                            emit.emit(ev("input_denied", serde_json::json!({"reason": "unsupported"})));
-                            continue;
-                        };
-                        let need = input_permission(&iev);
-                        let allowed = perms.input_on && granted.iter().any(|p| p == need);
-                        if !allowed {
-                            log.record(AuditEventKind::InputDenied, session_id,
-                                serde_json::json!({"perm": need, "allow_input": perms.input_on}))?;
-                            emit.emit(ev("input_denied",
-                                serde_json::json!({"perm": need, "allow_input": perms.input_on})));
-                            continue;
-                        }
-                        match injector.inject(&iev) {
-                            Ok(()) => {
-                                // Clave `input` (no `event`: `ev()` propagaría la colisión y
-                                // taparía el tipo de evento en la UI).
-                                let detail = serde_json::json!({"perm": need, "input": format!("{iev:?}")});
-                                log.record(AuditEventKind::InputInjected, session_id, detail.clone())?;
-                                emit.emit(ev("input_injected", detail));
+                        // RF-02a: entrada del controlador → validar permiso (D-07) →
+                        // inyectar y ACUSAR al controlador (`InputAck`): el visor
+                        // cuenta las realmente inyectadas y ve los rechazos.
+                        let (ack_ok, ack_perm, ack_detail) =
+                            match arsp::input_event_from_wire(&m) {
+                                None => {
+                                    log.record(AuditEventKind::InputDenied, session_id,
+                                        serde_json::json!({"reason": "unsupported"}))?;
+                                    emit.emit(ev("input_denied",
+                                        serde_json::json!({"reason": "unsupported"})));
+                                    (false, String::new(), "unsupported".to_string())
+                                }
+                                Some(iev) => {
+                                    let need = input_permission(&iev);
+                                    let allowed =
+                                        perms.input_on && granted.iter().any(|p| p == need);
+                                    if !allowed {
+                                        let reason = if !perms.input_on {
+                                            "toggle_apagado"
+                                        } else {
+                                            "no_concedido"
+                                        };
+                                        log.record(AuditEventKind::InputDenied, session_id,
+                                            serde_json::json!({"perm": need, "allow_input": perms.input_on}))?;
+                                        emit.emit(ev("input_denied",
+                                            serde_json::json!({"perm": need, "allow_input": perms.input_on})));
+                                        (false, need.to_string(), reason.to_string())
+                                    } else {
+                                        match injector.inject(&iev) {
+                                            Ok(()) => {
+                                                let detail = serde_json::json!({"perm": need, "input": format!("{iev:?}")});
+                                                log.record(AuditEventKind::InputInjected, session_id, detail.clone())?;
+                                                emit.emit(ev("input_injected", detail));
+                                                (true, need.to_string(), String::new())
+                                            }
+                                            Err(e) => {
+                                                log.record(AuditEventKind::Error, session_id,
+                                                    serde_json::json!({"input": format!("{e:?}")}))?;
+                                                emit.emit(ev("input_error",
+                                                    serde_json::json!({"detail": format!("{e:?}")})));
+                                                (false, need.to_string(), format!("{e:?}"))
+                                            }
+                                        }
+                                    }
+                                }
+                            };
+                        if let Err(e) = ch
+                            .send(proto::envelope::Payload::InputAck(proto::InputAck {
+                                ok: ack_ok,
+                                perm: ack_perm,
+                                detail: ack_detail,
+                            }))
+                            .await
+                        {
+                            if conn_gone(&e) {
+                                log.record(AuditEventKind::Disconnected, session_id,
+                                    serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                                emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                                break;
                             }
-                            Err(e) => {
-                                log.record(AuditEventKind::Error, session_id,
-                                    serde_json::json!({"input": format!("{e:?}")}))?;
-                                emit.emit(ev("input_error", serde_json::json!({"detail": format!("{e:?}")})));
-                            }
+                            return Err(e.into());
                         }
                     }
                     Some(proto::envelope::Payload::Bye(b)) => {
@@ -1230,14 +1329,24 @@ async fn active_controlled(
     }
 
     report.finish();
-    log.record(AuditEventKind::Disconnected, session_id, report.disconnect_event())?;
+    log.record(
+        AuditEventKind::Disconnected,
+        session_id,
+        report.disconnect_event(),
+    )?;
     // La lectura final del portapapeles NO debe romper el cierre (modo flaky/bloqueo real).
     let clipboard_final = match engine.text() {
         Ok(t) => t,
         Err(e) => {
-            log.record(AuditEventKind::Error, session_id,
-                serde_json::json!({"clipboard": format!("{e:?}"), "dir":"final"}))?;
-            emit.emit(ev("clipboard_error", serde_json::json!({"dir":"final","detail": format!("{e:?}")})));
+            log.record(
+                AuditEventKind::Error,
+                session_id,
+                serde_json::json!({"clipboard": format!("{e:?}"), "dir":"final"}),
+            )?;
+            emit.emit(ev(
+                "clipboard_error",
+                serde_json::json!({"dir":"final","detail": format!("{e:?}")}),
+            ));
             None
         }
     };
@@ -1330,7 +1439,10 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     if let Some(pem) = pending_pin {
         // Auth OK: el pin recibido es legítimo para esta identidad → persistir (por destino).
         anyremote_transport::cert_store::save_trusted(&cfg.config_dir, &target, &pem)?;
-        emit.emit(ev("cert_pinned", serde_json::json!({"target": target.clone()})));
+        emit.emit(ev(
+            "cert_pinned",
+            serde_json::json!({"target": target.clone()}),
+        ));
     }
     log.record(
         AuditEventKind::SessionEstablished,
@@ -1343,7 +1455,8 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     ));
 
     // C1: hello → welcome → solicitud → concesión (intersección con --grant).
-    ch.send(arsp::hello(&identity.node_id().to_string(), &session_id)).await?;
+    ch.send(arsp::hello(&identity.node_id().to_string(), &session_id))
+        .await?;
     let welcome = ch.recv().await?;
     arsp::check_version(&welcome).map_err(DaemonError::Config)?;
     let req = ch.recv().await?;
@@ -1373,7 +1486,10 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
             &session_id,
             serde_json::json!({"reason": "interseccion_vacia"}),
         )?;
-        emit.emit(ev("closed", serde_json::json!({"reason": "permission_denied"})));
+        emit.emit(ev(
+            "closed",
+            serde_json::json!({"reason": "permission_denied"}),
+        ));
         report.finish();
         return Ok(RunOutcome {
             report,
@@ -1381,31 +1497,64 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
             clipboard_final: None,
         });
     }
-    log.record(AuditEventKind::PermissionGranted, &session_id, serde_json::json!({"perms": allowed}))?;
+    log.record(
+        AuditEventKind::PermissionGranted,
+        &session_id,
+        serde_json::json!({"perms": allowed}),
+    )?;
     // RF audio (C-2): el reproductor queda PREPARADO aunque el anfitrión no
     // comparta al inicio — si lo activa en caliente durante la sesión, sonará.
     // El `audio_denied` inicial es informativo (no llegan frames hasta que comparte).
     if cfg.audio != AudioMode::Off && !allowed.iter().any(|p| p == "audio") {
-        emit.emit(ev("audio_denied", serde_json::json!({
-            "reason": "no_concedido_inicial",
-            "detail": "si el anfitrión comparte durante la sesión se reproducirá",
-        })));
+        emit.emit(ev(
+            "audio_denied",
+            serde_json::json!({
+                "reason": "no_concedido_inicial",
+                "detail": "si el anfitrión comparte durante la sesión se reproducirá",
+            }),
+        ));
     }
 
-    match active_controller(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, &peer_id.node_id.to_string(), bye_rx).await {
+    match active_controller(
+        &mut ch,
+        &mut log,
+        &mut report,
+        &mut emit,
+        &cfg,
+        &session_id,
+        &peer_id.node_id.to_string(),
+        bye_rx,
+    )
+    .await
+    {
         Ok(o) => Ok(o),
         Err(e) => {
             // Errores de sesión en curso → cierre limpio auditable.
-            log.record(AuditEventKind::Error, &session_id,
-                serde_json::json!({"session_error": e.to_string()}))?;
-            emit.emit(ev("closed", serde_json::json!({"reason": format!("session_error: {e}")})));
+            log.record(
+                AuditEventKind::Error,
+                &session_id,
+                serde_json::json!({"session_error": e.to_string()}),
+            )?;
+            emit.emit(ev(
+                "closed",
+                serde_json::json!({"reason": format!("session_error: {e}")}),
+            ));
             report.finish();
-            log.record(AuditEventKind::Disconnected, &session_id, report.disconnect_event())?;
-            Ok(RunOutcome { report, events: emit.events, clipboard_final: None })
+            log.record(
+                AuditEventKind::Disconnected,
+                &session_id,
+                report.disconnect_event(),
+            )?;
+            Ok(RunOutcome {
+                report,
+                events: emit.events,
+                clipboard_final: None,
+            })
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)] // capas de sesión con dueño claro por parámetro.
 async fn active_controller(
     ch: &mut arsp::Channel<tokio_rustls::client::TlsStream<TcpStream>>,
     log: &mut SessionLog,
@@ -1417,7 +1566,8 @@ async fn active_controller(
     mut bye_rx: tokio::sync::mpsc::Receiver<String>,
 ) -> Result<RunOutcome, DaemonError> {
     let mut engine = Engine::new(make_clipboard(cfg)?);
-    let mut files = FileReceiver::new_with_store(file_policy(cfg), cfg.config_dir.join("transfers"));
+    let mut files =
+        FileReceiver::new_with_store(file_policy(cfg), cfg.config_dir.join("transfers"));
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(cfg.max_secs);
     let mut hb_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut clip_tick = tokio::time::interval(std::time::Duration::from_millis(500));
@@ -1436,16 +1586,25 @@ async fn active_controller(
     if cfg.audio != AudioMode::Off {
         match AudioPlayback::start(cfg.audio) {
             Ok(pb) => {
-                emit.emit(ev("audio_start", serde_json::json!({
-                    "mode": format!("{:?}", cfg.audio),
-                    "rate": anyremote_audio::AUDIO_RATE,
-                })));
+                emit.emit(ev(
+                    "audio_start",
+                    serde_json::json!({
+                        "mode": format!("{:?}", cfg.audio),
+                        "rate": anyremote_audio::AUDIO_RATE,
+                    }),
+                ));
                 playback = Some(pb);
             }
             Err(e) => {
-                log.record(AuditEventKind::Error, session_id,
-                    serde_json::json!({"audio": e.to_string()}))?;
-                emit.emit(ev("audio_error", serde_json::json!({"detail": e.to_string()})));
+                log.record(
+                    AuditEventKind::Error,
+                    session_id,
+                    serde_json::json!({"audio": e.to_string()}),
+                )?;
+                emit.emit(ev(
+                    "audio_error",
+                    serde_json::json!({"detail": e.to_string()}),
+                ));
             }
         }
     }
@@ -1479,16 +1638,19 @@ async fn active_controller(
         let sender = FileSender::new(file_policy(cfg));
         let meta = sender.offer(1, &name, &data)?;
         let hex = sha256_hex(&data);
-        ch.send(proto::envelope::Payload::FileOffer(arsp::file_offer_to_wire(&meta))).await?;
+        ch.send(proto::envelope::Payload::FileOffer(
+            arsp::file_offer_to_wire(&meta),
+        ))
+        .await?;
         emit.emit(ev("file_sent", serde_json::json!({"name": name.clone()})));
 
-        let mut resume_from = 0u64;
-        loop {
+        let resume_from = loop {
             let env = ch.recv().await?;
             match env.payload {
-                Some(proto::envelope::Payload::FileReady(fr)) if fr.transfer_id == meta.transfer_id => {
-                    resume_from = fr.resume_offset;
-                    break;
+                Some(proto::envelope::Payload::FileReady(fr))
+                    if fr.transfer_id == meta.transfer_id =>
+                {
+                    break fr.resume_offset;
                 }
                 Some(proto::envelope::Payload::Clipboard(w)) => {
                     let content = arsp::clipboard_from_wire(w)?;
@@ -1497,16 +1659,16 @@ async fn active_controller(
                 Some(proto::envelope::Payload::Heartbeat(_)) => {}
                 Some(proto::envelope::Payload::VideoFrame(_)) => {}
                 other => {
-                    return Err(DaemonError::Config(format!("esperaba FileReady: {other:?}")))
+                    return Err(DaemonError::Config(format!(
+                        "esperaba FileReady: {other:?}"
+                    )))
                 }
             }
-        }
+        };
         for (off, chunk) in sender.chunks_from(&data, resume_from, 32 * 1024) {
-            ch.send(proto::envelope::Payload::FileChunk(arsp::file_chunk_to_wire(
-                meta.transfer_id,
-                off,
-                chunk,
-            )))
+            ch.send(proto::envelope::Payload::FileChunk(
+                arsp::file_chunk_to_wire(meta.transfer_id, off, chunk),
+            ))
             .await?;
         }
         report.record_frame_sent((data.len() as u64 - resume_from) as usize);
@@ -1681,6 +1843,13 @@ async fn active_controller(
                             }
                         }
                     }
+                    Some(proto::envelope::Payload::InputAck(a)) => {
+                        // Acuse (RF-02a): el visor sabe si el anfitrión inyectó
+                        // o por qué rechazó (contador de inyectadas + aviso).
+                        emit.emit(ev("input_result", serde_json::json!({
+                            "ok": a.ok, "perm": a.perm, "detail": a.detail,
+                        })));
+                    }
                     Some(proto::envelope::Payload::Bye(b)) => {
                         log.record(AuditEventKind::Disconnected, session_id,
                             serde_json::json!({"reason": b.reason.clone(), "role":"controller", "peer": peer}))?;
@@ -1825,14 +1994,24 @@ async fn active_controller(
         }),
     )?;
     report.finish();
-    log.record(AuditEventKind::Disconnected, session_id, report.disconnect_event())?;
+    log.record(
+        AuditEventKind::Disconnected,
+        session_id,
+        report.disconnect_event(),
+    )?;
     // La lectura final del portapapeles NO debe romper el cierre (modo flaky/bloqueo real).
     let clipboard_final = match engine.text() {
         Ok(t) => t,
         Err(e) => {
-            log.record(AuditEventKind::Error, session_id,
-                serde_json::json!({"clipboard": format!("{e:?}"), "dir":"final"}))?;
-            emit.emit(ev("clipboard_error", serde_json::json!({"dir":"final","detail": format!("{e:?}")})));
+            log.record(
+                AuditEventKind::Error,
+                session_id,
+                serde_json::json!({"clipboard": format!("{e:?}"), "dir":"final"}),
+            )?;
+            emit.emit(ev(
+                "clipboard_error",
+                serde_json::json!({"dir":"final","detail": format!("{e:?}")}),
+            ));
             None
         }
     };
@@ -1841,13 +2020,6 @@ async fn active_controller(
         events: emit.events.clone(),
         clipboard_final,
     })
-}
-
-fn name_hint(pending: &Option<(u64, String, String)>) -> String {
-    pending
-        .as_ref()
-        .map(|(_, _, n)| n.clone())
-        .unwrap_or_default()
 }
 
 /// Resuelve `--profile <alias>` contra el almacén de perfiles (C6).
@@ -1859,9 +2031,10 @@ pub fn resolve_profile(alias: &str, config_dir: &Path) -> Result<String, DaemonE
         .into_iter()
         .find(|p| p.id == alias)
         .map(|p| p.resolve())
-        .ok_or_else(|| DaemonError::Profile(anyremote_profiles::ProfileError::NotFound(alias.into())))
+        .ok_or_else(|| {
+            DaemonError::Profile(anyremote_profiles::ProfileError::NotFound(alias.into()))
+        })
 }
-
 
 #[cfg(test)]
 mod tests {

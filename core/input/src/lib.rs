@@ -21,6 +21,18 @@ pub enum Key {
     Down,
     Home,
     End,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
 }
 
 /// Botones de ratón.
@@ -40,13 +52,21 @@ pub enum InputEvent {
     /// El wire no depende de la resolución del vídeo ni de la del anfitrión
     /// (fix campo v0.6.2: antes eran píxeles de pantalla, lo que rompía el
     /// control cuando el vídeo iba escalado — 720p/1080p en pantalla nativa).
-    MoveTo { x: u16, y: u16 },
+    MoveTo {
+        x: u16,
+        y: u16,
+    },
     /// Movimiento relativo (píxeles).
-    MoveBy { dx: i32, dy: i32 },
+    MoveBy {
+        dx: i32,
+        dy: i32,
+    },
     ButtonDown(MouseButton),
     ButtonUp(MouseButton),
     /// Rueda: positivo = scroll hacia abajo, negativo = arriba.
-    Scroll { delta: i32 },
+    Scroll {
+        delta: i32,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -122,7 +142,8 @@ mod tests {
         let mut rec = RecordingInjector::new();
         rec.inject(&InputEvent::KeyDown(Key::Char('a'))).unwrap();
         rec.inject(&InputEvent::MoveTo { x: 100, y: 200 }).unwrap();
-        rec.inject(&InputEvent::ButtonUp(MouseButton::Left)).unwrap();
+        rec.inject(&InputEvent::ButtonUp(MouseButton::Left))
+            .unwrap();
         assert_eq!(
             rec.events,
             vec![

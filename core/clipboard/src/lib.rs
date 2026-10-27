@@ -250,10 +250,7 @@ mod tests {
             text: "x".into(),
         };
         // Simulación de formato no admitido en la frontera (wire=1 -> None).
-        assert_eq!(
-            reject_format(1),
-            Err(ClipboardError::UnsupportedFormat(1))
-        );
+        assert_eq!(reject_format(1), Err(ClipboardError::UnsupportedFormat(1)));
         // Aplicar con formato válido no afecta la negación anterior.
         assert!(eng.apply_remote(&c).unwrap());
         assert_eq!(eng.backend().current.as_deref(), Some("x"));

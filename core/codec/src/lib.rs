@@ -112,7 +112,8 @@ impl DeflateEncoder {
 impl VideoEncoder for DeflateEncoder {
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, CodecError> {
         use std::io::Write;
-        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(self.level));
+        let mut e =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(self.level));
         e.write_all(&frame.data)
             .map_err(|err| CodecError::Encode(err.to_string()))?;
         let data = e
@@ -146,6 +147,12 @@ impl NativeDecoder {
             #[cfg(feature = "vpx")]
             vp9: None,
         }
+    }
+}
+
+impl Default for NativeDecoder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -17,14 +17,12 @@ use anyremote_daemon::video::VideoMode;
 use anyremote_daemon::{resolve_profile, run_connect, run_listen, ClipboardMode, DaemonConfig};
 
 fn config_dir(flag_dir: Option<String>) -> PathBuf {
-    flag_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            anyremote_profiles::ProfilesStore::default_path()
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."))
-        })
+    flag_dir.map(PathBuf::from).unwrap_or_else(|| {
+        anyremote_profiles::ProfilesStore::default_path()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    })
 }
 
 /// Instrumentación de campo (C-5): TODO panico (en cualquier hilo) se añade a
@@ -90,7 +88,11 @@ fn normalize_cli_target(s: &str) -> String {
     let t = s.trim();
     let parts: Vec<&str> = t.split(',').collect();
     match parts.as_slice() {
-        [host, port] if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() && !host.contains(':') => {
+        [host, port]
+            if port.chars().all(|c| c.is_ascii_digit())
+                && !port.is_empty()
+                && !host.contains(':') =>
+        {
             format!("{host}:{port}")
         }
         [_, host, port] if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() => {
@@ -104,7 +106,11 @@ fn normalize_cli_target(s: &str) -> String {
 async fn main() {
     eprintln!("anyremoted {}", anyremote_daemon::DAEMON_VERSION);
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let cmd = args.first().map(String::as_str).unwrap_or("help").to_string();
+    let cmd = args
+        .first()
+        .map(String::as_str)
+        .unwrap_or("help")
+        .to_string();
     let cfg_dir = config_dir(flag_value(&args, "--config-dir"));
     install_panic_hook(&cfg_dir);
 
@@ -162,7 +168,11 @@ async fn main() {
                     cfg.video_size = (0, 0); // sentinela: resolución nativa del capturer
                 } else {
                     let parts: Vec<&str> = s.split('x').collect();
-                    match (parts.len(), parts[0].parse::<u32>(), parts.get(1).and_then(|h| h.parse::<u32>().ok())) {
+                    match (
+                        parts.len(),
+                        parts[0].parse::<u32>(),
+                        parts.get(1).and_then(|h| h.parse::<u32>().ok()),
+                    ) {
                         (2, Ok(w), Some(h)) if w > 0 && h > 0 => cfg.video_size = (w, h),
                         _ => {
                             eprintln!("--video-size espera native|WxH (p. ej. 960x540)");
@@ -251,7 +261,9 @@ async fn main() {
             std::process::exit(run_profiles(&args, &cfg_dir));
         }
         _ => {
-            eprintln!("anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio");
+            eprintln!(
+                "anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio"
+            );
             eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n]");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
@@ -298,7 +310,10 @@ fn run_profiles(args: &[String], cfg_dir: &std::path::Path) -> i32 {
         match ConnectionProfile::new(parts[0], parts[1], port) {
             Ok(p) => match store.upsert(p) {
                 Ok(()) => {
-                    println!("{}", serde_json::json!({"event":"profile_saved","alias": parts[0]}));
+                    println!(
+                        "{}",
+                        serde_json::json!({"event":"profile_saved","alias": parts[0]})
+                    );
                     return 0;
                 }
                 Err(e) => {
@@ -315,7 +330,10 @@ fn run_profiles(args: &[String], cfg_dir: &std::path::Path) -> i32 {
     if let Some(alias) = flag_value(args, "--remove") {
         match store.remove(&alias) {
             Ok(true) => {
-                println!("{}", serde_json::json!({"event":"profile_removed","alias": alias}));
+                println!(
+                    "{}",
+                    serde_json::json!({"event":"profile_removed","alias": alias})
+                );
                 return 0;
             }
             Ok(false) => {

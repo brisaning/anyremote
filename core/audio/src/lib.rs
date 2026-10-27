@@ -65,10 +65,11 @@ impl AudioMode {
 /// Fuente de captura para `AudioMode::On` (solo el lado `listen`).
 /// Por defecto **`System`**: el audio que suena en los altavoces (YouTube,
 /// vídeos, llamadas) — el micrófono solo captura lo que ocurre en la sala.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum AudioSource {
     /// Audio del sistema vía **WASAPI loopback** (endpoint de render como
     /// entrada: cpal activa `AUDCLNT_STREAMFLAGS_LOOPBACK` automáticamente).
+    #[default]
     System,
     /// Micrófono (dispositivo de entrada por defecto).
     Microphone,
@@ -90,12 +91,6 @@ impl AudioSource {
             Self::System => "system",
             Self::Microphone => "mic",
         }
-    }
-}
-
-impl Default for AudioSource {
-    fn default() -> Self {
-        Self::System
     }
 }
 
@@ -186,12 +181,9 @@ pub struct OpusCodec {
 
 impl OpusCodec {
     pub fn new() -> Result<Self, AudioError> {
-        let mut enc = opus::Encoder::new(
-            AUDIO_RATE,
-            opus::Channels::Mono,
-            opus::Application::Audio,
-        )
-        .map_err(codec_err)?;
+        let mut enc =
+            opus::Encoder::new(AUDIO_RATE, opus::Channels::Mono, opus::Application::Audio)
+                .map_err(codec_err)?;
         // QW-2 (ahorro de ancho de banda): bitrate explicito, DTX (el silencio
         // no ocupa) y complejidad media (menos CPU del anfitrion).
         let _ = enc.set_bitrate(opus::Bitrate::Bits(48_000));
@@ -304,7 +296,9 @@ impl AudioCapture {
             }
             Err(_) => {
                 let _ = thread.join();
-                Err(AudioError::Device("el dispositivo no respondió (3 s)".into()))
+                Err(AudioError::Device(
+                    "el dispositivo no respondió (3 s)".into(),
+                ))
             }
         }
     }
@@ -436,7 +430,7 @@ fn capture_loop(
 ) {
     struct Feed {
         frame_in: usize,
-        acc: Vec<i16>,  // mono a la tasa del dispositivo
+        acc: Vec<i16>,   // mono a la tasa del dispositivo
         pcm48: Vec<i16>, // ya a 48 kHz
     }
     let mut feeds: Vec<Feed> = sources
@@ -465,8 +459,11 @@ fn capture_loop(
                 if opened.rate == AUDIO_RATE {
                     feed.pcm48.extend_from_slice(&head);
                 } else {
-                    feed.pcm48
-                        .extend_from_slice(&resample_linear_i16(&head, opened.rate, AUDIO_RATE));
+                    feed.pcm48.extend_from_slice(&resample_linear_i16(
+                        &head,
+                        opened.rate,
+                        AUDIO_RATE,
+                    ));
                 }
             }
             if feed.pcm48.len() > cap {
@@ -474,7 +471,10 @@ fn capture_loop(
                 feed.pcm48.drain(..excess);
             }
         }
-        let mut bufs: Vec<Vec<i16>> = feeds.iter_mut().map(|f| std::mem::take(&mut f.pcm48)).collect();
+        let mut bufs: Vec<Vec<i16>> = feeds
+            .iter_mut()
+            .map(|f| std::mem::take(&mut f.pcm48))
+            .collect();
         let mixed = mix_available(&mut bufs);
         for (i, b) in bufs.into_iter().enumerate() {
             feeds[i].pcm48 = b; // devuelve lo no consumido (mezcla parcial)
@@ -790,11 +790,14 @@ mod tests {
     #[test]
     fn test_capture_emits_full_pcm_frames() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<i16>>(8);
-        let cap = AudioCapture::start(AudioMode::Test, &[AudioSource::default()], tx)
-            .expect("capture");
+        let cap =
+            AudioCapture::start(AudioMode::Test, &[AudioSource::default()], tx).expect("capture");
         let frame = rx.blocking_recv().expect("frame");
         assert_eq!(frame.len(), FRAME_SAMPLES);
-        assert!(frame.iter().any(|&s| s != 0), "el tono no debe ser silencio");
+        assert!(
+            frame.iter().any(|&s| s != 0),
+            "el tono no debe ser silencio"
+        );
         drop(cap); // detiene el hilo
     }
 
@@ -810,7 +813,10 @@ mod tests {
         .expect("capture multi-fuente");
         let frame = rx.blocking_recv().expect("frame");
         assert_eq!(frame.len(), FRAME_SAMPLES);
-        assert!(cap.warnings().is_empty(), "el modo Test no abre dispositivos");
+        assert!(
+            cap.warnings().is_empty(),
+            "el modo Test no abre dispositivos"
+        );
         drop(cap);
     }
 
@@ -832,7 +838,7 @@ mod tests {
         assert_eq!(mix_available(&mut sat), vec![i16::MAX]);
 
         // Sin datos → nada.
-        assert!(mix_available(&mut vec![Vec::<i16>::new(), Vec::new()]).is_empty());
+        assert!(mix_available(&mut [Vec::<i16>::new(), Vec::new()]).is_empty());
     }
 
     #[test]

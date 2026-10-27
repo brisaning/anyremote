@@ -17,16 +17,18 @@ fn temp_cfg_dir(tag: &str) -> PathBuf {
 }
 
 async fn free_port() -> u16 {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind probe");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind probe");
     let p = l.local_addr().expect("addr").port();
     drop(l);
     p
 }
 
 /// Sesión completa (listen + connect) sobre el MISMO directorio de config.
-async fn session(cfg_dir: &PathBuf) -> (RunOutcome, RunOutcome) {
+async fn session(cfg_dir: &Path) -> (RunOutcome, RunOutcome) {
     let port = free_port().await;
-    let listen_dir = cfg_dir.clone();
+    let listen_dir = cfg_dir.to_path_buf();
     let listen = tokio::spawn(async move {
         let mut c = DaemonConfig::new(listen_dir);
         c.bind = format!("127.0.0.1:{port}");
@@ -41,7 +43,7 @@ async fn session(cfg_dir: &PathBuf) -> (RunOutcome, RunOutcome) {
         tokio::time::sleep(Duration::from_millis(400)).await;
         let _ = tx.send("bye".to_string()).await;
     });
-    let ctl_dir = cfg_dir.clone();
+    let ctl_dir = cfg_dir.to_path_buf();
     let ctl = {
         let mut c = DaemonConfig::new(ctl_dir);
         c.target = Some(format!("127.0.0.1:{port}"));
@@ -71,9 +73,7 @@ fn trusted_flags(cfg_dir: &Path, controller_side: bool) -> Vec<bool> {
     let mut out = Vec::new();
     for f in files {
         let evs = anyremote_telemetry::SessionLog::read_all(&f).expect("jsonl válido");
-        let started = evs
-            .iter()
-            .any(|e| e.kind == AuditEventKind::SessionStarted);
+        let started = evs.iter().any(|e| e.kind == AuditEventKind::SessionStarted);
         if started != controller_side {
             continue;
         }
@@ -113,7 +113,11 @@ async fn identity_is_stable_and_peer_becomes_trusted() {
 
     // El anfitrión también recuerda al controlador.
     let listen_flags = trusted_flags(&cfg_dir, false);
-    assert_eq!(listen_flags, vec![false, true], "anfitrión: {listen_flags:?}");
+    assert_eq!(
+        listen_flags,
+        vec![false, true],
+        "anfitrión: {listen_flags:?}"
+    );
 
     // El archivo de identidad existe (persistencia real).
     assert!(cfg_dir.join("identity.key").exists(), "identity.key");

@@ -17,7 +17,9 @@ fn temp_cfg_dir(tag: &str) -> PathBuf {
 }
 
 async fn free_port() -> u16 {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind probe");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind probe");
     let p = l.local_addr().expect("addr").port();
     drop(l);
     p
@@ -68,9 +70,18 @@ async fn input_toggles_at_runtime() {
     let (tx_ctl, rx_ctl) = tokio::sync::mpsc::channel::<String>(8);
     tokio::spawn(async move {
         for (ms, line) in [
-            (250u64, r#"{"input":{"key":{"code":0,"ch":"a","down":true}}}"#),
-            (1_250, r#"{"input":{"key":{"code":0,"ch":"b","down":true}}}"#),
-            (2_250, r#"{"input":{"key":{"code":0,"ch":"c","down":true}}}"#),
+            (
+                250u64,
+                r#"{"input":{"key":{"code":0,"ch":"a","down":true}}}"#,
+            ),
+            (
+                1_250,
+                r#"{"input":{"key":{"code":0,"ch":"b","down":true}}}"#,
+            ),
+            (
+                2_250,
+                r#"{"input":{"key":{"code":0,"ch":"c","down":true}}}"#,
+            ),
             (2_750, "bye"),
         ] {
             tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -95,9 +106,11 @@ async fn input_toggles_at_runtime() {
         .send(r#"{"perm":{"input":true,"audio":false,"mic":false}}"#.to_string())
         .await;
 
-    let ctl = controller.await.expect("join controller").expect("controller ok");
+    let ctl = controller
+        .await
+        .expect("join controller")
+        .expect("controller ok");
     let srv = listen.await.expect("join listener").expect("listener ok");
-    let _ = ctl;
 
     let ev = events_json(&srv.events);
     assert_eq!(
@@ -106,6 +119,16 @@ async fn input_toggles_at_runtime() {
         "key1 y key3 inyectadas: {:?}",
         srv.events
     );
+    // Acuse (RF-02a): el controlador recibe confirmación de cada evento —
+    // 2 inyectadas (ok) y 1 rechazada (key2 con el toggle apagado).
+    let ctl_ev = events_json(&ctl.events);
+    let acks: Vec<&serde_json::Value> = ctl_ev
+        .iter()
+        .filter(|e| e["event"] == "input_result")
+        .collect();
+    let oks = acks.iter().filter(|e| e["ok"] == true).count();
+    let denied = acks.iter().filter(|e| e["ok"] == false).count();
+    assert_eq!((acks.len(), oks, denied), (3, 2, 1), "acuses: {acks:?}");
     assert_eq!(
         count_event(&ev, "input_denied"),
         1,
@@ -167,7 +190,10 @@ async fn audio_toggles_at_runtime_and_reports_source() {
         .send(r#"{"perm":{"input":false,"audio":true,"mic":false}}"#.to_string())
         .await;
 
-    let ctl = controller.await.expect("join controller").expect("controller ok");
+    let ctl = controller
+        .await
+        .expect("join controller")
+        .expect("controller ok");
     let srv = listen.await.expect("join listener").expect("listener ok");
 
     let ev = events_json(&srv.events);
@@ -190,7 +216,12 @@ async fn audio_toggles_at_runtime_and_reports_source() {
         "detenida al apagar: {:?}",
         srv.events
     );
-    assert_eq!(count_event(&ev, "permissions_updated"), 2, "{:?}", srv.events);
+    assert_eq!(
+        count_event(&ev, "permissions_updated"),
+        2,
+        "{:?}",
+        srv.events
+    );
     // El controlador recibió audio (antes de apagar y tras reactivar).
     assert!(
         ctl.report.audio_recv > 0,
@@ -198,7 +229,10 @@ async fn audio_toggles_at_runtime_and_reports_source() {
         ctl.report.audio_recv
     );
     let ctl_ev = events_json(&ctl.events);
-    assert!(count_event(&ctl_ev, "audio_stats") >= 1, "audio_stats en el controlador");
+    assert!(
+        count_event(&ctl_ev, "audio_stats") >= 1,
+        "audio_stats en el controlador"
+    );
 
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }

@@ -18,7 +18,9 @@ fn temp_cfg_dir(tag: &str) -> PathBuf {
 }
 
 async fn free_port() -> u16 {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind probe");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind probe");
     let p = l.local_addr().expect("addr").port();
     drop(l);
     p
@@ -96,9 +98,10 @@ async fn audio_flows_end_to_end_in_test_mode() {
     let port = free_port().await;
 
     let listen_dir = cfg_dir.clone();
-    let listen = tokio::spawn(async move {
-        run_listen(listen_cfg(listen_dir, port, AudioMode::Test)).await
-    });
+    let listen =
+        tokio::spawn(
+            async move { run_listen(listen_cfg(listen_dir, port, AudioMode::Test)).await },
+        );
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     let ctl = controller(cfg_dir.clone(), port, AudioMode::Test, 900).await;
@@ -106,7 +109,11 @@ async fn audio_flows_end_to_end_in_test_mode() {
 
     // Anfitrión: audio concedido y captura iniciada (48 kHz).
     let srv_ev = events_json(&srv.events);
-    assert!(has_event(&srv_ev, "audio_start"), "listener sin audio_start: {:?}", srv.events);
+    assert!(
+        has_event(&srv_ev, "audio_start"),
+        "listener sin audio_start: {:?}",
+        srv.events
+    );
     assert!(
         srv.events.iter().any(|l| l.contains("\"rate\":48000")),
         "audio_start debe indicar 48 kHz: {:?}",
@@ -114,8 +121,16 @@ async fn audio_flows_end_to_end_in_test_mode() {
     );
     // Controlador: reproductor iniciado y frames decodificados.
     let ctl_ev = events_json(&ctl.events);
-    assert!(has_event(&ctl_ev, "audio_start"), "connect sin audio_start: {:?}", ctl.events);
-    assert!(has_event(&ctl_ev, "audio_stats"), "sin audio_stats: {:?}", ctl.events);
+    assert!(
+        has_event(&ctl_ev, "audio_start"),
+        "connect sin audio_start: {:?}",
+        ctl.events
+    );
+    assert!(
+        has_event(&ctl_ev, "audio_stats"),
+        "sin audio_stats: {:?}",
+        ctl.events
+    );
     assert!(
         srv.report.audio_sent >= 10 && ctl.report.audio_recv >= 10,
         "audio en el informe: sent={} recv={}",
@@ -130,12 +145,24 @@ async fn audio_flows_end_to_end_in_test_mode() {
     // Concesión de `audio` auditable + cierre ordenado por el bye.
     let audit = audit_kinds(&cfg_dir);
     assert!(audit.contains("PermissionGranted"), "audit: {audit}");
-    assert!(audit.contains("\"audio\""), "el permiso audio debe constar: {audit}");
+    assert!(
+        audit.contains("\"audio\""),
+        "el permiso audio debe constar: {audit}"
+    );
     let closed = |evs: &[serde_json::Value]| {
-        evs.iter().any(|e| e["event"] == "closed" && e["reason"] == "bye")
+        evs.iter()
+            .any(|e| e["event"] == "closed" && e["reason"] == "bye")
     };
-    assert!(closed(&srv_ev), "listener sin closed(bye): {:?}", srv.events);
-    assert!(closed(&ctl_ev), "controller sin closed(bye): {:?}", ctl.events);
+    assert!(
+        closed(&srv_ev),
+        "listener sin closed(bye): {:?}",
+        srv.events
+    );
+    assert!(
+        closed(&ctl_ev),
+        "controller sin closed(bye): {:?}",
+        ctl.events
+    );
 
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }
@@ -147,9 +174,10 @@ async fn audio_denied_when_controller_does_not_offer() {
     let port = free_port().await;
 
     let listen_dir = cfg_dir.clone();
-    let listen = tokio::spawn(async move {
-        run_listen(listen_cfg(listen_dir, port, AudioMode::Test)).await
-    });
+    let listen =
+        tokio::spawn(
+            async move { run_listen(listen_cfg(listen_dir, port, AudioMode::Test)).await },
+        );
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     let ctl = controller(cfg_dir.clone(), port, AudioMode::Off, 600).await;
@@ -184,9 +212,8 @@ async fn audio_denied_when_host_does_not_share() {
     let port = free_port().await;
 
     let listen_dir = cfg_dir.clone();
-    let listen = tokio::spawn(async move {
-        run_listen(listen_cfg(listen_dir, port, AudioMode::Off)).await
-    });
+    let listen =
+        tokio::spawn(async move { run_listen(listen_cfg(listen_dir, port, AudioMode::Off)).await });
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     let ctl = controller(cfg_dir.clone(), port, AudioMode::Test, 600).await;

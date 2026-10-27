@@ -17,7 +17,9 @@ fn temp_cfg_dir(tag: &str) -> PathBuf {
 }
 
 async fn free_port() -> u16 {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind probe");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind probe");
     let p = l.local_addr().expect("addr").port();
     drop(l);
     p
@@ -67,25 +69,50 @@ async fn daemon_listen_connect_full_integration() {
     };
     let controller = tokio::spawn(async move { run_connect(connect_cfg).await });
 
-    let ctl = controller.await.expect("join controller").expect("controller ok");
+    let ctl = controller
+        .await
+        .expect("join controller")
+        .expect("controller ok");
     let srv = listen.await.expect("join listener").expect("listener ok");
 
     // --- Verificación de eventos del controlador (flujo completo) ---
     let ev_text = events_ctl.lock().unwrap().join("\n");
-    assert!(ev_text.contains("\"event\":\"connecting\""), "falta connecting:\n{ev_text}");
-    assert!(ev_text.contains("\"event\":\"session_active\""), "falta session_active");
+    assert!(
+        ev_text.contains("\"event\":\"connecting\""),
+        "falta connecting:\n{ev_text}"
+    );
+    assert!(
+        ev_text.contains("\"event\":\"session_active\""),
+        "falta session_active"
+    );
     assert!(ev_text.contains("\"role\":\"controller\""));
-    assert!(ev_text.contains("\"event\":\"file_sent\""), "falta file_sent");
-    assert!(ev_text.contains("\"event\":\"file_ack\""), "falta file_ack (hash confirmado)");
+    assert!(
+        ev_text.contains("\"event\":\"file_sent\""),
+        "falta file_sent"
+    );
+    assert!(
+        ev_text.contains("\"event\":\"file_ack\""),
+        "falta file_ack (hash confirmado)"
+    );
     assert!(ev_text.contains("\"event\":\"closed\""), "falta closed");
 
     // --- Sesión autenticada y permisos concedidos (C1/C2) ---
-    assert!(ctl.report.heartbeats_ok >= 2, "latidos: {}", ctl.report.heartbeats_ok);
+    assert!(
+        ctl.report.heartbeats_ok >= 2,
+        "latidos: {}",
+        ctl.report.heartbeats_ok
+    );
     assert!(ctl.report.rtt_min_ms.is_some());
 
     // --- Transferencia de archivos (C5) con hash confirmado por el receptor ---
-    assert_eq!(ctl.report.files_transferred, 1, "ack de archivo en controlador");
-    assert_eq!(srv.report.files_transferred, 1, "archivo recibido en controlado");
+    assert_eq!(
+        ctl.report.files_transferred, 1,
+        "ack de archivo en controlador"
+    );
+    assert_eq!(
+        srv.report.files_transferred, 1,
+        "archivo recibido en controlado"
+    );
     let srv_events = srv.events.join("\n");
     assert!(srv_events.contains("\"event\":\"session_active\""));
     assert!(srv_events.contains("\"event\":\"file_received\""));

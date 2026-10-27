@@ -66,6 +66,19 @@ int? keyCodeFor(LogicalKeyboardKey k) {
   if (k == LogicalKeyboardKey.controlLeft || k == LogicalKeyboardKey.controlRight) return 20;
   if (k == LogicalKeyboardKey.altLeft || k == LogicalKeyboardKey.altRight) return 21;
   if (k == LogicalKeyboardKey.shiftLeft || k == LogicalKeyboardKey.shiftRight) return 22;
+  // Teclas de función F1..F12 (30..41) — menores RF-02a.
+  if (k == LogicalKeyboardKey.f1) return 30;
+  if (k == LogicalKeyboardKey.f2) return 31;
+  if (k == LogicalKeyboardKey.f3) return 32;
+  if (k == LogicalKeyboardKey.f4) return 33;
+  if (k == LogicalKeyboardKey.f5) return 34;
+  if (k == LogicalKeyboardKey.f6) return 35;
+  if (k == LogicalKeyboardKey.f7) return 36;
+  if (k == LogicalKeyboardKey.f8) return 37;
+  if (k == LogicalKeyboardKey.f9) return 38;
+  if (k == LogicalKeyboardKey.f10) return 39;
+  if (k == LogicalKeyboardKey.f11) return 40;
+  if (k == LogicalKeyboardKey.f12) return 41;
   return null;
 }
 
@@ -148,6 +161,8 @@ class _HomePageState extends State<HomePage> {
   int _inputEvents = 0;
   /// Indicador de audio en la cabecera del visor (`audio ✓` / `sin señal`).
   String _audioHint = '';
+  /// Último motivo de rechazo acusado (para no repetirlo en cada evento).
+  String _lastInputDenied = '';
 
   // Hito M2: visor remoto (preview local del daemon controlador).
   Socket? _preview;
@@ -310,6 +325,19 @@ class _HomePageState extends State<HomePage> {
             _append('[daemon] entrada denegada en el anfitrión: ${ev['allow_input'] == false ? 'sin --allow-input (D-07)' : 'permiso ${ev['perm'] ?? '?'} no concedido'}');
           case 'input_error':
             _append('[daemon] evento de entrada no soportado: ${ev['detail']}');
+          case 'input_result':
+            // Acuse del anfitrión (RF-02a): se cuentan las INYECTADAS de verdad
+            // y los rechazos se loguean solo cuando cambia el motivo.
+            if (ev['ok'] == true) {
+              _lastInputDenied = '';
+              setState(() => _inputEvents += 1);
+            } else {
+              final why = '${ev['perm'] ?? ''} ${ev['detail'] ?? ''}'.trim();
+              if (why.isNotEmpty && why != _lastInputDenied) {
+                _lastInputDenied = why;
+                _append('[daemon] entrada RECHAZADA por el anfitrión: $why');
+              }
+            }
           case 'audio_start':
             _append(ev.containsKey('source')
                 ? '[daemon] audio compartido desde ${ev['source']} (${ev['rate']} Hz)'
@@ -494,9 +522,9 @@ class _HomePageState extends State<HomePage> {
     if (proc == null || !_sessionActive) return;
     try {
       // `IOSink.writeln` es síncrono: un pipe roto se notifica en `done`
-      // (suscriptor único instalado al lanzar el daemon).
+      // (suscriptor único instalado al lanzar el daemon). El contador de
+      // `entrada:` avanza con el ACUSE del anfitrión (`input_result`), no aquí.
       proc.stdin.writeln(jsonEncode({'input': spec}));
-      setState(() => _inputEvents += 1);
     } catch (e) {
       if (mounted) _append('[ui] entrada no enviada: $e');
     }

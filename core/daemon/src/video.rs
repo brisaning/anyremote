@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyremote_capture::{
     best_capturer, Capturer, Frame, PixelFormat, PlatformCapturer, TestPatternCapturer,
 };
-use anyremote_codec::{encoder_for, CodecFormat, EncodedFrame, VideoEncoder};
+use anyremote_codec::{encoder_for, CodecFormat, EncodedFrame};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -206,6 +206,7 @@ pub fn resolve_native(mode: VideoMode, requested: (u32, u32), first: (u32, u32))
 /// **Pantalla estática (C-4)**: DXGI solo entrega frames cuando hay cambios;
 /// como mucho 1 vez por segundo se **reemite el último frame** para que el
 /// visor no se quede ciego (QW-1 descarta los frames sin cambios).
+#[allow(clippy::too_many_arguments)] // parámetros de sesión con dueño claro por capa.
 pub fn spawn_video_task(
     mode: VideoMode,
     size: (u32, u32),
@@ -357,17 +358,31 @@ mod tests {
                 data[i + 3] = 255;
             }
         }
-        Frame { width: 4, height: 4, format: PixelFormat::Bgra8, data }
+        Frame {
+            width: 4,
+            height: 4,
+            format: PixelFormat::Bgra8,
+            data,
+        }
     }
 
     #[test]
     fn resolve_native_uses_first_frame_or_fixed_size() {
         // Explícito WxH manda siempre.
-        assert_eq!(resolve_native(VideoMode::Auto, (640, 360), (1920, 1080)), (640, 360));
+        assert_eq!(
+            resolve_native(VideoMode::Auto, (640, 360), (1920, 1080)),
+            (640, 360)
+        );
         // Nativa + capturer real → dimensiones del primer frame.
-        assert_eq!(resolve_native(VideoMode::Auto, (0, 0), (1920, 1080)), (1920, 1080));
+        assert_eq!(
+            resolve_native(VideoMode::Auto, (0, 0), (1920, 1080)),
+            (1920, 1080)
+        );
         // Nativa en modo Test (sin escritorio) → 1280x720.
-        assert_eq!(resolve_native(VideoMode::Test, (0, 0), (64, 64)), (1280, 720));
+        assert_eq!(
+            resolve_native(VideoMode::Test, (0, 0), (64, 64)),
+            (1280, 720)
+        );
     }
 
     #[test]
@@ -378,7 +393,10 @@ mod tests {
         assert_eq!(out.data.len(), 2 * 2 * 4);
         // Bilineal promedia el par (0,85) → ~42/43; el vecino más próximo daría 0 o 85.
         let b = out.data[0];
-        assert!((40..=45).contains(&b), "esperaba interpolación ~43, llegó {b}");
+        assert!(
+            (40..=45).contains(&b),
+            "esperaba interpolación ~43, llegó {b}"
+        );
         // Sin cambios → clon idéntico.
         let same = scale_frame(&src, 4, 4);
         assert_eq!(same, src);

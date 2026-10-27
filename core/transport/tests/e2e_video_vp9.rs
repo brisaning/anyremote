@@ -36,9 +36,11 @@ async fn e2e_vp9_streaming_over_session() {
             let frame = capturer.next_frame().expect("capture");
             let enc = encoder.encode(&frame).expect("encode vp9");
             // Se envían también las omitidas (data vacía) para determinismo del conteo.
-            ch.send(proto::envelope::Payload::VideoFrame(arsp::video_frame_to_wire(&enc)))
-                .await
-                .expect("enviar frame vp9");
+            ch.send(proto::envelope::Payload::VideoFrame(
+                arsp::video_frame_to_wire(&enc),
+            ))
+            .await
+            .expect("enviar frame vp9");
             if !enc.data.is_empty() {
                 sent += 1;
             }
@@ -78,5 +80,8 @@ async fn e2e_vp9_streaming_over_session() {
     let sent = controlled.await.expect("tarea controlado");
     assert_eq!(sent, received_nonempty, "conteo enviado/recibido coherente");
     assert_eq!(decoded, received_nonempty, "lockstep decodificación");
-    assert!(decoded >= 100, "tasa de frames codificados demasiado baja: {decoded}/{ATTEMPTS}");
+    assert!(
+        decoded >= 100,
+        "tasa de frames codificados demasiado baja: {decoded}/{ATTEMPTS}"
+    );
 }

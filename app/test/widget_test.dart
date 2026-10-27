@@ -110,7 +110,13 @@ void main() {
     expect(keyCodeFor(LogicalKeyboardKey.keyA), isNull);
     expect(keyCodeFor(LogicalKeyboardKey.digit1), isNull);
     expect(keyCodeFor(LogicalKeyboardKey.space), isNull);
-    expect(keyCodeFor(LogicalKeyboardKey.f5), isNull);
+
+    // Teclas de función F1..F12 → códigos 30..41 (menores RF-02a).
+    expect(keyCodeFor(LogicalKeyboardKey.f1), 30);
+    expect(keyCodeFor(LogicalKeyboardKey.f5), 34);
+    expect(keyCodeFor(LogicalKeyboardKey.f12), 41);
+    expect(keyCodeFor(LogicalKeyboardKey.f13), isNull);
+    expect(keyCodeFor(LogicalKeyboardKey.printScreen), isNull);
   });
 
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {

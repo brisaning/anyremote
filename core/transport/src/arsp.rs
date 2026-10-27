@@ -45,7 +45,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Channel<T> {
         };
         self.next_seq += 1;
         let mut buf = Vec::with_capacity(env.encoded_len());
-        env.encode(&mut buf).map_err(|e| TransportError::Io(e.to_string()))?;
+        env.encode(&mut buf)
+            .map_err(|e| TransportError::Io(e.to_string()))?;
         write_frame(&mut self.inner, &buf).await
     }
 
@@ -55,13 +56,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Channel<T> {
         &mut self,
     ) -> impl std::future::Future<Output = Result<proto::Envelope, TransportError>> + '_ {
         std::future::poll_fn(move |cx| {
-            use std::task::Poll;
             use std::pin::Pin;
+            use std::task::Poll;
             loop {
                 // ¿Frame completo ya bufferizado?
                 if self.buf.len() >= 4 {
-                    let len = u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]])
-                        as usize;
+                    let len =
+                        u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]])
+                            as usize;
                     if len > crate::MAX_FRAME_BYTES {
                         self.buf.clear();
                         return Poll::Ready(Err(TransportError::FrameTooLarge(len)));
@@ -145,7 +147,9 @@ pub fn check_version(env: &proto::Envelope) -> Result<(), String> {
     if v == ARSP_VERSION {
         Ok(())
     } else {
-        Err(format!("versión ARSP {v} no soportada (esperada {ARSP_VERSION})"))
+        Err(format!(
+            "versión ARSP {v} no soportada (esperada {ARSP_VERSION})"
+        ))
     }
 }
 
@@ -161,7 +165,9 @@ pub fn video_frame_to_wire(frame: &anyremote_codec::EncodedFrame) -> proto::Vide
 }
 
 /// Convierte un VideoFrame wire al frame empaquetado del códec (valida formato).
-pub fn video_frame_from_wire(v: proto::VideoFrame) -> Result<anyremote_codec::EncodedFrame, TransportError> {
+pub fn video_frame_from_wire(
+    v: proto::VideoFrame,
+) -> Result<anyremote_codec::EncodedFrame, TransportError> {
     let format = anyremote_codec::CodecFormat::from_proto(v.format)
         .ok_or_else(|| TransportError::Io(format!("formato de códec desconocido: {}", v.format)))?;
     Ok(anyremote_codec::EncodedFrame {
@@ -226,6 +232,19 @@ fn key_from_code(code: u32, ch: &str) -> Option<anyremote_input::Key> {
         20 => Some(Key::Ctrl),
         21 => Some(Key::Alt),
         22 => Some(Key::Shift),
+        // F1..F12 (30..=41)
+        30 => Some(Key::F1),
+        31 => Some(Key::F2),
+        32 => Some(Key::F3),
+        33 => Some(Key::F4),
+        34 => Some(Key::F5),
+        35 => Some(Key::F6),
+        36 => Some(Key::F7),
+        37 => Some(Key::F8),
+        38 => Some(Key::F9),
+        39 => Some(Key::F10),
+        40 => Some(Key::F11),
+        41 => Some(Key::F12),
         _ => None,
     }
 }
@@ -318,7 +337,9 @@ pub fn file_offer_to_wire(meta: &anyremote_filexfer::FileMeta) -> proto::FileOff
 }
 
 /// Wire → oferta de archivo con validación (nombre saneado, digest de 32 bytes).
-pub fn file_offer_from_wire(v: proto::FileOffer) -> Result<anyremote_filexfer::FileMeta, TransportError> {
+pub fn file_offer_from_wire(
+    v: proto::FileOffer,
+) -> Result<anyremote_filexfer::FileMeta, TransportError> {
     let name = anyremote_filexfer::sanitize_name(&v.name)
         .map_err(|e| TransportError::Wire(format!("nombre de oferta: {e}")))?;
     let sha: [u8; 32] = v
@@ -448,10 +469,7 @@ mod tests {
         // Fuera de rango de pantalla → recortado a las dimensiones u16 del modelo.
         assert_eq!(
             input_event_from_wire(&pointer(70_000, -5, true)),
-            Some(InputEvent::MoveTo {
-                x: u16::MAX,
-                y: 0
-            })
+            Some(InputEvent::MoveTo { x: u16::MAX, y: 0 })
         );
 
         let button = |button: u32, down: bool, wheel: i32| proto::InputEventMsg {
@@ -474,7 +492,35 @@ mod tests {
             Some(InputEvent::Scroll { delta: -3 })
         );
         // oneof vacío → no soportado.
-        assert_eq!(input_event_from_wire(&proto::InputEventMsg { ev: None }), None);
+        assert_eq!(
+            input_event_from_wire(&proto::InputEventMsg { ev: None }),
+            None
+        );
+    }
+
+    /// Teclas de función F1..F12 (códigos 30..=41) — menores RF-02a.
+    #[test]
+    fn function_keys_map_from_wire_codes() {
+        use anyremote_input::{InputEvent, Key};
+        let key = |code: u32| proto::InputEventMsg {
+            ev: Some(proto::input_event_msg::Ev::Key(proto::Key {
+                code,
+                down: true,
+                extended: false,
+                ch: String::new(),
+            })),
+        };
+        assert_eq!(
+            input_event_from_wire(&key(30)),
+            Some(InputEvent::KeyDown(Key::F1))
+        );
+        assert_eq!(
+            input_event_from_wire(&key(41)),
+            Some(InputEvent::KeyDown(Key::F12))
+        );
+        // Fueras del rango F (42) y colisiones con modificadores (20) ya cubiertas.
+        assert_eq!(input_event_from_wire(&key(42)), None);
+        assert_eq!(input_event_from_wire(&key(29)), None);
     }
 
     /// RF audio: el wire valida el formato fijo de sesión (Opus 48 kHz mono).

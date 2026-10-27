@@ -141,5 +141,8 @@ async fn e2e_video_streaming_and_input_injection() {
     );
 
     state = state.transition(SessionEvent::StartClose).unwrap();
-    assert_eq!(state.transition(SessionEvent::Closed).unwrap(), SessionState::Closed);
+    assert_eq!(
+        state.transition(SessionEvent::Closed).unwrap(),
+        SessionState::Closed
+    );
 }

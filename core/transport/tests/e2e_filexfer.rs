@@ -47,7 +47,9 @@ async fn e2e_filexfer_hash_integrity_and_resume() {
             // 2) Chunk 0 OK.
             let env0 = ch.recv().await.expect("chunk0");
             if let Some(proto::envelope::Payload::FileChunk(c)) = env0.payload {
-                let next = recv.write_chunk(c.transfer_id, c.offset, &c.data).expect("chunk0");
+                let next = recv
+                    .write_chunk(c.transfer_id, c.offset, &c.data)
+                    .expect("chunk0");
                 assert_eq!(next as usize, CHUNK.min(100_000));
             } else {
                 panic!("esperaba chunk");
@@ -60,9 +62,11 @@ async fn e2e_filexfer_hash_integrity_and_resume() {
                     Err(anyremote_filexfer::TransferError::Offset { expected, got }) => {
                         assert_eq!(expected as usize, CHUNK);
                         assert!(got > expected);
-                        ch.send(proto::envelope::Payload::FileDone(
-                            arsp::file_done_to_wire(c.transfer_id, false, &format!("resume:{expected}")),
-                        ))
+                        ch.send(proto::envelope::Payload::FileDone(arsp::file_done_to_wire(
+                            c.transfer_id,
+                            false,
+                            &format!("resume:{expected}"),
+                        )))
                         .await
                         .expect("enviar resume");
                     }
@@ -139,21 +143,23 @@ async fn e2e_filexfer_hash_integrity_and_resume() {
 
     let sender = FileSender::new(TransferPolicy::default());
     let offer = sender.offer(99, "datos.bin", &data).expect("oferta");
-    ch.send(proto::envelope::Payload::FileOffer(arsp::file_offer_to_wire(&offer)))
-        .await
-        .expect("enviar offer");
+    ch.send(proto::envelope::Payload::FileOffer(
+        arsp::file_offer_to_wire(&offer),
+    ))
+    .await
+    .expect("enviar offer");
 
     // Chunk 0 + chunk final con hueco deliberado (disparador de reanudación).
     let chunks: Vec<_> = sender.chunks_from(&data, 0, CHUNK).collect();
-    ch.send(proto::envelope::Payload::FileChunk(arsp::file_chunk_to_wire(
-        99, chunks[0].0, chunks[0].1,
-    )))
+    ch.send(proto::envelope::Payload::FileChunk(
+        arsp::file_chunk_to_wire(99, chunks[0].0, chunks[0].1),
+    ))
     .await
     .expect("chunk0");
     let last = chunks.last().unwrap();
-    ch.send(proto::envelope::Payload::FileChunk(arsp::file_chunk_to_wire(
-        99, last.0, last.1,
-    )))
+    ch.send(proto::envelope::Payload::FileChunk(
+        arsp::file_chunk_to_wire(99, last.0, last.1),
+    ))
     .await
     .expect("chunk con hueco");
 
@@ -173,9 +179,9 @@ async fn e2e_filexfer_hash_integrity_and_resume() {
     assert_eq!(resume_from as usize, CHUNK);
 
     for (off, chunk) in sender.chunks_from(&data, resume_from, CHUNK) {
-        ch.send(proto::envelope::Payload::FileChunk(arsp::file_chunk_to_wire(
-            99, off, chunk,
-        )))
+        ch.send(proto::envelope::Payload::FileChunk(
+            arsp::file_chunk_to_wire(99, off, chunk),
+        ))
         .await
         .expect("chunk reenviado");
     }
@@ -187,19 +193,24 @@ async fn e2e_filexfer_hash_integrity_and_resume() {
         _ => panic!("esperaba FileDone final"),
     };
     assert!(done.ok, "receptor debe confirmar: {}", done.detail);
-    assert_eq!(done.detail, data_hash, "hash del receptor coincide con el original");
+    assert_eq!(
+        done.detail, data_hash,
+        "hash del receptor coincide con el original"
+    );
 
     // Política del emisor: oferta con nombre inválido falla en origen.
-    let evil_err = sender.offer(100, "../evil.bin", &data).expect_err("nombre inválido");
+    let evil_err = sender
+        .offer(100, "../evil.bin", &data)
+        .expect_err("nombre inválido");
     assert!(format!("{evil_err:?}").contains("InvalidName"));
-    ch.send(proto::envelope::Payload::FileOffer(arsp::file_offer_to_wire(
-        &anyremote_filexfer::FileMeta {
+    ch.send(proto::envelope::Payload::FileOffer(
+        arsp::file_offer_to_wire(&anyremote_filexfer::FileMeta {
             transfer_id: 100,
             name: "grande.bin".into(),
             size: 200_000, // supera el max_bytes_per_file del receptor (128 KiB)
             sha256: [0u8; 32],
-        },
-    )))
+        }),
+    ))
     .await
     .expect("segunda offer");
     let env = ch.recv().await.expect("done 2");
@@ -207,8 +218,16 @@ async fn e2e_filexfer_hash_integrity_and_resume() {
         Some(proto::envelope::Payload::FileDone(d)) => d,
         _ => panic!("esperaba FileDone 2"),
     };
-    assert!(!done2.ok, "límite del receptor debe rechazar: {}", done2.detail);
-    assert!(done2.detail.contains("TooLarge"), "detalle: {}", done2.detail);
+    assert!(
+        !done2.ok,
+        "límite del receptor debe rechazar: {}",
+        done2.detail
+    );
+    assert!(
+        done2.detail.contains("TooLarge"),
+        "detalle: {}",
+        done2.detail
+    );
 
     controlled.await.expect("tarea controlado");
 }
