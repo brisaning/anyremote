@@ -45,12 +45,13 @@
 | Ajustes de campo v0.6.1 | Audio + rendimiento | **loopback (audio del sistema)** como fuente por defecto (`--audio-source system\|mic`) · `audio_stats.rms` + indicador en el visor · calidad de vídeo 720p por defecto (nativo daba 4.6 fps y RTT 57–782 ms) | `campo-v0.6.1` | `evidence/audio-gate.md` §Diagnóstico |
 | Fix control 720p/1080p v0.6.2 | RF-02a (entrada) | coordenadas **absolutas normalizadas 0..65535** (app → wire → `SendInput` sin normalizar por pantalla) | `coords-v0.6.2` | `evidence/control-coords-gate.md` |
 | C-2 permisos dinámicos v0.7.0 | RF-02a + audio | tres toggles en caliente por stdin (`{"perm":...}`) · fuente **micrófono** + **mezcla** sistema+mic · drenaje sin carrera inicial · reproductor del controlador siempre preparado | `perm-dinamicas-v0.7.0` | `evidence/dynamic-perms-gate.md` |
+| C-3 rendimiento v0.7.1 | RNF (eficiencia) | QW-1 frames sin cambios (DXGI) · QW-2 gate de silencio + DTX/48 kbps · QW-3 `--max-bitrate` (app: 3/6/8 Mbps) · QW-4 libvpx (fps real, hilos, Screen) · informe RustDesk vs nosotros | `perf-v0.7.1` | `evidence/perf-audit.md` |
 
 **PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) — `main` = `f4c9970`.
 
 ## Pendientes (estado actual)
 
-1. Audio: re-verificación en LAN con v0.6.1 (loopback ya implementado y verificado localmente con RMS > 0), VAD/silencio y resampler de mayor orden.
+1. Audio: re-verificar en LAN con v0.7.x (loopback + micrófono + toggles + gate de silencio ya implementados); resampler de mayor orden.
 2. **Acuse de inyección al controlador** (hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor solo cuenta lo enviado).
 3. Identidad persistente + trust por dispositivo (hoy: ID efímero, `peer_trusted` siempre false).
 4. WAN (firewall/UPnP/NAT) y gates de CI (`clippy`/`fmt`).

@@ -133,6 +133,14 @@ async fn main() {
             if let Some(f) = flag_value(&args, "--video-fps") {
                 cfg.video_fps = f.parse().unwrap_or(10).clamp(1, 60);
             }
+            // QW-3: tope de ancho de banda del video en kbps (ej. 3000 = 3 Mbps).
+            if let Some(v) = flag_value(&args, "--max-bitrate") {
+                let kbps: u64 = v.parse().unwrap_or_else(|_| {
+                    eprintln!("--max-bitrate espera kbps (ej. 3000)");
+                    std::process::exit(2);
+                });
+                cfg.video_max_bps = Some((kbps * 1000).max(150_000));
+            }
             if let Some(c) = flag_value(&args, "--codec") {
                 cfg.codec = match c.as_str() {
                     "vp9" => CodecFormat::Vp9,
@@ -203,7 +211,7 @@ async fn main() {
         }
         _ => {
             eprintln!("anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio");
-            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--codec vp9|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n]");
+            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n]");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             std::process::exit(2);

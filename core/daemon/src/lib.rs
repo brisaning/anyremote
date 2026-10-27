@@ -136,6 +136,9 @@ pub struct DaemonConfig {
     /// RF audio (D-07): modo de audio de sesión — `listen`: fuente de captura,
     /// `connect`: reproductor. `Off` por defecto; `Test` sin hardware (gates).
     pub audio: AudioMode,
+    /// QW-3: tope de ancho de banda del video en bps (`--max-bitrate`, en kbps).
+    /// Sin tope, el adaptativo puede rampar hasta `bps*4`.
+    pub video_max_bps: Option<u64>,
     /// Fuente de captura en `listen`: `System` por defecto (loopback: lo que
     /// suena en los altavoces); `--audio-source mic|system,mic` para cambiarlo.
     /// Con varias fuentes se mezclan (C-2).
@@ -164,6 +167,7 @@ impl DaemonConfig {
             allow_input: false,
             input_backend: InputBackend::Windows,
             audio: AudioMode::Off,
+            video_max_bps: None,
             audio_sources: vec![AudioSource::System],
             bye_source: None,
         }
@@ -267,6 +271,22 @@ fn parse_perm_line(line: &str) -> Result<Option<PermSpec>, String> {
         audio: p.get("audio").and_then(|x| x.as_bool()).unwrap_or(false),
         mic: p.get("mic").and_then(|x| x.as_bool()).unwrap_or(false),
     }))
+}
+
+/// QW-2: umbral de silencio (RMS normalizado) y frames a omitir tras el.
+const SILENCE_RMS: f64 = 0.002;
+const SILENCE_SKIP_FRAMES: u32 = 100; // 2 s de frames a 20 ms
+
+/// QW-2: gate de silencio - `true` = omitir este frame (silencio sostenido):
+/// no se codifica ni se envia audio cuando no hay nada que oir.
+fn silence_gate(rms: f64, silent_frames: &mut u32) -> bool {
+    if rms < SILENCE_RMS {
+        *silent_frames += 1;
+        *silent_frames > SILENCE_SKIP_FRAMES
+    } else {
+        *silent_frames = 0;
+        false
+    }
 }
 
 /// Arranca la captura de audio con las fuentes dadas; traza `audio_start` (y
@@ -882,6 +902,8 @@ async fn active_controlled(
             }
         }
     }
+    // QW-2: contador de silencio sostenido (gate de envio de audio).
+    let mut silent_frames: u32 = 0;
     // Captura inicial si ningún comando la decidió ya.
     if audio_capture.is_none() && !perms.sources.is_empty() {
         if let Some((cap, rx)) =
@@ -906,7 +928,16 @@ async fn active_controlled(
             "width": cfg.video_size.0, "height": cfg.video_size.1,
             "fps": cfg.video_fps, "codec": format!("{:?}", cfg.codec),
         })));
-        spawn_video_task(cfg.video, cfg.video_size, cfg.video_fps, cfg.codec, video_tx, preview_srv, stop);
+        spawn_video_task(
+            cfg.video,
+            cfg.video_size,
+            cfg.video_fps,
+            cfg.codec,
+            cfg.video_max_bps.map(|b| b as usize),
+            video_tx,
+            preview_srv,
+            stop,
+        );
     }
 
     loop {
@@ -1114,6 +1145,10 @@ async fn active_controlled(
                 // RF audio: captura → Opus → wire (20 ms, 48 kHz mono).
                 let Some(pcm) = pcm else { audio_capture = None; continue; };
                 let Some(codec) = codec.as_mut() else { continue; };
+                // QW-2: silencio sostenido -> no se codifica ni se envia.
+                if silence_gate(anyremote_audio::rms_i16(&pcm), &mut silent_frames) {
+                    continue;
+                }
                 match codec.encode(&pcm) {
                     Ok(frame) => {
                         match ch.send(proto::envelope::Payload::AudioFrame(
@@ -1399,6 +1434,10 @@ async fn active_controller(
         }
     }
     let mut audio_frames: u64 = 0;
+    // QW-2: si el anfitrión deja de enviar (silencio), el visor debe ver
+    // "sin senal" -> se emite `audio_stats` con rms 0 cuando no hay frames nuevos.
+    let mut audio_tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    let mut stats_frames_mark: u64 = 0;
     // Diagnóstico: RMS medio de lo decodificado desde el último `audio_stats`
     // (0.0000 = silencio → "no llega audio real"; >0 = hay sonido).
     let mut rms_acc = 0f64;
@@ -1637,6 +1676,17 @@ async fn active_controller(
                     other => return Err(DaemonError::Config(format!("payload inesperado: {other:?}"))),
                 }
             }
+            _ = audio_tick.tick(), if playback.is_some() => {
+                // Solo si YA llego audio antes y ahora no hay frames nuevos
+                // (el primer tick es inmediato: no debe senalar silencio al arrancar).
+                if audio_frames == stats_frames_mark && audio_frames > 0 {
+                    let (f, s) = playback.as_ref().map(|p| p.stats()).unwrap_or((0, 0));
+                    emit.emit(ev("audio_stats",
+                        serde_json::json!({"frames": f, "samples": s, "rms": 0.0})));
+                } else {
+                    stats_frames_mark = audio_frames;
+                }
+            }
             _ = hb_tick.tick() => {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1794,4 +1844,35 @@ pub fn resolve_profile(alias: &str, config_dir: &Path) -> Result<String, DaemonE
         .find(|p| p.id == alias)
         .map(|p| p.resolve())
         .ok_or_else(|| DaemonError::Profile(anyremote_profiles::ProfileError::NotFound(alias.into())))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn silence_gate_skips_only_sustained_silence() {
+        // Sonido -> nunca omite y resetea el contador.
+        let mut n = 0u32;
+        assert!(!silence_gate(0.17, &mut n));
+        assert_eq!(n, 0);
+        // Silencio intermitente (10 frames) -> sigue enviando.
+        for _ in 0..10 {
+            assert!(!silence_gate(0.0, &mut n), "aun no debe omitir");
+        }
+        assert_eq!(n, 10);
+        // Silencio sostenido (>100 frames = 2 s) -> omite.
+        let mut skipped = false;
+        for _ in 0..120 {
+            if silence_gate(0.0, &mut n) {
+                skipped = true;
+                break;
+            }
+        }
+        assert!(skipped, "tras 2 s de silencio debe omitir");
+        // Vuelve el sonido -> reanuda envio.
+        assert!(!silence_gate(0.05, &mut n));
+        assert_eq!(n, 0);
+    }
 }

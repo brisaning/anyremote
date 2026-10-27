@@ -35,6 +35,9 @@ pub struct DxgiCapturer {
     staging: ID3D11Texture2D,
     width: u32,
     height: u32,
+    /// QW-1: se procesa SIEMPRE el primer frame (la vista necesita la imagen
+    /// inicial); a partir de ahi se descartan los frames sin cambios.
+    first_frame: bool,
 }
 
 fn first_active_output() -> Result<IDXGIOutput, CaptureError> {
@@ -158,6 +161,7 @@ impl DxgiCapturer {
             staging,
             width,
             height,
+            first_frame: false,
         })
     }
 }
@@ -175,6 +179,17 @@ impl Capturer for DxgiCapturer {
                 Err(e) if e.code() == DXGI_ERROR_TIMEOUT => return Err(CaptureError::Timeout),
                 Err(e) => return Err(CaptureError::Io(format!("AcquireNextFrame: {e}"))),
             }
+
+            // QW-1 (perf): si el escritorio no cambio desde el ultimo frame
+            // (p. ej. solo se movio el raton: AccumulatedFrames == 0) no hay
+            // nada que copiar, escalar ni codificar -> se descarta. Sin esto,
+            // cada movimiento de raton sobre una pantalla estatica generaba un
+            // frame completo de VP9 y de red (patron RustDesk dxgi/mod.rs).
+            if self.first_frame && frame_unchanged(info.AccumulatedFrames, info.LastPresentTime) {
+                let _ = self.duplication.ReleaseFrame();
+                return Err(CaptureError::Timeout);
+            }
+            self.first_frame = true;
 
             let result = (|| {
                 let tex: ID3D11Texture2D = resource
@@ -216,5 +231,29 @@ impl Capturer for DxgiCapturer {
 
     fn description(&self) -> String {
         format!("dxgi-desktop-duplication {}x{}", self.width, self.height)
+    }
+}
+
+
+/// QW-1: el frame adquirido NO aporta cambios de escritorio (p. ej. solo se
+/// movio el raton: `AccumulatedFrames == 0`) o no hubo presentacion nueva
+/// (`LastPresentTime == 0`). Patron de RustDesk (`scrap/src/dxgi`).
+pub fn frame_unchanged(accumulated_frames: u32, last_present_time: i64) -> bool {
+    accumulated_frames == 0 || last_present_time == 0
+}
+
+#[cfg(test)]
+mod qw1_tests {
+    use super::*;
+
+    #[test]
+    fn frame_unchanged_detects_cursor_only_and_idle_updates() {
+        // Solo cursor / sin presentacion nueva -> omitir.
+        assert!(frame_unchanged(0, 1_700_000_000_000_000));
+        assert!(frame_unchanged(1, 0));
+        assert!(frame_unchanged(0, 0));
+        // Cambio real de escritorio -> procesar.
+        assert!(!frame_unchanged(1, 1_700_000_000_000_000));
+        assert!(!frame_unchanged(3, 123));
     }
 }

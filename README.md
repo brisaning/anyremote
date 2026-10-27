@@ -10,10 +10,10 @@ _Última actualización: 2026-10-26_
 
 | Campo | Valor |
 |---|---|
-| Versión actual | **v0.7.0** (`anyremote_app.exe` + `anyremoted.exe`) |
-| Ramas | `main` = `f4c9970` (PR #8) · `develop` = `921ef54` (tag `campo-v0.6.1`) |
+| Versión actual | **v0.7.1** (`anyremote_app.exe` + `anyremoted.exe`) |
+| Ramas | `main` = `3d25dc2` (PR #10) · `develop` = rama de integración (tag `perf-v0.7.1`) |
 | Gates actuales | **Rust 41 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 4/4 |
-| Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · cierre/reanudación · perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** · 🟡 audio loopback v0.6.1 (verificado local) · 🟡 fix control 720p/1080p v0.6.2 (pendiente) · 🟡 toggles dinámicos + micrófono v0.7.0 (pendiente campo) |
+| Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · cierre/reanudación · perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** · 🟡 audio loopback v0.6.1 · 🟡 fix control 720p/1080p v0.6.2 · 🟡 toggles dinámicos + micrófono v0.7.0 · 🟡 **rendimiento v0.7.1** (silencio -60 % medido; pantalla estática pendiente) |
 | PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · **#8 (v0.6.1 campo)** |
 
 ### Requisitos
@@ -33,13 +33,14 @@ _Última actualización: 2026-10-26_
 
 ### Pendientes
 
-1. **Audio**: re-verificar en LAN (v0.7.0: loopback + micrófono + toggles dinámicos); VAD/silencio y resampler de mayor orden.
+1. **Audio**: re-verificar en LAN (v0.7.x: loopback + micrófono + toggles + gate de silencio ya implementado); resampler de mayor orden.
 2. **Acuse de inyección al visor**: hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor cuenta únicamente lo que envía.
 3. **Identidad persistente + trust por dispositivo**: cada arranque genera un ID nuevo (`peer_trusted` siempre false) → persistir la clave en el directorio de config y confiar por ID conocido.
 4. **WAN**: firewall/UPnP/NAT (hoy LAN + regla `netsh` manual documentada).
-5. Gates de CI (`clippy`/`fmt`) y build reproducible.
-6. Render a alta resolución → posible paso a widget `Texture` si el fps de render limita.
-7. Tabla de entrada: teclas F1..F12, Insert, PageUp/Down, caps/num lock.
+5. **Rendimiento (informe `evidence/perf-audit.md`)**: quick wins en v0.7.1 (frames sin cambios, gate de silencio, tope de bitrate, tuning libvpx); quedan **aceleración por hardware, adaptación por red, UDP/QUIC y cursor separado** (§5 del informe, requieren decisión de alcance).
+6. Gates de CI (`clippy`/`fmt`) y build reproducible.
+7. Render a alta resolución → posible paso a widget `Texture` si el fps de render limita.
+8. Tabla de entrada: teclas F1..F12, Insert, PageUp/Down, caps/num lock.
 
 ## Qué es
 
@@ -68,6 +69,20 @@ ambos) viaja **Opus 48 kHz mono** hasta el controlador (indicador `audio ✓` /
 Build: `cargo build --release -p anyremote-daemon --bin anyremoted` · `flutter build windows --release` (ambos artefactos se sirven desde `app/build/windows/x64/runner/Release/`).
 **Requisito de build**: `opus` compila libopus con **CMake** — si hay que recompilar
 (`cargo clean`, nueva máquina), añadir al `PATH` `C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin` (VS Build Tools).
+
+## Optimización de consumo (recomendaciones de campo)
+
+Además de los quick wins del código (v0.7.1: frames sin cambios, gate de
+silencio, tope de bitrate, tuning de libvpx — ver `evidence/perf-audit.md`):
+
+- **En el anfitrión**: fondo de escritorio sólido, desactivar transparencias y
+  animaciones de ventanas, cerrar navegadores/procesos pesados y desactivar el
+  inicio automático de programas innecesarios.
+- **En la sesión**: elegir **720p** (no Nativa) si la red va justa, `--audio off`
+  si no hace falta oír el equipo remoto y `--clipboard off` si no se usa el
+  portapapeles.
+- **Red**: cable ethernet de preferencia (el RTT de 57-782 ms medido en v0.6.1
+  era de Wi-Fi); `--max-bitrate <kbps>` para acotar el consumo.
 
 ## Ingeniería inversa de referencia (semillas)
 
