@@ -41,6 +41,7 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | Fix control 720p/1080p v0.6.2 | ✅ gate verde · 🟡 pendiente verificar en campo | `coords-v0.6.2` · `evidence/control-coords-gate.md` |
 | C-2 permisos dinámicos + micrófono v0.7.0 | ✅ gate verde · 🟡 pendiente campo | `perm-dinamicas-v0.7.0` · `evidence/dynamic-perms-gate.md` |
 | C-3 rendimiento (quick wins) v0.7.1 | ✅ gate verde · 🟡 pendiente verificar en campo | `perf-v0.7.1` · `evidence/perf-audit.md` |
+| C-4 fix vídeo estático v0.7.2 (campo) | ✅ gate verde · 🟡 pendiente revalidar en LAN | `video-estatico-v0.7.2` · `evidence/video-static-gate.md` |
 | **Pendientes** | 🟡 re-verificación en LAN (v0.7.x) · rendimiento medio/largo (HW encode, UDP, adaptación por red) · acuse de inyección · identidad persistente · CI | [README § Pendientes](../README.md#pendientes) |
 
 ---

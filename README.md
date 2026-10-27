@@ -10,11 +10,11 @@ _Última actualización: 2026-10-26_
 
 | Campo | Valor |
 |---|---|
-| Versión actual | **v0.7.1** (`anyremote_app.exe` + `anyremoted.exe`) |
-| Ramas | `main` = `3d25dc2` (PR #10) · `develop` = rama de integración (tag `perf-v0.7.1`) |
+| Versión actual | **v0.7.2** (`anyremote_app.exe` + `anyremoted.exe`) |
+| Ramas | `main` = `efb1dc2` (PR #11) · `develop` = `d3cf723` (tag `perf-v0.7.1`) |
 | Gates actuales | **Rust 41 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 4/4 |
-| Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · cierre/reanudación · perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** · 🟡 audio loopback v0.6.1 · 🟡 fix control 720p/1080p v0.6.2 · 🟡 toggles dinámicos + micrófono v0.7.0 · 🟡 **rendimiento v0.7.1** (silencio -60 % medido; pantalla estática pendiente) |
-| PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · **#8 (v0.6.1 campo)** |
+| Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · cierre/reanudación · perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** · 🟡 audio · 🟡 fix control 720p/1080p · 🟡 toggles dinámicos · 🟡 rendimiento v0.7.1 · 🔴→🟡 **campo: sin vídeo en pantalla estática (v0.7.1) → fix v0.7.2** (captura en hilo propio + reenvío 1 fps), pendiente revalidar en LAN |
+| PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (v0.6.2 coords) · #10 (v0.7.0 dinámico) · **#11 (v0.7.1 perf)** |
 
 ### Requisitos
 
@@ -83,6 +83,9 @@ silencio, tope de bitrate, tuning de libvpx — ver `evidence/perf-audit.md`):
   portapapeles.
 - **Red**: cable ethernet de preferencia (el RTT de 57-782 ms medido en v0.6.1
   era de Wi-Fi); `--max-bitrate <kbps>` para acotar el consumo.
+- **Pantalla del anfitrión**: DXGI solo envía frames cuando algo cambia — en
+  pantalla estática el visor refresca a ~1 fps (v0.7.2); interactuar en el
+  anfitrión devuelve los fps completos.
 
 ## Ingeniería inversa de referencia (semillas)
 

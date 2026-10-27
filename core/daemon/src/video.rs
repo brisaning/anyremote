@@ -196,6 +196,16 @@ pub fn resolve_native(mode: VideoMode, requested: (u32, u32), first: (u32, u32))
 }
 
 /// Lanza la tarea de vídeo hacia `out` (preview local + eventos). Deténela con `stop`.
+///
+/// **Hilo propio (QW-5, campo v0.7.2)**: la captura DXGI puede bloquear hasta
+/// 500 ms en `AcquireNextFrame` cuando la pantalla estática no cambia — hacerlo
+/// en un worker de tokio **estrangulaba el bucle de sesión** (vídeo y latidos
+/// sin salir en equipos con pocos núcleos). Aquí la tarea vive en su propio
+/// hilo: duerme con `std::thread::sleep` y usa `try_send` (canal sin bloqueo).
+///
+/// **Pantalla estática (C-4)**: DXGI solo entrega frames cuando hay cambios;
+/// como mucho 1 vez por segundo se **reemite el último frame** para que el
+/// visor no se quede ciego (QW-1 descarta los frames sin cambios).
 pub fn spawn_video_task(
     mode: VideoMode,
     size: (u32, u32),
@@ -205,8 +215,8 @@ pub fn spawn_video_task(
     out: mpsc::Sender<VideoMsg>,
     preview: PreviewServer,
     stop: Arc<AtomicBool>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
         // Resolución nativa (0,0): en Test se fija ya; en Auto espera al primer frame.
         let (mut w, mut h) = if size == (0, 0) && matches!(mode, VideoMode::Test) {
             (1280, 720)
@@ -215,7 +225,9 @@ pub fn spawn_video_task(
         };
         let mut capturer: PlatformCapturer = match mode {
             VideoMode::Off => return,
-            VideoMode::Test => PlatformCapturer::TestPattern(TestPatternCapturer::new(w.max(1), h.max(1))),
+            VideoMode::Test => {
+                PlatformCapturer::TestPattern(TestPatternCapturer::new(w.max(1), h.max(1)))
+            }
             VideoMode::Auto => best_capturer(w.max(64), h.max(64)),
         };
         let mut encoder = encoder_for(codec);
@@ -223,17 +235,36 @@ pub fn spawn_video_task(
         encoder.set_fps(fps.max(1) as u32);
         let mut adapt: Option<AdaptState> = None;
         let budget_ms = 1000.0 / fps.max(1) as f64;
+        let period = Duration::from_millis(1000 / fps.max(1).max(1));
         let mut seq: u32 = 0;
-        let mut tick = tokio::time::interval(Duration::from_millis(1000 / fps.max(1)));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Último frame emitido + instante (para el reenvío en pantalla estática).
+        let mut last_frame: Option<Frame> = None;
+        let mut last_emit = std::time::Instant::now();
+
         loop {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            tick.tick().await;
+            let t0 = std::time::Instant::now();
             let captured = match capturer.next_frame() {
-                Ok(f) => f,
-                Err(_) => continue, // captura momentáneamente no disponible
+                Ok(f) => Some(f),
+                Err(anyremote_capture::CaptureError::Timeout) => {
+                    // Pantalla estática: DXGI no entrega nada nuevo (QW-1 salta
+                    // los frames de solo-cursor). Reemitir el último como mucho
+                    // una vez por segundo para mantener viva la vista.
+                    match last_frame.as_ref() {
+                        Some(f) if last_emit.elapsed() >= Duration::from_secs(1) => Some(f.clone()),
+                        _ => None,
+                    }
+                }
+                Err(_) => None, // error transitorio del backend: se reintenta
+            };
+            let Some(captured) = captured else {
+                let elapsed = t0.elapsed();
+                if elapsed < period {
+                    std::thread::sleep(period - elapsed);
+                }
+                continue;
             };
             // Fija la resolución nativa con el primer frame.
             if w == 0 || h == 0 {
@@ -249,15 +280,23 @@ pub fn spawn_video_task(
                 }
             }
 
-            let t0 = std::time::Instant::now();
+            let te = std::time::Instant::now();
             let enc = match encoder.encode(&frame) {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(_) => {
+                    let elapsed = t0.elapsed();
+                    if elapsed < period {
+                        std::thread::sleep(period - elapsed);
+                    }
+                    continue;
+                }
             };
-            let took_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let took_ms = te.elapsed().as_secs_f64() * 1000.0;
 
             preview.push(frame.width, frame.height, seq, &frame.data);
             seq = seq.wrapping_add(1);
+            last_emit = std::time::Instant::now();
+            last_frame = Some(frame);
             if !enc.data.is_empty() {
                 let _ = out.try_send(VideoMsg::Frame(enc)); // backpressure: descarte
             }
@@ -284,7 +323,7 @@ pub fn spawn_video_task(
                                     PlatformCapturer::TestPattern(TestPatternCapturer::new(w, h));
                             }
                             encoder = encoder_for(codec); // recreado con la nueva escala
-                            encoder.set_fps(fps.max(1) as u32);
+                            encoder.set_fps(fps.max(1) as u32); // QW-4
                             let _ = out.try_send(VideoMsg::Event(json!({
                                 "event": "video_adapt", "reason": dec.reason,
                                 "size": format!("{}x{}", w, h),
@@ -292,6 +331,11 @@ pub fn spawn_video_task(
                         }
                     }
                 }
+            }
+
+            let elapsed = t0.elapsed();
+            if elapsed < period {
+                std::thread::sleep(period - elapsed);
             }
         }
     })

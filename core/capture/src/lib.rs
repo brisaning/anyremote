@@ -159,10 +159,14 @@ mod tests {
         // En entornos sin escritorio (servicio, RDP bloqueado) debe reportar
         // Unavailable, no fallar enmascaradamente.
         match dxgi::DxgiCapturer::new() {
-            Ok(mut c) => {
-                let f = c.next_frame().expect("frame con duplicación activa");
-                assert!(f.width > 0 && f.height > 0);
-            }
+            Ok(mut c) => match c.next_frame() {
+                Ok(f) => assert!(f.width > 0 && f.height > 0),
+                // Pantalla estática desde la apertura de la duplicación: DXGI
+                // no entrega nada hasta el primer cambio (comportamiento válido).
+                Err(CaptureError::Timeout) => {}
+                Err(CaptureError::Unavailable(_)) => {}
+                Err(e) => panic!("error inesperado: {e:?}"),
+            },
             Err(CaptureError::Unavailable(_)) => {}
             Err(e) => panic!("error inesperado: {e:?}"),
         }
