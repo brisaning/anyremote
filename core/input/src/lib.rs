@@ -36,7 +36,10 @@ pub enum MouseButton {
 pub enum InputEvent {
     KeyDown(Key),
     KeyUp(Key),
-    /// Movimiento absoluto en coordenadas lógicas de pantalla (0..65535 normalizado por backend).
+    /// Posición **absoluta normalizada 0..65535** de pantalla (ejes X/Y).
+    /// El wire no depende de la resolución del vídeo ni de la del anfitrión
+    /// (fix campo v0.6.2: antes eran píxeles de pantalla, lo que rompía el
+    /// control cuando el vídeo iba escalado — 720p/1080p en pantalla nativa).
     MoveTo { x: u16, y: u16 },
     /// Movimiento relativo (píxeles).
     MoveBy { dx: i32, dy: i32 },

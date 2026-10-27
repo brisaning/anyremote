@@ -244,7 +244,7 @@ pub fn input_event_from_wire(m: &proto::InputEventMsg) -> Option<anyremote_input
             })
         }
         proto::input_event_msg::Ev::Pointer(p) => Some(if p.absolute {
-            // Coordenadas absolutas en píxeles de pantalla (el backend normaliza).
+            // Absoluta: normalizada 0..65535 (coherente con el backend win32).
             InputEvent::MoveTo {
                 x: p.x.clamp(0, u16::MAX as i32) as u16,
                 y: p.y.clamp(0, u16::MAX as i32) as u16,

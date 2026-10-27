@@ -10,7 +10,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_MENU,
     VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP, VkKeyScanW,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
 use crate::{InputError, InputEvent, InputInjector, Key, MouseButton};
 
@@ -114,13 +113,12 @@ impl InputInjector for SendInputInjector {
             InputEvent::KeyDown(k) => self.send_key(*k, false),
             InputEvent::KeyUp(k) => self.send_key(*k, true),
             InputEvent::MoveTo { x, y } => {
-                let sw = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1) as i32;
-                let sh = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(1) as i32;
-                let nx = (*x as i32 * 65535) / (sw - 1);
-                let ny = (*y as i32 * 65535) / (sh - 1);
+                // Coordenadas YA normalizadas 0..65535 (modelo de dominio):
+                // el valor viaja sin depender de la resolución del vídeo ni de
+                // la pantalla, y Windows lo entiende directo con ABSOLUTE.
                 Self::send(&[mouse_input(
-                    nx,
-                    ny,
+                    *x as i32,
+                    *y as i32,
                     0,
                     MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
                 )])
