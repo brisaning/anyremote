@@ -21,6 +21,7 @@ message Envelope {
     FileChunk file_chunk = 20;
     FileDone file_done = 21;
     FileReady file_ready = 22;
+    AudioFrame audio_frame = 23;
   }
 }
 
@@ -114,6 +115,20 @@ message Button {
   uint32 button = 1; // 0=izq 1=der 2=medio
   bool down = 3;
   int32 wheel = 4;
+}
+
+// Frame de audio empaquetado (audio en sesión; D-05 ya preveía `AudioFrame`).
+// Por sesión se fija 48 kHz mono (Opus, frames de 20 ms).
+enum AudioCodecEnum {
+  AUDIO_OPUS = 0;
+}
+
+message AudioFrame {
+  uint64 seq = 1;
+  uint32 sample_rate = 2;   // siempre 48000 en esta versión
+  uint32 channels = 3;      // siempre 1 (mono)
+  AudioCodecEnum format = 4;
+  bytes data = 5;           // payload Opus
 }
 
 // Prueba de identidad ed25519 vinculada al canal TLS (D-03, patrón H-RD-02 id_pk).

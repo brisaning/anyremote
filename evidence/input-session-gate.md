@@ -6,6 +6,17 @@
 | Rama | `feature/input-session` (D-11) · tag `entrada-v0.5.0` |
 | Gates | Rust **37 suites / 0 fallos** · `flutter analyze` limpio · `flutter test` **3/3** |
 | Artefactos | `Release/anyremote_app.exe` **0.5.0** + `Release/anyremoted.exe` **0.5.0** |
+| **Validación de campo** | ✅ **2026-10-27 — LAN: control remoto real confirmado** (teclado y ratón sobre el equipo anfitrión con la app; ver §Validación de campo) |
+
+## Validación de campo (2026-10-27)
+
+El usuario probó v0.5.0 entre los dos equipos de la LAN y **confirmó que se puede
+controlar el equipo de forma remota** (ratón y teclado actuando sobre el anfitrión):
+
+- Anfitrión con *Escuchar (red)* + **"Aceptar control remoto"** marcada (`--allow-input`).
+- Controlador conectado desde la app → en el visor: movimiento, clic y teclado con efecto
+  real en el equipo remoto.
+- Caso negativo cubierto por gate: sin la casilla/flag, `input_denied` y nada se inyecta.
 
 ## Qué se entregó
 

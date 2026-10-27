@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 
+use anyremote_audio::AudioMode;
 use anyremote_codec::CodecFormat;
 use anyremote_daemon::video::VideoMode;
 use anyremote_daemon::{resolve_profile, run_connect, run_listen, ClipboardMode, DaemonConfig};
@@ -82,6 +83,13 @@ async fn main() {
             cfg.one_way_files = args.iter().any(|a| a == "--one-way-files");
             // RF-02a (D-07): inyección de teclado/ratón — denegada salvo flag explícito.
             cfg.allow_input = args.iter().any(|a| a == "--allow-input");
+            // RF audio: fuente de captura (off por defecto; `test` sin hardware).
+            if let Some(a) = flag_value(&args, "--audio") {
+                cfg.audio = AudioMode::parse(&a).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                });
+            }
             if let Some(v) = flag_value(&args, "--max-secs") {
                 cfg.max_secs = v.parse().unwrap_or(600);
             }
@@ -155,6 +163,13 @@ async fn main() {
             }
             cfg.grant = parse_grant(&args, &["keyboard", "mouse"]);
             cfg.one_way_files = args.iter().any(|a| a == "--one-way-files");
+            // RF audio: reproductor (off por defecto; `test` decodifica sin dispositivo).
+            if let Some(a) = flag_value(&args, "--audio") {
+                cfg.audio = AudioMode::parse(&a).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                });
+            }
             if let Some(f) = flag_value(&args, "--send-file") {
                 cfg.send_file = Some(PathBuf::from(f));
             }
@@ -172,9 +187,9 @@ async fn main() {
             std::process::exit(run_profiles(&args, &cfg_dir));
         }
         _ => {
-            eprintln!("anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a");
-            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|960x540] [--video-fps 10] [--codec vp9|deflate|raw] [--clipboard ...] [--allow-input] [--max-secs n]");
-            eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--clipboard ...]   (stdin: lineas de entrada o bye)");
+            eprintln!("anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio");
+            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|960x540] [--video-fps 10] [--codec vp9|deflate|raw] [--audio off|test|on] [--clipboard ...] [--allow-input] [--max-secs n]");
+            eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             std::process::exit(2);
         }

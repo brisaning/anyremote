@@ -110,6 +110,7 @@ class _HomePageState extends State<HomePage> {
   final Map<int, String> _heldChars = {};
   bool _sessionActive = false;
   bool _acceptRemoteControl = false;
+  bool _shareAudio = false;
   /// Botón mantenido en el visor (0/1/2) para emitir su `up` al soltar.
   int? _heldButton;
   /// Contador visible de eventos de entrada (enviados por el visor o
@@ -241,6 +242,14 @@ class _HomePageState extends State<HomePage> {
             _append('[daemon] entrada denegada en el anfitrión: ${ev['allow_input'] == false ? 'sin --allow-input (D-07)' : 'permiso ${ev['perm'] ?? '?'} no concedido'}');
           case 'input_error':
             _append('[daemon] evento de entrada no soportado: ${ev['detail']}');
+          case 'audio_start':
+            _append('[daemon] audio de sesión iniciado (${ev['mode']}, ${ev['rate']} Hz)');
+          case 'audio_denied':
+            _append('[daemon] audio no concedido en esta sesión (D-07: el anfitrión debe compartirlo con "Compartir audio")');
+          case 'audio_stats':
+            break; // se emite cada ~2 s: no debe inundar el registro
+          case 'audio_error':
+            _append('[daemon] audio desactivado en esta sesión: ${ev['detail']}');
           case 'closed':
             _append('[daemon] sesión cerrada: ${ev['reason']}');
             _setStatus('Desconectado', Colors.grey);
@@ -293,15 +302,23 @@ class _HomePageState extends State<HomePage> {
       ];
       // RF-02a (D-07): la entrada remota solo se acepta si el usuario la activa.
       if (_acceptRemoteControl) args.add('--allow-input');
+      // RF audio (D-07): compartir micrófono solo si el usuario lo activa.
+      if (_shareAudio) args.addAll(['--audio', 'on']);
       final proc = await Process.start(
         _daemonBin,
         args,
         mode: ProcessStartMode.normal,
       );
       setState(() => _listener = proc);
-      _append(_acceptRemoteControl
-          ? '[ui] listener de red lanzado (0.0.0.0:21118 — vídeo nativo@15 vp9 + CONTROL REMOTO aceptado)'
-          : '[ui] listener de red lanzado (0.0.0.0:21118 — vídeo nativo@15 vp9; control remoto desactivado (D-07))');
+      final activos = <String>[
+        if (_acceptRemoteControl) 'control remoto',
+        if (_shareAudio) 'audio',
+      ];
+      _append('[ui] listener de red lanzado (0.0.0.0:21118 — vídeo nativo@15 vp9'
+          '${activos.isEmpty
+              ? ' — sin control remoto ni audio (D-07)'
+              : ' — acepta ${activos.join(' + ')}'}'
+          ')');
       proc.stdout
           .transform(utf8.decoder)
           .transform(const LineSplitter())
@@ -578,6 +595,8 @@ class _HomePageState extends State<HomePage> {
     final args = asAlias
         ? ['connect', '--profile', target, '--clipboard', 'win']
         : ['connect', target, '--clipboard', 'win'];
+    // RF audio: reproduce lo que el anfitrión comparte (si no comparte, no hay audio).
+    args.addAll(['--audio', 'on']);
     _append('[ui] lanzando anyremoted ${asAlias ? 'connect --profile $target' : 'connect $target'}');
     try {
       final proc = await Process.start(
@@ -730,7 +749,8 @@ class _HomePageState extends State<HomePage> {
                       ],
                     ),
                     const SizedBox(height: 4),
-                    // D-07: sin marcar, el listener rechaza toda entrada (RF-02a).
+                    // D-07: sin marcar, el listener rechaza la entrada (RF-02a)
+                    // y no comparte audio (RF audio).
                     Row(
                       children: [
                         Checkbox(
@@ -742,6 +762,17 @@ class _HomePageState extends State<HomePage> {
                           materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
                         const Text('Aceptar control remoto',
+                            style: TextStyle(fontSize: 12)),
+                        const SizedBox(width: 16),
+                        Checkbox(
+                          value: _shareAudio,
+                          onChanged: _listener != null
+                              ? null // no se cambia con el listener ya lanzado
+                              : (v) => setState(() => _shareAudio = v ?? false),
+                          visualDensity: VisualDensity.compact,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        const Text('Compartir audio',
                             style: TextStyle(fontSize: 12)),
                       ],
                     ),

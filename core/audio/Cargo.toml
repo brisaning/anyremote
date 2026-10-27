@@ -1,0 +1,13 @@
+[package]
+name = "anyremote-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+opus = "0.4"
+cpal = "0.15"
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }

@@ -269,6 +269,44 @@ pub fn input_event_from_wire(m: &proto::InputEventMsg) -> Option<anyremote_input
     }
 }
 
+/// Frame de audio codificado → wire (la sesión fija Opus 48 kHz mono).
+pub fn audio_frame_to_wire(frame: &anyremote_audio::EncodedAudio) -> proto::AudioFrame {
+    proto::AudioFrame {
+        seq: frame.seq,
+        sample_rate: anyremote_audio::AUDIO_RATE,
+        channels: 1,
+        format: proto::AudioCodecEnum::AudioOpus as i32,
+        data: frame.data.clone(),
+    }
+}
+
+/// Wire → frame de audio validado contra el formato fijo de la sesión.
+pub fn audio_frame_from_wire(
+    v: proto::AudioFrame,
+) -> Result<anyremote_audio::EncodedAudio, TransportError> {
+    if v.sample_rate != anyremote_audio::AUDIO_RATE || v.channels != 1 {
+        return Err(TransportError::Io(format!(
+            "audio: se esperaba {} Hz mono; llegó {} Hz {} canales",
+            anyremote_audio::AUDIO_RATE,
+            v.sample_rate,
+            v.channels
+        )));
+    }
+    if v.format != proto::AudioCodecEnum::AudioOpus as i32 {
+        return Err(TransportError::Io(format!(
+            "audio: codec desconocido {}",
+            v.format
+        )));
+    }
+    if v.data.is_empty() {
+        return Err(TransportError::Io("audio: frame vacío".into()));
+    }
+    Ok(anyremote_audio::EncodedAudio {
+        seq: v.seq,
+        data: v.data,
+    })
+}
+
 /// Oferta de archivo → wire (nombre ya saneado por el emisor).
 pub fn file_offer_to_wire(meta: &anyremote_filexfer::FileMeta) -> proto::FileOffer {
     proto::FileOffer {
@@ -437,5 +475,35 @@ mod tests {
         );
         // oneof vacío → no soportado.
         assert_eq!(input_event_from_wire(&proto::InputEventMsg { ev: None }), None);
+    }
+
+    /// RF audio: el wire valida el formato fijo de sesión (Opus 48 kHz mono).
+    #[test]
+    fn audio_frame_wire_roundtrip_and_validation() {
+        let wire = audio_frame_to_wire(&anyremote_audio::EncodedAudio {
+            seq: 7,
+            data: vec![1, 2, 3],
+        });
+        assert_eq!(wire.sample_rate, anyremote_audio::AUDIO_RATE);
+        assert_eq!(wire.channels, 1);
+        assert_eq!(wire.format, proto::AudioCodecEnum::AudioOpus as i32);
+        let back = audio_frame_from_wire(wire).expect("válido");
+        assert_eq!(back.seq, 7);
+        assert_eq!(back.data, vec![1, 2, 3]);
+
+        let mut bad = proto::AudioFrame {
+            seq: 1,
+            sample_rate: 44_100,
+            channels: 1,
+            format: 0,
+            data: vec![9],
+        };
+        assert!(audio_frame_from_wire(bad.clone()).is_err(), "tasa ajena");
+        bad.sample_rate = anyremote_audio::AUDIO_RATE;
+        bad.channels = 2;
+        assert!(audio_frame_from_wire(bad.clone()).is_err(), "estéreo");
+        bad.channels = 1;
+        bad.data = Vec::new();
+        assert!(audio_frame_from_wire(bad).is_err(), "frame vacío");
     }
 }
