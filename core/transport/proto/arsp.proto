@@ -91,9 +91,17 @@ message InputEventMsg {
 }
 
 message Key {
-  uint32 code = 1;   // código de tecla del protocolo (ver anyremote-input)
+  // Tabla de códigos compartida app↔daemon (RF-02a; la convierte
+  // anyremote-transport::arsp::input_event_from_wire al modelo de inyección):
+  //   0 = tecla de carácter → usar `ch` (un solo codepoint UTF-8)
+  //   1=escape 2=tab 3=enter 4=backspace 5=delete
+  //   6=left 7=right 8=up 9=down 10=home 11=end
+  //   20=ctrl 21=alt 22=shift
+  uint32 code = 1;
   bool down = 2;
-  bool extended = 3;
+  bool extended = 3;  // reservado (el backend win32 infiere la extensión de la tecla)
+  // Carácter UTF-8 de un solo codepoint cuando code=0 (ej. "a", "A", "1").
+  string ch = 4;
 }
 
 message Pointer {

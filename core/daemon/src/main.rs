@@ -1,11 +1,13 @@
 //! `anyremoted` — daemon de anyremote (integración de los ciclos S0–C8).
 //!
 //! Uso:
-//!   anyremoted listen  [--bind 127.0.0.1:21118] [--clipboard off|memory|win] [--grant keyboard,mouse] [--max-secs 600]
+//!   anyremoted listen  [--bind 127.0.0.1:21118] [--clipboard off|memory|win] [--grant keyboard,mouse] [--allow-input] [--max-secs 600]
 //!   anyremoted connect <host:puerto> | --profile <alias>  [--clipboard ...] [--grant ...] [--send-file <ruta>] [--max-secs ...]
 //!   anyremoted profiles [--config-dir <dir>] [--list] [--add <alias,host,puerto>] [--remove <alias>]
 //!
 //! Salida: eventos JSONL por stdout (para UI) + log de auditoría en <config>/audit/.
+//! stdin (connect): líneas `{"input":{key|pointer|button}}` → eventos de entrada
+//! reenviados al controlado (RF-02a) y `bye` para cerrar la sesión.
 
 use std::path::PathBuf;
 
@@ -78,6 +80,8 @@ async fn main() {
             }
             cfg.grant = parse_grant(&args, &["keyboard", "mouse"]);
             cfg.one_way_files = args.iter().any(|a| a == "--one-way-files");
+            // RF-02a (D-07): inyección de teclado/ratón — denegada salvo flag explícito.
+            cfg.allow_input = args.iter().any(|a| a == "--allow-input");
             if let Some(v) = flag_value(&args, "--max-secs") {
                 cfg.max_secs = v.parse().unwrap_or(600);
             }
@@ -168,9 +172,9 @@ async fn main() {
             std::process::exit(run_profiles(&args, &cfg_dir));
         }
         _ => {
-            eprintln!("anyremoted — integración anyremote (S0..C8) + vídeo M2");
-            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size 960x540] [--video-fps 10] [--codec vp9|deflate|raw] [--clipboard ...] [--max-secs n]");
-            eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--clipboard ...]");
+            eprintln!("anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a");
+            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|960x540] [--video-fps 10] [--codec vp9|deflate|raw] [--clipboard ...] [--allow-input] [--max-secs n]");
+            eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             std::process::exit(2);
         }

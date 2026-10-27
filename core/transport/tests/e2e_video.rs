@@ -17,47 +17,6 @@ const W: u32 = 640;
 const H: u32 = 360;
 const FRAMES: u64 = 30;
 
-/// Mapea el modelo de protocolo al modelo de inyección (cableado del daemon en C7/C8).
-fn map_input(msg: &proto::InputEventMsg) -> Option<InputEvent> {
-    use proto::input_event_msg::Ev;
-    match msg.ev? {
-        Ev::Key(k) => {
-            let key = match k.code {
-                1 => Key::Char('a'),
-                2 => Key::Escape,
-                _ => return None,
-            };
-            Some(if k.down {
-                InputEvent::KeyDown(key)
-            } else {
-                InputEvent::KeyUp(key)
-            })
-        }
-        Ev::Pointer(p) => Some(if p.absolute {
-            InputEvent::MoveTo {
-                x: p.x.max(0) as u16,
-                y: p.y.max(0) as u16,
-            }
-        } else {
-            InputEvent::MoveBy { dx: p.x, dy: p.y }
-        }),
-        Ev::Button(b) => {
-            let btn = match b.button {
-                0 => MouseButton::Left,
-                1 => MouseButton::Right,
-                _ => MouseButton::Middle,
-            };
-            if b.wheel != 0 {
-                Some(InputEvent::Scroll { delta: b.wheel })
-            } else if b.down {
-                Some(InputEvent::ButtonDown(btn))
-            } else {
-                Some(InputEvent::ButtonUp(btn))
-            }
-        }
-    }
-}
-
 #[tokio::test]
 async fn e2e_video_streaming_and_input_injection() {
     let cert = generate_loopback_cert().expect("cert");
@@ -93,7 +52,7 @@ async fn e2e_video_streaming_and_input_injection() {
         for _ in 0..3 {
             let env = ch.recv().await.expect("input msg");
             if let Some(proto::envelope::Payload::InputEvent(m)) = env.payload {
-                let ev = map_input(&m).expect("mapeo");
+                let ev = arsp::input_event_from_wire(&m).expect("mapeo");
                 injector.inject(&ev).expect("inyectar");
             } else {
                 panic!("payload inesperado");
@@ -147,9 +106,10 @@ async fn e2e_video_streaming_and_input_injection() {
     for ev in [
         proto::envelope::Payload::InputEvent(proto::InputEventMsg {
             ev: Some(proto::input_event_msg::Ev::Key(proto::Key {
-                code: 1,
+                code: 0,
                 down: true,
                 extended: false,
+                ch: "a".into(),
             })),
         }),
         proto::envelope::Payload::InputEvent(proto::InputEventMsg {

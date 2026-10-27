@@ -201,6 +201,74 @@ pub fn clipboard_from_wire(
     })
 }
 
+/// Código de tecla wire → tecla del modelo de inyección (RF-02a).
+/// Tabla compartida app↔daemon; el espejo documentado vive en `arsp.proto::Key`.
+fn key_from_code(code: u32, ch: &str) -> Option<anyremote_input::Key> {
+    use anyremote_input::Key;
+    match code {
+        // Carácter: un solo codepoint UTF-8 (letra, dígito, símbolo).
+        0 => {
+            let mut it = ch.chars();
+            let c = it.next()?;
+            it.next().is_none().then_some(Key::Char(c))
+        }
+        1 => Some(Key::Escape),
+        2 => Some(Key::Tab),
+        3 => Some(Key::Enter),
+        4 => Some(Key::Backspace),
+        5 => Some(Key::Delete),
+        6 => Some(Key::Left),
+        7 => Some(Key::Right),
+        8 => Some(Key::Up),
+        9 => Some(Key::Down),
+        10 => Some(Key::Home),
+        11 => Some(Key::End),
+        20 => Some(Key::Ctrl),
+        21 => Some(Key::Alt),
+        22 => Some(Key::Shift),
+        _ => None,
+    }
+}
+
+/// Evento de entrada wire → modelo de inyección.
+/// `None` = código/carácter no soportado (el receptor lo audita como denegado).
+pub fn input_event_from_wire(m: &proto::InputEventMsg) -> Option<anyremote_input::InputEvent> {
+    use anyremote_input::{InputEvent, MouseButton};
+    match m.ev.as_ref()? {
+        proto::input_event_msg::Ev::Key(k) => {
+            let key = key_from_code(k.code, &k.ch)?;
+            Some(if k.down {
+                InputEvent::KeyDown(key)
+            } else {
+                InputEvent::KeyUp(key)
+            })
+        }
+        proto::input_event_msg::Ev::Pointer(p) => Some(if p.absolute {
+            // Coordenadas absolutas en píxeles de pantalla (el backend normaliza).
+            InputEvent::MoveTo {
+                x: p.x.clamp(0, u16::MAX as i32) as u16,
+                y: p.y.clamp(0, u16::MAX as i32) as u16,
+            }
+        } else {
+            InputEvent::MoveBy { dx: p.x, dy: p.y }
+        }),
+        proto::input_event_msg::Ev::Button(b) => {
+            let button = match b.button {
+                0 => MouseButton::Left,
+                1 => MouseButton::Right,
+                _ => MouseButton::Middle,
+            };
+            if b.wheel != 0 {
+                Some(InputEvent::Scroll { delta: b.wheel })
+            } else if b.down {
+                Some(InputEvent::ButtonDown(button))
+            } else {
+                Some(InputEvent::ButtonUp(button))
+            }
+        }
+    }
+}
+
 /// Oferta de archivo → wire (nombre ya saneado por el emisor).
 pub fn file_offer_to_wire(meta: &anyremote_filexfer::FileMeta) -> proto::FileOffer {
     proto::FileOffer {
@@ -288,5 +356,86 @@ mod tests {
         let env = rx.recv().await.unwrap();
         assert_eq!(env.seq, 2);
         assert!(check_version(&env).is_ok());
+    }
+
+    /// RF-02a: el wire de entrada mapea al modelo de inyección (tabla de `Key`).
+    #[test]
+    fn input_wire_mapping_covers_keys_pointer_buttons() {
+        use anyremote_input::{InputEvent, Key, MouseButton};
+
+        let key = |code: u32, ch: &str, down: bool| proto::InputEventMsg {
+            ev: Some(proto::input_event_msg::Ev::Key(proto::Key {
+                code,
+                down,
+                extended: false,
+                ch: ch.into(),
+            })),
+        };
+        assert_eq!(
+            input_event_from_wire(&key(0, "a", true)),
+            Some(InputEvent::KeyDown(Key::Char('a')))
+        );
+        assert_eq!(
+            input_event_from_wire(&key(0, "A", false)),
+            Some(InputEvent::KeyUp(Key::Char('A')))
+        );
+        assert_eq!(
+            input_event_from_wire(&key(1, "", true)),
+            Some(InputEvent::KeyDown(Key::Escape))
+        );
+        assert_eq!(
+            input_event_from_wire(&key(22, "", true)),
+            Some(InputEvent::KeyDown(Key::Shift))
+        );
+        // Código desconocido, carácter vacío o multibyte → no soportado.
+        assert_eq!(input_event_from_wire(&key(99, "", true)), None);
+        assert_eq!(input_event_from_wire(&key(0, "", true)), None);
+        assert_eq!(input_event_from_wire(&key(0, "ab", true)), None);
+
+        let pointer = |x: i32, y: i32, absolute: bool| proto::InputEventMsg {
+            ev: Some(proto::input_event_msg::Ev::Pointer(proto::Pointer {
+                x,
+                y,
+                absolute,
+            })),
+        };
+        assert_eq!(
+            input_event_from_wire(&pointer(320, 180, true)),
+            Some(InputEvent::MoveTo { x: 320, y: 180 })
+        );
+        assert_eq!(
+            input_event_from_wire(&pointer(-4, 7, false)),
+            Some(InputEvent::MoveBy { dx: -4, dy: 7 })
+        );
+        // Fuera de rango de pantalla → recortado a las dimensiones u16 del modelo.
+        assert_eq!(
+            input_event_from_wire(&pointer(70_000, -5, true)),
+            Some(InputEvent::MoveTo {
+                x: u16::MAX,
+                y: 0
+            })
+        );
+
+        let button = |button: u32, down: bool, wheel: i32| proto::InputEventMsg {
+            ev: Some(proto::input_event_msg::Ev::Button(proto::Button {
+                button,
+                down,
+                wheel,
+            })),
+        };
+        assert_eq!(
+            input_event_from_wire(&button(0, true, 0)),
+            Some(InputEvent::ButtonDown(MouseButton::Left))
+        );
+        assert_eq!(
+            input_event_from_wire(&button(1, false, 0)),
+            Some(InputEvent::ButtonUp(MouseButton::Right))
+        );
+        assert_eq!(
+            input_event_from_wire(&button(0, false, -3)),
+            Some(InputEvent::Scroll { delta: -3 })
+        );
+        // oneof vacío → no soportado.
+        assert_eq!(input_event_from_wire(&proto::InputEventMsg { ev: None }), None);
     }
 }
