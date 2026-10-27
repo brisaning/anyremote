@@ -10,7 +10,7 @@
 
 ## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
 
-_Última actualización: 2026-10-27 · v0.6.0 · `main`=34da66e · `develop`=tag `audio-v0.6.0`_
+_Última actualización: 2026-10-27 · v0.6.0 · `main`=c5792b8 · `develop`=7092cc0 (tag `audio-v0.6.0`)_
 
 | Fase/Ciclo/Lote | Estado | Tag / PR |
 |---|---|---|

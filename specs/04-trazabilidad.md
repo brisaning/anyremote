@@ -43,7 +43,7 @@
 | Entrada en sesión v0.5.0 | RF-02a (entrada) | wire `Key.ch` + mapeo owner en transport · `--allow-input` (D-07) · permiso por evento (`keyboard`/`mouse`) · visor con ratón (clic/arrastre/rueda) y teclado | `entrada-v0.5.0` | `evidence/input-session-gate.md` |
 | Audio en sesión v0.6.0 | Capacidad D-05/D-07 | crate `audio` (WASAPI+Opus 48 kHz mono, modo `Test`) · `AudioFrame` validado en transport · permiso `audio` opt-in (`--audio on` / casilla "Compartir audio") · `audio_stats` + `SessionReport.audio_*` | `audio-v0.6.0` | `evidence/audio-gate.md` |
 
-**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) — `main` = `34da66e`.
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) — `main` = `c5792b8`.
 
 ## Pendientes (estado actual)
 
