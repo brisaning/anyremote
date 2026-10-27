@@ -53,7 +53,7 @@
 
 ## Pendientes (estado actual)
 
-1. Audio: re-verificar en LAN con v0.7.x (loopback + micrófono + toggles + gate de silencio ya implementados); resampler de mayor orden.
+1. Audio: re-validar en LAN la cadena completa con v0.7.3+ (loopback + micrófono + toggles ya verificados por separado); resampler de mayor orden.
 2. **Acuse de inyección al controlador** (hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor solo cuenta lo enviado).
 3. Identidad persistente + trust por dispositivo (hoy: ID efímero, `peer_trusted` siempre false).
 4. WAN (firewall/UPnP/NAT) y gates de CI (`clippy`/`fmt`).
