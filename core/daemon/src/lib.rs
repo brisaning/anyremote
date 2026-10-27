@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
-use anyremote_audio::{AudioCapture, AudioMode, AudioPlayback, OpusCodec};
+use anyremote_audio::{AudioCapture, AudioMode, AudioPlayback, AudioSource, OpusCodec};
 use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender};
 use anyremote_identity::{Identity, TrustStore};
 use anyremote_codec::VideoDecoder;
@@ -136,6 +136,9 @@ pub struct DaemonConfig {
     /// RF audio (D-07): modo de audio de sesión — `listen`: fuente de captura,
     /// `connect`: reproductor. `Off` por defecto; `Test` sin hardware (gates).
     pub audio: AudioMode,
+    /// Fuente de captura en `listen`: **`System` por defecto** (loopback: lo que
+    /// suena en los altavoces); `Microphone` solo si se pide `--audio-source mic`.
+    pub audio_source: AudioSource,
     /// Fuente de cierre externa (tests): envía "bye" al canal de cierre.
     pub bye_source: Option<tokio::sync::mpsc::Receiver<String>>,
 }
@@ -160,6 +163,7 @@ impl DaemonConfig {
             allow_input: false,
             input_backend: InputBackend::Windows,
             audio: AudioMode::Off,
+            audio_source: AudioSource::default(),
             bye_source: None,
         }
     }
@@ -693,12 +697,13 @@ async fn active_controlled(
     if cfg.audio != AudioMode::Off {
         if granted.iter().any(|p| p == "audio") {
             let (tx, rx) = mpsc::channel::<Vec<i16>>(16);
-            match AudioCapture::start(cfg.audio, tx) {
+            match AudioCapture::start(cfg.audio, cfg.audio_source, tx) {
                 Ok(cap) => {
                     audio_capture = Some(cap);
                     pcm_rx = Some(rx);
                     emit.emit(ev("audio_start", serde_json::json!({
                         "mode": format!("{:?}", cfg.audio),
+                        "source": cfg.audio_source.as_str(),
                         "rate": anyremote_audio::AUDIO_RATE,
                     })));
                 }
@@ -1189,6 +1194,10 @@ async fn active_controller(
         }
     }
     let mut audio_frames: u64 = 0;
+    // Diagnóstico: RMS medio de lo decodificado desde el último `audio_stats`
+    // (0.0000 = silencio → "no llega audio real"; >0 = hay sonido).
+    let mut rms_acc = 0f64;
+    let mut rms_n = 0u32;
 
     // Hito M2: preview local de lo que llega del controlado + decodificador con estado.
     let (preview_srv, preview_port, _preview_task) = preview::PreviewServer::start();
@@ -1386,13 +1395,22 @@ async fn active_controller(
                         if let (Some(codec), Some(pb)) = (codec.as_mut(), playback.as_ref()) {
                             match codec.decode(&frame.data) {
                                 Ok(pcm) => {
+                                    rms_acc += anyremote_audio::rms_i16(&pcm);
+                                    rms_n += 1;
                                     pb.submit(pcm);
                                     audio_frames += 1;
                                     report.record_audio_recv(frame.data.len());
                                     if audio_frames % 100 == 1 {
                                         let (f, s) = pb.stats();
+                                        let rms = if rms_n > 0 {
+                                            ((rms_acc / rms_n as f64) * 10_000.0).round() / 10_000.0
+                                        } else {
+                                            0.0
+                                        };
                                         emit.emit(ev("audio_stats",
-                                            serde_json::json!({"frames": f, "samples": s})));
+                                            serde_json::json!({"frames": f, "samples": s, "rms": rms})));
+                                        rms_acc = 0.0;
+                                        rms_n = 0;
                                     }
                                 }
                                 Err(e) => {

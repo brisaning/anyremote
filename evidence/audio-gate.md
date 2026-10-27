@@ -1,12 +1,12 @@
-# Gate RF audio — audio en sesión (Opus + WASAPI) · v0.6.0
+# Gate RF audio — audio en sesión (Opus + WASAPI) · v0.6.0 → correcciones de campo en **v0.6.1**
 
 | Campo | Valor |
 |---|---|
 | Fecha | 2026-10-27 |
-| Rama | `feature/audio-session` (D-11) · tag `audio-v0.6.0` |
+| Rama | `feature/audio-session` (D-11) · tag `audio-v0.6.0` · correcciones `fix/field-audio-quality` (v0.6.1) |
 | Semilla | spike **cpal + Opus** validado ANTES de crecer el ciclo (ODD) |
 | Gates | Rust **40 suites / 0 fallos** · `flutter analyze` limpio · `flutter test` **3/3** |
-| Artefactos | `Release/anyremote_app.exe` **0.6.0** + `Release/anyremoted.exe` **0.6.0** |
+| Artefactos | `Release/anyremote_app.exe` **0.6.1** + `Release/anyremoted.exe` **0.6.1** |
 
 ## Semilla validada (spike 2026-10-27)
 
@@ -79,11 +79,62 @@ anyremoted connect 127.0.0.1:21119 --audio on   # suena un tono de 440 Hz
 
 ## Limitaciones conocidas
 
-- **Micrófono** (dispositivo de entrada por defecto); el **audio del sistema**
-  (loopback WASAPI) queda pendiente.
+- ~~**Micrófono** como única fuente~~ → **resuelto en v0.6.1** con el **loopback
+  (audio del sistema)** como fuente por defecto (ver §Diagnóstico de campo).
 - Resample **lineal** 44.1↔48 (calidad suficiente en ratios cercanos; mejorable
   con un resampler de mayor orden si el campo lo pide).
 - Sin VAD/eco-cancelación ni silencio adaptativo: se envía 20 ms continuos
   (52 kbps constantes aproximadamente).
 - Si el dispositivo falla en mitad de la sesión, la captura/reproducción se
   detiene sin matar la sesión (`audio_error` solo al abrir).
+
+---
+
+## Diagnóstico de campo (2026-10-27) → correcciones v0.6.1
+
+### Síntomas reportados por el usuario
+
+1. "Compartir audio" activo y YouTube sonando en el anfitrión → **sin audio**
+   en el controlador.
+2. Conexión y control funcionan, pero **muy lentos** para ser una LAN.
+
+### Evidencia (auditorías de ambos equipos)
+
+| Línea | Hallazgo |
+|---|---|
+| Anfitrión `permission_granted` | `{"perms":["keyboard","mouse","audio"]}` → el permiso **sí** se concedió |
+| Anfitrión `error` | `{"audio":"Device(\"sin dispositivo de entrada\")"}` → **el anfitrión no tiene micrófono** y la fuente era el micrófono |
+| Anfitrión report | `frames_sent=531` en 116.5 s → **4.6 fps** · `bytes_sent=27.7 MB` (≈1.9 Mbps) a **resolución nativa** |
+| Controlador `heartbeat_summary` | `heartbeats_ok=78, rtt_min_ms=57, rtt_last_ms=782` → **RTT de enlace 57–782 ms** (frente a 1 ms en loopback) |
+
+### Causas
+
+1. **Audio**: (a) la fuente era el **micrófono**, pero YouTube es *audio del
+   sistema* → hacía falta **WASAPI loopback**; (b) además ese equipo no tiene
+   micrófono, así que la captura fallaba al abrir.
+2. **Lentitud**: vídeo a **resolución nativa** con VP9 por software → ~4.6 fps
+   en el anfitrión (cuello de CPU de codificación) y ráfagas grandes de
+   keyframe que inflan el RTT del enlace (57–782 ms).
+
+### Correcciones (v0.6.1)
+
+1. **`AudioSource` (defecto `system`)** — loopback WASAPI: cpal usa el endpoint
+   de **render** como entrada y añade `AUDCLNT_STREAMFLAGS_LOOPBACK` → se
+   captura todo lo que suena en los altavoces (YouTube, vídeos, llamadas) **sin
+   micrófono**. `--audio-source mic` para seguir usando el micrófono.
+2. **`audio_stats.rms`** — RMS medio del audio decodificado (`0.0000` =
+   silencio) + indicador **`audio ✓` / `audio: sin señal`** en la cabecera del
+   visor: "¿llega audio real?" se ve de un vistazo.
+3. **Calidad de vídeo en la app** — selector **720p (defecto) · 1080p ·
+   Nativa**: con `native` el anfitrión solo alcanzaba 4.6 fps.
+
+### Verificación (loopback real, este equipo)
+
+Tono de 440 Hz por los altavoces (A) → `listen --audio on --audio-source system`
+(B) → `connect --audio test` (C):
+
+- B: `audio_start {"mode":"On","source":"system","rate":48000}` (sin errores)
+- C: `audio_stats {"frames":100,"samples":96000,"rms":0.1718}` → **sonido real
+  capturado** (silencio daría `0.0000`)
+
+Gates: Rust **40/0** · `flutter analyze` limpio · `flutter test` **3/3**.

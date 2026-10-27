@@ -42,12 +42,13 @@
 | Lote UI v0.4.0 | RF-04 (UI) + resolución nativa | dropdown de perfiles + `--video-size native` | `ui-v0.4.0` · PR #4 | `evidence/ui-batch-gate.md` |
 | Entrada en sesión v0.5.0 | RF-02a (entrada) | wire `Key.ch` + mapeo owner en transport · `--allow-input` (D-07) · permiso por evento (`keyboard`/`mouse`) · visor con ratón (clic/arrastre/rueda) y teclado | `entrada-v0.5.0` | `evidence/input-session-gate.md` |
 | Audio en sesión v0.6.0 | Capacidad D-05/D-07 | crate `audio` (WASAPI+Opus 48 kHz mono, modo `Test`) · `AudioFrame` validado en transport · permiso `audio` opt-in (`--audio on` / casilla "Compartir audio") · `audio_stats` + `SessionReport.audio_*` | `audio-v0.6.0` | `evidence/audio-gate.md` |
+| Ajustes de campo v0.6.1 | Audio + rendimiento | **loopback (audio del sistema)** como fuente por defecto (`--audio-source system\|mic`) · `audio_stats.rms` + indicador en el visor · calidad de vídeo 720p por defecto (nativo daba 4.6 fps y RTT 57–782 ms) | `campo-v0.6.1` | `evidence/audio-gate.md` §Diagnóstico |
 
-**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) — `main` = `34da66e`.
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) — `main` = `c5792b8`.
 
 ## Pendientes (estado actual)
 
-1. Audio v0.6.0: prueba de campo en LAN, **audio del sistema (loopback WASAPI)**, VAD/silencio y resampler de mayor orden.
+1. Audio: re-verificación en LAN con v0.6.1 (loopback ya implementado y verificado localmente con RMS > 0), VAD/silencio y resampler de mayor orden.
 2. **Acuse de inyección al controlador** (hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor solo cuenta lo enviado).
 3. Identidad persistente + trust por dispositivo (hoy: ID efímero, `peer_trusted` siempre false).
 4. WAN (firewall/UPnP/NAT) y gates de CI (`clippy`/`fmt`).
