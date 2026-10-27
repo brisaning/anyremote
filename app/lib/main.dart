@@ -265,7 +265,9 @@ class _HomePageState extends State<HomePage> {
             _append('[daemon] anyremoted v${ev['daemon'] ?? '?'} conectando a ${ev['target']}…');
             _setStatus('Conectando', Colors.orange);
           case 'session_active':
-            _append('[daemon] SESIÓN ACTIVA con ${ev['peer']} (${ev['role']})');
+            // D-03: `peer_trusted` = este equipo ya se autenticó antes (TOFU).
+            _append('[daemon] SESIÓN ACTIVA con ${ev['peer']}'
+                '${ev['peer_trusted'] == true ? ' ✓ verificado' : ''} (${ev['role']})');
             _setStatus('Conectado', Colors.green);
             // La entrada solo sale desde el rol controlador (el visor).
             if (ev['role'] == 'controller') _sessionActive = true;

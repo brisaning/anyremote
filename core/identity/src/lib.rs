@@ -35,6 +35,12 @@ impl std::fmt::Display for NodeId {
 #[derive(Debug, PartialEq)]
 pub enum IdentityError {
     MalformedId,
+    /// Fallo de E/S al persistir la identidad o la confianza.
+    Io(String),
+}
+
+fn io_err(e: std::io::Error) -> IdentityError {
+    IdentityError::Io(e.to_string())
 }
 
 /// Identidad de un nodo: par ed25519 con derivación de `NodeId`.
@@ -44,6 +50,11 @@ pub struct Identity {
 
 /// Dominio de separación para las firmas de autenticación de canal (D-03).
 pub const AUTH_DOMAIN: &[u8] = b"anyremote-auth-v1";
+
+/// Archivo de identidad persistente (semilla ed25519 en hex,32 bytes).
+pub const IDENTITY_FILE: &str = "identity.key";
+/// Archivo de pares de confianza (TOFU): `ID=hexpk` por línea.
+pub const TRUST_FILE: &str = "trusted.ids";
 
 fn transcript(binding: &[u8]) -> Vec<u8> {
     let mut t = Vec::from(AUTH_DOMAIN);
@@ -59,6 +70,37 @@ fn derive_node_id_from_pk_bytes(pk: &[u8; 32]) -> NodeId {
 }
 
 impl Identity {
+    /// Carga la identidad persistida en `dir` o genera y guarda una nueva (D-03).
+    ///
+    /// **Identidad estable**: con persistencia el `NodeId` deja de ser efímero —
+    /// mismo equipo → mismo ID en todos los arranques (base para trust por
+    /// dispositivo, `session_id` correlacionable y conectar por ID). Un archivo
+    /// corrupto se regenera sin bloquear el arranque.
+    pub fn load_or_generate(dir: &std::path::Path) -> Result<Self, IdentityError> {
+        let path = dir.join(IDENTITY_FILE);
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(raw) = data_encoding::HEXLOWER.decode(text.trim().as_bytes()) {
+                if let Ok(bytes) = <[u8; 32]>::try_from(raw.as_slice()) {
+                    return Ok(Self {
+                        signing: SigningKey::from_bytes(&bytes),
+                    });
+                }
+            }
+            // Corrupta → se regenera más abajo (y se sobrescribe).
+        }
+        let id = Self::generate();
+        id.save(dir)?;
+        Ok(id)
+    }
+
+    /// Persiste la semilla de la identidad en `dir/identity.key` (hex).
+    pub fn save(&self, dir: &std::path::Path) -> Result<(), IdentityError> {
+        std::fs::create_dir_all(dir).map_err(io_err)?;
+        let hex = data_encoding::HEXLOWER.encode(&self.signing.to_bytes());
+        std::fs::write(dir.join(IDENTITY_FILE), hex).map_err(io_err)?;
+        Ok(())
+    }
+
     pub fn generate() -> Self {
         let mut rng = rand_core::OsRng;
         Self {
@@ -134,6 +176,61 @@ impl TrustStore {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Carga `dir/trusted.ids` (mejor esfuerzo: ausente/corrupto → vacío; cada
+    /// línea inválida se ignora y el vínculo id↔pk se revalida al leer).
+    pub fn load(dir: &std::path::Path) -> Self {
+        let mut s = Self::new();
+        let Ok(text) = std::fs::read_to_string(dir.join(TRUST_FILE)) else {
+            return s;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((id, pk)) = line.split_once('=') else {
+                continue;
+            };
+            let (Ok(id), Ok(raw)) = (NodeId::parse(id), data_encoding::HEXLOWER.decode(pk.as_bytes()))
+            else {
+                continue;
+            };
+            let Ok(pk) = <[u8; 32]>::try_from(raw.as_slice()) else {
+                continue;
+            };
+            // Vínculo id↔pk coherente (mismo criterio que `is_trusted`).
+            if derive_node_id_from_pk_bytes(&pk) == id {
+                s.entries.insert(id, pk);
+            }
+        }
+        s
+    }
+
+    /// Persiste el store en `dir/trusted.ids`.
+    pub fn save(&self, dir: &std::path::Path) -> Result<(), IdentityError> {
+        std::fs::create_dir_all(dir).map_err(io_err)?;
+        let mut out = String::from("# anyremote: pares autenticados (TOFU)\n");
+        for (id, pk) in &self.entries {
+            out.push_str(id.as_str());
+            out.push('=');
+            out.push_str(&data_encoding::HEXLOWER.encode(pk));
+            out.push('\n');
+        }
+        std::fs::write(dir.join(TRUST_FILE), out).map_err(io_err)?;
+        Ok(())
+    }
+
+    /// TOFU (D-03): recuerda un par YA autenticado para que la próxima sesión
+    /// del mismo equipo figure como `peer_trusted`. Solo añade (no pisa) y
+    /// persiste; mejor esfuerzo (un fallo de E/S no afecta a la sesión).
+    pub fn remember(dir: &std::path::Path, id: &NodeId, pk: &[u8; 32]) {
+        let mut s = Self::load(dir);
+        if !s.is_trusted(id, pk) {
+            s.trust(id.clone(), *pk);
+            let _ = s.save(dir);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +304,72 @@ mod tests {
             }
         }
         assert!(rejected, "debe existir alguna codificación inválida");
+    }
+
+    #[test]
+    fn identity_persists_and_regenerates_on_corruption() {
+        let dir = std::env::temp_dir().join(format!(
+            "anyremote-id-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Primera carga → genera y persiste.
+        let a = Identity::load_or_generate(&dir).expect("genera");
+        assert!(dir.join(IDENTITY_FILE).exists());
+        // Segunda carga → MISMO NodeId (identidad estable, D-03).
+        let b = Identity::load_or_generate(&dir).expect("carga");
+        assert_eq!(a.node_id(), b.node_id());
+        assert_eq!(a.verifying_key_bytes(), b.verifying_key_bytes());
+        assert_eq!(
+            Identity::derive_node_id(&a.verifying_key_bytes()).unwrap(),
+            a.node_id()
+        );
+
+        // Archivo corrupto → regenera sin bloquear el arranque (id nuevo).
+        std::fs::write(dir.join(IDENTITY_FILE), "no-es-hex").expect("escribe corrupto");
+        let c = Identity::load_or_generate(&dir).expect("regenera");
+        assert_ne!(a.node_id(), c.node_id());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trust_store_roundtrip_and_tofu_remember() {
+        let dir = std::env::temp_dir().join(format!(
+            "anyremote-trust-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = Identity::generate();
+
+        // TOFU: recordar → recargar → sigue confiable.
+        assert!(!TrustStore::load(&dir).is_trusted(&a.node_id(), &a.verifying_key_bytes()));
+        TrustStore::remember(&dir, &a.node_id(), &a.verifying_key_bytes());
+        let loaded = TrustStore::load(&dir);
+        assert!(loaded.is_trusted(&a.node_id(), &a.verifying_key_bytes()));
+        assert_eq!(loaded.len(), 1);
+
+        // Segundo remember no duplica ni pisa.
+        TrustStore::remember(&dir, &a.node_id(), &a.verifying_key_bytes());
+        assert_eq!(TrustStore::load(&dir).len(), 1);
+
+        // Línea maliciosa (id de A con pk de B) y línea rota → se ignoran al leer.
+        let b = Identity::generate();
+        let mut text = std::fs::read_to_string(dir.join(TRUST_FILE)).expect("lee");
+        text.push_str(&format!(
+            "{}={}\n",
+            a.node_id(),
+            data_encoding::HEXLOWER.encode(&b.verifying_key_bytes())
+        ));
+        text.push_str("LINEA-ROTA\n");
+        std::fs::write(dir.join(TRUST_FILE), text).expect("reescribe");
+        let loaded = TrustStore::load(&dir);
+        assert!(loaded.is_trusted(&a.node_id(), &a.verifying_key_bytes()));
+        assert!(!loaded.is_trusted(&a.node_id(), &b.verifying_key_bytes()));
+        assert_eq!(loaded.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

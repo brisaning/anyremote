@@ -42,8 +42,9 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-2 permisos dinámicos + micrófono v0.7.0 | ✅ gate verde · 🟡 pendiente campo | `perm-dinamicas-v0.7.0` · `evidence/dynamic-perms-gate.md` |
 | C-3 rendimiento (quick wins) v0.7.1 | ✅ gate verde · 🟡 pendiente verificar en campo | `perf-v0.7.1` · `evidence/perf-audit.md` |
 | C-4 fix vídeo estático v0.7.2 (campo) | ✅ gate verde · 🟡 pendiente revalidar en LAN | `video-estatico-v0.7.2` · `evidence/video-static-gate.md` |
-| C-5 diagnóstico del anfitrión v0.7.3 | ✅ gate verde · 🟡 pendiente reproducción de la combo fallida | `diag-host-v0.7.3` · `evidence/host-debug-gate.md` |
-| **Pendientes** | 🟡 re-verificación en LAN (v0.7.x) · rendimiento medio/largo (HW encode, UDP, adaptación por red) · acuse de inyección · identidad persistente · CI | [README § Pendientes](../README.md#pendientes) |
+| C-5 diagnóstico del anfitrión v0.7.3 | ✅ gate verde · ✅ **validada en campo (prueba sin error)** | `diag-host-v0.7.3` · `evidence/host-debug-gate.md` |
+| C-6 identidad persistente + trust v0.8.0 | ✅ gate verde · 🟡 pendiente campo | `identidad-v0.8.0` · `evidence/identity-gate.md` |
+| **Pendientes** | 🟡 re-verificación en LAN · rendimiento medio/largo (HW, UDP, red — §7) · acuse de inyección · CI · menores (F1-F12, resampler) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
@@ -160,3 +161,25 @@ SEMILLA (hallazgo aprobado) → BROTE (slice mínimo funcional)
 1. Ejecutar **Fase 0**: `baseline.json`, scaffold de `evidence/`, commit.
 2. **Fase 1**: indexación de `rustdesk/` con codebase-memory — gate absoluto antes de RE o diseño.
 3. Encadenar Fases 2–6; luego ciclos S0→C8 (§3).
+
+## 7. Propuestas futuras (requieren decisión de alcance)
+
+Identificadas en `evidence/perf-audit.md` (§5) a partir de la auditoría de
+RustDesk y de nuestro pipeline. **No se abordan hasta decisión explícita** por
+su coste o riesgo; la lista queda aquí como backlog de rendimiento/capacidad:
+
+| Propuesta | Esfuerzo | Impacto | Riesgos / notas |
+|---|---|---|---|
+| **Aceleración por hardware** (NVENC/AMF/QSV/Media Foundation) | L | Alto | Cambia el contrato de `VideoEncoder` (entrada GPU; hoy el readback en `core/capture/dxgi.rs` es obligatorio); **fallback a libvpx obligatorio** (patrón RustDesk `video_service.rs`); limpieza legal: clean-room desde APIs públicas — no copiar el fork AGPL `hwcodec` |
+| **Adaptación por red** (RTT/pérdida, no solo tiempo de codificación) | M | Alto | Los latidos ya miden RTT; añadir señal de enlace a `AdaptState` con política estable (umbrales, confirmación en 2–3 muestras, cooldown; patrón `video_qos.rs`: bitrate primero, fps con suelo). Riesgo: oscilación |
+| **Transporte UDP (KCP) / QUIC** | L | Alto | Rediseño de seguridad: la autenticación se ancla hoy al binding sobre **TLS/TCP** → UDP exige DTLS/Noise + renegociación; NAT/firewall (mantener TCP como fallback, como RustDesk con `disable-udp`); pérdida → ARQ |
+| **Cursor propio (overlay no embebido)** | M | Alto | Ahorraría re-codificar por cada movimiento de ratón y haría **visible el cursor remoto** (DXGI nunca lo incluye en el frame); requiere mensaje de protocolo + render en la app |
+| VP8 como opción de CPU barata | M | Medio | `shiguredo_libvpx` ya lo soporta (`Vp8Config.static_threshold`) → exponer `--codec vp8` (proto + negociación) |
+| Captura/encode con buffers reutilizados | M | Medio | El vídeo ya corre en hilo propio (v0.7.2); queda eliminar las allocaciones por frame en `bgra_to_i420`/`scale_frame` |
+| libyuv/SIMD en vez de `bgra_to_i420` scalar | M | Medio | Dependencia nativa de build (patrón `libs/scrap/build.rs`) o crate `yuv` |
+| Cambiar la resolución del host en sesión | L | Medio | Requiere restauración garantizada (incluso si el proceso muere) + permiso D-07 nuevo |
+| Codificación por regiones sucias | L | Bajo | **Ni RustDesk lo implementa** (solo un comentario) → pospuesto |
+| Profundidad de color reducida (16/8 bits) | L | Bajo | VP9 ya submuestrea 4:2:0 → ahorro marginal |
+
+**Orden recomendado** (impacto/esfuerzo): adaptación por red → aceleración por
+hardware → cursor propio → UDP/QUIC.

@@ -21,11 +21,11 @@
 |RF-02a Entrada (teclado/ratón)|✅ v0.5.0 cableado en la sesión (D-07: denegado por defecto; `--allow-input`/casilla de la app) — **validada en campo 2026-10-27**|`evidence/input-session-gate.md`|
 |RF-02b Portapapeles|✅ (C4)|`c4-gate`|
 |RF-02c Archivos|✅ + reanudación (C5 + v0.3.0)|`c5-gate`, `v030-quality-batch-gate`|
-|RF-03 ID+auth|✅ (C2)|`specs/04`|
+|RF-03 ID+auth|✅ (C2) · identidad **persistente** + trust **TOFU** (v0.8.0): mismo `NodeId` entre arranques, `peer_trusted=true` en la 2ª sesión|`specs/04`, `evidence/identity-gate.md`|
 |RF-04 Perfiles|✅ (C6 + UI v0.4.0)|`c6-gate`, `ui-batch-gate`|
 |RF-05 Registro|✅ (C7)|`c7-gate`|
 |RF-06 Trazabilidad|✅ (fases 0–6 + evidencia versionada)|`evidence/`|
-|Pendientes globales|Re-verificación LAN v0.7.x · rendimiento medio/largo (HW/UDP/red) · acuse de inyección · identidad persistente · CI|README § Pendientes|
+|Pendientes globales|Re-verificación LAN · rendimiento medio/largo (HW/UDP/red — specs/02 §7) · acuse de inyección · CI · menores (F1-F12, resampler)|README § Pendientes|
 
 ---
 
