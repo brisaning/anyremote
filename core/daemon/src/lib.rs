@@ -348,6 +348,10 @@ struct DynamicPerms {
     /// El anfitrión activó audio en caliente → sin exigir el grant inicial.
     runtime_enabled: bool,
     granted_audio: bool,
+    /// C-5: el estado de captura YA se intentó (un solo `spawn` por sesión:
+    /// si falló aquí no se reintenta en el arranque inicial → un único
+    /// `audio_error` y sin segundos intentos ambiguos).
+    spawn_attempted: bool,
 }
 
 impl DynamicPerms {
@@ -363,6 +367,7 @@ impl DynamicPerms {
             sources,
             runtime_enabled: false,
             granted_audio,
+            spawn_attempted: false,
         }
     }
 
@@ -395,6 +400,7 @@ impl DynamicPerms {
         let wanted: Vec<AudioSource> = if allowed { wanted } else { Vec::new() };
         if wanted != self.sources {
             // Detener la captura actual (Drop une el hilo) y arrancar la nueva.
+            self.spawn_attempted = true;
             *capture = None;
             *pcm_rx = None;
             if wanted.is_empty() {
@@ -904,8 +910,9 @@ async fn active_controlled(
     }
     // QW-2: contador de silencio sostenido (gate de envio de audio).
     let mut silent_frames: u32 = 0;
-    // Captura inicial si ningún comando la decidió ya.
-    if audio_capture.is_none() && !perms.sources.is_empty() {
+    // Captura inicial si ningún comando la decidió ya (nunca si el comando en
+    // caliente ya decidió el estado → un solo intento por sesión, C-5).
+    if !perms.spawn_attempted && audio_capture.is_none() && !perms.sources.is_empty() {
         if let Some((cap, rx)) =
             spawn_audio_capture(cfg.audio, &perms.sources, session_id, log, emit)
         {

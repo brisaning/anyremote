@@ -47,8 +47,9 @@
 | C-2 permisos dinámicos v0.7.0 | RF-02a + audio | tres toggles en caliente por stdin (`{"perm":...}`) · fuente **micrófono** + **mezcla** sistema+mic · drenaje sin carrera inicial · reproductor del controlador siempre preparado | `perm-dinamicas-v0.7.0` | `evidence/dynamic-perms-gate.md` |
 | C-3 rendimiento v0.7.1 | RNF (eficiencia) | QW-1 frames sin cambios (DXGI) · QW-2 gate de silencio + DTX/48 kbps · QW-3 `--max-bitrate` (app: 3/6/8 Mbps) · QW-4 libvpx (fps real, hilos, Screen) · informe RustDesk vs nosotros | `perf-v0.7.1` | `evidence/perf-audit.md` |
 | C-4 fix vídeo estático v0.7.2 | Campo (sin vídeo en LAN) | captura/encode en **hilo propio** (los bloqueos de 500 ms de DXGI ya no estrangulan el bucle de sesión) + **reenvío del último frame a 1 fps** en pantalla estática | `video-estatico-v0.7.2` | `evidence/video-static-gate.md` |
+| C-5 diagnóstico anfitrión v0.7.3 | Campo (combo «control remoto+micrófono» sin vídeo) | `panic.log` (hook global), `ui.log` persistente de la app con `args`/código de salida, **un solo spawn de captura por sesión**, **el anfitrión no muestra su propia pantalla** | `diag-host-v0.7.3` | `evidence/host-debug-gate.md` |
 
-**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) — `main` = `efb1dc2`.
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) — `main` = `2e06d90`.
 
 ## Pendientes (estado actual)
 

@@ -9,7 +9,7 @@
 //! stdin (connect): líneas `{"input":{key|pointer|button}}` → eventos de entrada
 //! reenviados al controlado (RF-02a) y `bye` para cerrar la sesión.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyremote_audio::{AudioMode, AudioSource};
 use anyremote_codec::CodecFormat;
@@ -25,6 +25,46 @@ fn config_dir(flag_dir: Option<String>) -> PathBuf {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from("."))
         })
+}
+
+/// Instrumentación de campo (C-5): TODO panico (en cualquier hilo) se añade a
+/// `<config_dir>/panic.log` además de salir por stderr. Así, si el daemon del
+/// anfitrión muere, el artefacto queda en la misma carpeta que `audit/` (que ya
+/// se copía para diagnóstico) en lugar de perderse con la ventana de la app.
+fn install_panic_hook(config_dir: &Path) {
+    let dir = config_dir.to_path_buf();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "payload no textual".to_string()
+        };
+        let loc = info
+            .location()
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let text = format!(
+            "ts={ts} hilo={:?} ubicacion={loc}\npanico: {msg}\n",
+            std::thread::current().name().unwrap_or("<sin nombre>")
+        );
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("panic.log"))
+        {
+            use std::io::Write;
+            let _ = f.write_all(text.as_bytes());
+        }
+        eprint!("{text}");
+    }));
 }
 
 fn flag_value(args: &[String], name: &str) -> Option<String> {
@@ -66,6 +106,7 @@ async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("help").to_string();
     let cfg_dir = config_dir(flag_value(&args, "--config-dir"));
+    install_panic_hook(&cfg_dir);
 
     let result = match cmd.as_str() {
         "listen" => {
