@@ -10,9 +10,9 @@ _Última actualización: 2026-10-26_
 
 | Campo | Valor |
 |---|---|
-| Versión actual | **v0.7.3** (`anyremote_app.exe` + `anyremoted.exe`) |
+| Versión actual | **v0.8.0** (`anyremote_app.exe` + `anyremoted.exe`) |
 | Ramas | `main` = `2230df1` (PR #13) · `develop` = `2239170` (tag `diag-host-v0.7.3`) |
-| Gates actuales | **Rust 41 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 4/4 |
+| Gates actuales | **Rust 42 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 4/4 |
 | Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · **control remoto teclado/ratón (v0.5.0)** · vídeo en pantalla estática fix v0.7.2 · sesión sana con `source=system` (107 frames + `bye`) · **✅ combo «control remoto + micrófono» verificada sin error con v0.7.3** (PR #13) · 🟡 pendiente revalidación audio/720p/Nativa en LAN |
 | PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (v0.6.2 coords) · #10 (v0.7.0 dinámico) · #11 (v0.7.1 perf) · #12 (v0.7.2 fix vídeo estático) · **#13 (v0.7.3 diagnóstico)** |
 
@@ -26,7 +26,7 @@ _Última actualización: 2026-10-26_
 | Audio en sesión (capacidad D-05/D-07) | ✅ (v0.6.1 → **v0.7.0**): **loopback (audio del sistema)** + **micrófono** como fuentes (mezclables con `--audio-source system,mic`), Opus 48 kHz; toggles **dinámicos en caliente** | `evidence/audio-gate.md`, `evidence/dynamic-perms-gate.md` |
 | RF-02b Portapapeles | ✅ | C4 (contención de formatos) |
 | RF-02c Archivos | ✅ | C5 + reanudación persistente (v0.3.0) |
-| RF-03 Conexión por ID/dirección + auth | ✅ | C2 (ed25519 + channel binding + trust) |
+| RF-03 Conexión por ID/dirección + auth | ✅ · **identidad persistente + trust TOFU (v0.8.0)** → mismo `NodeId` entre arranques y `peer_trusted=true` en la 2ª sesión | C2 (ed25519 + binding) · `evidence/identity-gate.md` |
 | RF-04 Perfiles | ✅ | C6 + selector en UI (v0.4.0) |
 | RF-05 Registro + diagnóstico | ✅ | C7 (JSONL + SessionReport) |
 | RNF-01..06 | ✅ | C8 (secretos fail-closed, benchmark, auditabilidad) |
@@ -35,12 +35,11 @@ _Última actualización: 2026-10-26_
 
 1. **Audio**: re-verificar en LAN (v0.7.x: loopback + micrófono + toggles + gate de silencio ya implementado); resampler de mayor orden.
 2. **Acuse de inyección al visor**: hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor cuenta únicamente lo que envía.
-3. **Identidad persistente + trust por dispositivo**: cada arranque genera un ID nuevo (`peer_trusted` siempre false) → persistir la clave en el directorio de config y confiar por ID conocido.
-4. **WAN**: firewall/UPnP/NAT (hoy LAN + regla `netsh` manual documentada).
-5. **Rendimiento (informe `evidence/perf-audit.md`)**: quick wins en v0.7.1 (frames sin cambios, gate de silencio, tope de bitrate, tuning libvpx); quedan **aceleración por hardware, adaptación por red, UDP/QUIC y cursor separado** (§5 del informe, requieren decisión de alcance).
-6. Gates de CI (`clippy`/`fmt`) y build reproducible.
-7. Render a alta resolución → posible paso a widget `Texture` si el fps de render limita.
-8. Tabla de entrada: teclas F1..F12, Insert, PageUp/Down, caps/num lock.
+3. **WAN**: firewall/UPnP/NAT (hoy LAN + regla `netsh` manual documentada).
+4. **Rendimiento (informe `evidence/perf-audit.md`)**: quick wins en v0.7.1 (frames sin cambios, gate de silencio, tope de bitrate, tuning libvpx); quedan **aceleración por hardware, adaptación por red, UDP/QUIC y cursor separado** (§5 del informe, requieren decisión de alcance).
+5. Gates de CI (`clippy`/`fmt`) y build reproducible.
+6. Render a alta resolución → posible paso a widget `Texture` si el fps de render limita.
+7. Tabla de entrada: teclas F1..F12, Insert, PageUp/Down, caps/num lock.
 
 ## Qué es
 

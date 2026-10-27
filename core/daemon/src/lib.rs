@@ -621,9 +621,12 @@ async fn establish_controlled(
 
     // C2: autenticación mutua con channel binding (trust store vacío = desconocido).
     let mut gate = auth::AuthGate::new();
-    let trust = TrustStore::new();
+    let trust = TrustStore::load(&cfg.config_dir);
     let peer_id = auth::recv_validate_auth(&mut ch, &mut gate, &trust, &binding).await?;
     auth::send_auth(&mut ch, &identity, &binding).await?;
+    // D-03 (TOFU): se recuerda el par autenticado; en la próxima sesión del
+    // mismo equipo `peer_trusted` será true.
+    TrustStore::remember(&cfg.config_dir, &peer_id.node_id, &peer_id.pubkey);
     log.record(
         AuditEventKind::SessionEstablished,
         session_id,
@@ -631,7 +634,7 @@ async fn establish_controlled(
     )?;
     emit.emit(ev(
         "session_active",
-        serde_json::json!({"role": "controlled", "peer": peer_id.node_id.to_string(), "session_id": session_id}),
+        serde_json::json!({"role": "controlled", "peer": peer_id.node_id.to_string(), "session_id": session_id, "peer_trusted": peer_id.trusted}),
     ));
 
     // C1: hello/welcome + permisos (el controlado SOLICITA; D-07 por defecto nada activo).
@@ -684,7 +687,9 @@ async fn establish_controlled(
 /// listener **sigue aceptando**; solo termina con una sesión completada o al
 /// agotar `--max-secs` de vida del listener.
 pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError> {
-    let identity = Identity::generate();
+    // D-03 (v0.8.0): identidad persistida → el NodeId es estable por equipo.
+    let identity = Identity::load_or_generate(&cfg.config_dir)
+        .map_err(|e| DaemonError::Config(format!("identidad: {e:?}")))?;
     let session_id = session_id_of(&identity);
     let mut emit = Emit {
         events: Vec::new(),
@@ -1245,7 +1250,9 @@ async fn active_controlled(
 
 /// Lado controlador: inicia UNA sesión (`anyremoted connect <target>`).
 pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError> {
-    let identity = Identity::generate();
+    // D-03 (v0.8.0): identidad persistida → el NodeId es estable por equipo.
+    let identity = Identity::load_or_generate(&cfg.config_dir)
+        .map_err(|e| DaemonError::Config(format!("identidad: {e:?}")))?;
     let session_id = session_id_of(&identity);
     let mut emit = Emit {
         events: Vec::new(),
@@ -1316,8 +1323,10 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     // C2: autenticación mutua.
     auth::send_auth(&mut ch, &identity, &binding).await?;
     let mut gate = auth::AuthGate::new();
-    let trust = TrustStore::new();
+    let trust = TrustStore::load(&cfg.config_dir);
     let peer_id = auth::recv_validate_auth(&mut ch, &mut gate, &trust, &binding).await?;
+    // D-03 (TOFU): recuerda el anfitrión autenticado (además del pin de cert).
+    TrustStore::remember(&cfg.config_dir, &peer_id.node_id, &peer_id.pubkey);
     if let Some(pem) = pending_pin {
         // Auth OK: el pin recibido es legítimo para esta identidad → persistir (por destino).
         anyremote_transport::cert_store::save_trusted(&cfg.config_dir, &target, &pem)?;
@@ -1330,7 +1339,7 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     )?;
     emit.emit(ev(
         "session_active",
-        serde_json::json!({"role": "controller", "peer": peer_id.node_id.to_string(), "session_id": session_id}),
+        serde_json::json!({"role": "controller", "peer": peer_id.node_id.to_string(), "session_id": session_id, "peer_trusted": peer_id.trusted}),
     ));
 
     // C1: hello → welcome → solicitud → concesión (intersección con --grant).

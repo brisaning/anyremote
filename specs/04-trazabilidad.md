@@ -48,6 +48,7 @@
 | C-3 rendimiento v0.7.1 | RNF (eficiencia) | QW-1 frames sin cambios (DXGI) · QW-2 gate de silencio + DTX/48 kbps · QW-3 `--max-bitrate` (app: 3/6/8 Mbps) · QW-4 libvpx (fps real, hilos, Screen) · informe RustDesk vs nosotros | `perf-v0.7.1` | `evidence/perf-audit.md` |
 | C-4 fix vídeo estático v0.7.2 | Campo (sin vídeo en LAN) | captura/encode en **hilo propio** (los bloqueos de 500 ms de DXGI ya no estrangulan el bucle de sesión) + **reenvío del último frame a 1 fps** en pantalla estática | `video-estatico-v0.7.2` | `evidence/video-static-gate.md` |
 | C-5 diagnóstico anfitrión v0.7.3 | Campo (combo «control remoto+micrófono» sin vídeo) | `panic.log` (hook global), `ui.log` persistente de la app con `args`/código de salida, **un solo spawn de captura por sesión**, **el anfitrión no muestra su propia pantalla** | `diag-host-v0.7.3` | `evidence/host-debug-gate.md` |
+| C-6 identidad + trust v0.8.0 | RF-03 (D-03) | `identity.key` persistente (mismo `NodeId` entre arranques) · `trusted.ids` con **TOFU** (`peer_trusted=true` en la 2ª sesión, ambos roles) · `session_active` con `peer_trusted` visible en la app | `identidad-v0.8.0` | `evidence/identity-gate.md` |
 
 **PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) — `main` = `2230df1`.
 
@@ -55,7 +56,7 @@
 
 1. Audio: re-validar en LAN la cadena completa con v0.7.3+ (loopback + micrófono + toggles ya verificados por separado); resampler de mayor orden.
 2. **Acuse de inyección al controlador** (hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor solo cuenta lo enviado).
-3. Identidad persistente + trust por dispositivo (hoy: ID efímero, `peer_trusted` siempre false).
+3. ~~Identidad persistente + trust por dispositivo~~ ✅ resuelto en v0.8.0 (C-6); queda el uso futuro: conectar por ID estable.
 4. WAN (firewall/UPnP/NAT) y gates de CI (`clippy`/`fmt`).
 5. Teclas F1..F12, Insert, PageUp/Down y bloqueos en la tabla de entrada.
 6. Ver [README § Pendientes](../README.md#pendientes) para el panel completo.
