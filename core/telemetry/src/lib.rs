@@ -143,6 +143,11 @@ pub struct SessionReport {
     pub bytes_sent: u64,
     pub bytes_recv: u64,
     pub files_transferred: u64,
+    /// Frames de audio de sesión (RF audio): enviados / recibidos.
+    #[serde(default)]
+    pub audio_sent: u64,
+    #[serde(default)]
+    pub audio_recv: u64,
 }
 
 impl SessionReport {
@@ -158,6 +163,8 @@ impl SessionReport {
             bytes_sent: 0,
             bytes_recv: 0,
             files_transferred: 0,
+            audio_sent: 0,
+            audio_recv: 0,
         }
     }
 
@@ -178,6 +185,16 @@ impl SessionReport {
 
     pub fn record_file(&mut self) {
         self.files_transferred += 1;
+    }
+
+    pub fn record_audio_sent(&mut self, bytes: usize) {
+        self.audio_sent += 1;
+        self.bytes_sent += bytes as u64;
+    }
+
+    pub fn record_audio_recv(&mut self, bytes: usize) {
+        self.audio_recv += 1;
+        self.bytes_recv += bytes as u64;
     }
 
     pub fn finish(&mut self) {

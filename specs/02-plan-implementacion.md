@@ -10,7 +10,7 @@
 
 ## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
 
-_Última actualización: 2026-10-26 · v0.5.0 · `main`=34da66e · `develop`=dcadc5a (tag `entrada-v0.5.0`)_
+_Última actualización: 2026-10-27 · v0.6.0 · `main`=34da66e · `develop`=tag `audio-v0.6.0`_
 
 | Fase/Ciclo/Lote | Estado | Tag / PR |
 |---|---|---|
@@ -36,7 +36,8 @@ _Última actualización: 2026-10-26 · v0.5.0 · `main`=34da66e · `develop`=dca
 | Lote calidad/robustez v0.3.0 | ✅ validado en campo | `calidad-v0.3.0` · PR #3 |
 | Lote UI v0.4.0 (nativo+perfiles) | ✅ | `ui-v0.4.0` · PR #4 |
 | Entrada en sesión v0.5.0 (RF-02a) | ✅ **validada en campo** (control remoto real en LAN) | `entrada-v0.5.0` · `evidence/input-session-gate.md` |
-| **Pendientes** | 🟡 audio · campo v0.5.0 + acuse de inyección · identidad persistente · WAN · CI | [README § Pendientes](../README.md#pendientes) |
+| Audio en sesión v0.6.0 | ✅ gate verde · 🟡 pendiente campo | `audio-v0.6.0` · `evidence/audio-gate.md` |
+| **Pendientes** | 🟡 campo v0.6.0 + audio del sistema · acuse de inyección · identidad persistente · WAN · CI | [README § Pendientes](../README.md#pendientes) |
 
 ---
 

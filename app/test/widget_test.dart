@@ -51,21 +51,29 @@ void main() {
     expect(find.textContaining('anyremoted.exe no encontrado'), findsWidgets);
   });
 
-  testWidgets('RF-02a: aceptar control remoto desactivado por defecto (D-07)',
+  testWidgets('RF-02a: control remoto y audio desactivados por defecto (D-07)',
       (tester) async {
     await tester.pumpWidget(const AnyremoteApp());
 
     expect(find.text('Aceptar control remoto'), findsOneWidget);
-    final box = tester.widget<Checkbox>(find.byType(Checkbox));
+    expect(find.text('Compartir audio'), findsOneWidget);
+    expect(find.byType(Checkbox), findsNWidgets(2));
+    final box = tester.widget<Checkbox>(find.byType(Checkbox).at(0));
     expect(box.value, isFalse, reason: 'D-07: sin --allow-input por defecto');
+    final audio = tester.widget<Checkbox>(find.byType(Checkbox).at(1));
+    expect(audio.value, isFalse, reason: 'D-07: sin --audio por defecto');
 
-    await tester.tap(find.byType(Checkbox));
+    await tester.tap(find.byType(Checkbox).at(0));
     await tester.pump();
-    expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isTrue);
+    expect(tester.widget<Checkbox>(find.byType(Checkbox).at(0)).value, isTrue);
 
-    await tester.tap(find.byType(Checkbox));
+    await tester.tap(find.byType(Checkbox).at(1));
     await tester.pump();
-    expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
+    expect(tester.widget<Checkbox>(find.byType(Checkbox).at(1)).value, isTrue);
+
+    await tester.tap(find.byType(Checkbox).at(0));
+    await tester.pump();
+    expect(tester.widget<Checkbox>(find.byType(Checkbox).at(0)).value, isFalse);
   });
 
   test('keyCodeFor replica la tabla de teclas del wire ARSP (RF-02a)', () {

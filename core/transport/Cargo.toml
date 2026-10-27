@@ -11,6 +11,7 @@ anyremote-codec = { workspace = true }
 anyremote-clipboard = { workspace = true }
 anyremote-filexfer = { workspace = true }
 anyremote-input = { workspace = true }
+anyremote-audio = { workspace = true }
 rustls-pemfile = "2"
 sha2 = "0.10"
 data-encoding = "2"

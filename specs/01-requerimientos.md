@@ -25,7 +25,7 @@
 |RF-04 Perfiles|✅ (C6 + UI v0.4.0)|`c6-gate`, `ui-batch-gate`|
 |RF-05 Registro|✅ (C7)|`c7-gate`|
 |RF-06 Trazabilidad|✅ (fases 0–6 + evidencia versionada)|`evidence/`|
-|Pendientes globales|Audio · campo v0.5.0 + acuse de inyección · identidad persistente · WAN · CI|README § Pendientes|
+|Pendientes globales|Audio: campo + loopback · acuse de inyección · identidad persistente · WAN · CI|README § Pendientes|
 
 ---
 

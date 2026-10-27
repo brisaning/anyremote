@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
+use anyremote_audio::{AudioCapture, AudioMode, AudioPlayback, OpusCodec};
 use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender};
 use anyremote_identity::{Identity, TrustStore};
 use anyremote_codec::VideoDecoder;
@@ -132,6 +133,9 @@ pub struct DaemonConfig {
     pub allow_input: bool,
     /// Backend de inyección: `Windows` (SendInput) en producción, `Recording` en tests.
     pub input_backend: InputBackend,
+    /// RF audio (D-07): modo de audio de sesión — `listen`: fuente de captura,
+    /// `connect`: reproductor. `Off` por defecto; `Test` sin hardware (gates).
+    pub audio: AudioMode,
     /// Fuente de cierre externa (tests): envía "bye" al canal de cierre.
     pub bye_source: Option<tokio::sync::mpsc::Receiver<String>>,
 }
@@ -155,6 +159,7 @@ impl DaemonConfig {
             one_way_files: false,
             allow_input: false,
             input_backend: InputBackend::Windows,
+            audio: AudioMode::Off,
             bye_source: None,
         }
     }
@@ -447,7 +452,10 @@ async fn establish_controlled(
     let hello = ch.recv().await?;
     arsp::check_version(&hello).map_err(DaemonError::Config)?;
     ch.send(arsp::welcome(&identity.node_id().to_string())).await?;
-    let requested = cfg.grant.clone();
+    let mut requested = cfg.grant.clone();
+    if cfg.audio != AudioMode::Off && !requested.iter().any(|p| p == "audio") {
+        requested.push("audio".into()); // RF audio: pedir `audio` solo con `--audio`
+    }
     ch.send(proto::envelope::Payload::PermissionRequest(
         proto::PermissionRequest {
             permissions: requested,
@@ -675,6 +683,35 @@ async fn active_controlled(
     let mut clip_off = false;
     // RF-02a (D-07): sin `--allow-input` no hay inyector → toda entrada se deniega.
     let mut injector = cfg.allow_input.then(|| make_injector(cfg.input_backend));
+    // RF audio (D-07): codec listo y captura SOLO con `--audio` + permiso `audio`.
+    let mut codec = (cfg.audio != AudioMode::Off)
+        .then(OpusCodec::new)
+        .transpose()
+        .map_err(|e| DaemonError::Config(e.to_string()))?;
+    let mut audio_capture: Option<AudioCapture> = None;
+    let mut pcm_rx: Option<mpsc::Receiver<Vec<i16>>> = None;
+    if cfg.audio != AudioMode::Off {
+        if granted.iter().any(|p| p == "audio") {
+            let (tx, rx) = mpsc::channel::<Vec<i16>>(16);
+            match AudioCapture::start(cfg.audio, tx) {
+                Ok(cap) => {
+                    audio_capture = Some(cap);
+                    pcm_rx = Some(rx);
+                    emit.emit(ev("audio_start", serde_json::json!({
+                        "mode": format!("{:?}", cfg.audio),
+                        "rate": anyremote_audio::AUDIO_RATE,
+                    })));
+                }
+                Err(e) => {
+                    log.record(AuditEventKind::Error, session_id,
+                        serde_json::json!({"audio": e.to_string()}))?;
+                    emit.emit(ev("audio_error", serde_json::json!({"detail": e.to_string()})));
+                }
+            }
+        } else {
+            emit.emit(ev("audio_denied", serde_json::json!({"reason": "no_concedido"})));
+        }
+    }
 
     // Hito M2: vídeo hacia el canal + preview local de la propia pantalla (solo listen).
     let (video_tx, mut video_rx) = mpsc::channel::<VideoMsg>(3);
@@ -770,6 +807,9 @@ async fn active_controlled(
                     }
                     Some(proto::envelope::Payload::VideoFrame(_)) => {
                         // El controlado no recibe vídeo (M2): ignora con seguridad.
+                    }
+                    Some(proto::envelope::Payload::AudioFrame(_)) => {
+                        // El controlado no recibe audio: ignora con seguridad.
                     }
                     Some(proto::envelope::Payload::InputEvent(m)) => {
                         // RF-02a: entrada del controlador → validar permiso (D-07) → inyectar.
@@ -875,6 +915,37 @@ async fn active_controlled(
                     }
                 }
             }
+            pcm = async {
+                match pcm_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending::<Option<Vec<i16>>>().await,
+                }
+            }, if audio_capture.is_some() => {
+                // RF audio: captura → Opus → wire (20 ms, 48 kHz mono).
+                let Some(pcm) = pcm else { audio_capture = None; continue; };
+                let Some(codec) = codec.as_mut() else { continue; };
+                match codec.encode(&pcm) {
+                    Ok(frame) => {
+                        match ch.send(proto::envelope::Payload::AudioFrame(
+                            arsp::audio_frame_to_wire(&frame),
+                        )).await {
+                            Ok(()) => report.record_audio_sent(frame.data.len()),
+                            Err(e) if conn_gone(&e) => {
+                                log.record(AuditEventKind::Disconnected, session_id,
+                                    serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                                emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                                break;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
+                    Err(e) => {
+                        log.record(AuditEventKind::Error, session_id,
+                            serde_json::json!({"audio": e.to_string()}))?;
+                        emit.emit(ev("audio_error", serde_json::json!({"detail": e.to_string()})));
+                    }
+                }
+            }
             reason = bye_rx.recv(), if !bye_done => {
                 let Some(reason) = reason else { bye_done = true; continue; };
                 let reason = if reason.trim().is_empty() { "stdin".to_string() } else { reason };
@@ -939,6 +1010,11 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
         .target
         .clone()
         .ok_or_else(|| DaemonError::Config("falta el objetivo (o --profile)".into()))?;
+    // RF audio: ofrecer `audio` si está activo (D-07: la intersección con la
+    // solicitud del controlado decide la concesión final).
+    if cfg.audio != AudioMode::Off && !cfg.grant.iter().any(|p| p == "audio") {
+        cfg.grant.push("audio".into());
+    }
 
     log.record(
         AuditEventKind::SessionStarted,
@@ -1049,6 +1125,11 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
         });
     }
     log.record(AuditEventKind::PermissionGranted, &session_id, serde_json::json!({"perms": allowed}))?;
+    // RF audio: sin `audio` concedido no se abre reproductor (D-07).
+    if cfg.audio != AudioMode::Off && !allowed.iter().any(|p| p == "audio") {
+        cfg.audio = AudioMode::Off;
+        emit.emit(ev("audio_denied", serde_json::json!({"reason": "no_concedido"})));
+    }
 
     match active_controller(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, &peer_id.node_id.to_string(), bye_rx).await {
         Ok(o) => Ok(o),
@@ -1085,6 +1166,29 @@ async fn active_controller(
     // Resiliencia de portapapeles (v0.1.4): un fallo desactiva el subsistema, no la sesión.
     let mut clip_off = false;
     let mut bye_done = false;
+    // RF audio: reproductor solo con `--audio` (la concesión ya resolvió run_connect).
+    let mut codec = (cfg.audio != AudioMode::Off)
+        .then(OpusCodec::new)
+        .transpose()
+        .map_err(|e| DaemonError::Config(e.to_string()))?;
+    let mut playback: Option<AudioPlayback> = None;
+    if cfg.audio != AudioMode::Off {
+        match AudioPlayback::start(cfg.audio) {
+            Ok(pb) => {
+                emit.emit(ev("audio_start", serde_json::json!({
+                    "mode": format!("{:?}", cfg.audio),
+                    "rate": anyremote_audio::AUDIO_RATE,
+                })));
+                playback = Some(pb);
+            }
+            Err(e) => {
+                log.record(AuditEventKind::Error, session_id,
+                    serde_json::json!({"audio": e.to_string()}))?;
+                emit.emit(ev("audio_error", serde_json::json!({"detail": e.to_string()})));
+            }
+        }
+    }
+    let mut audio_frames: u64 = 0;
 
     // Hito M2: preview local de lo que llega del controlado + decodificador con estado.
     let (preview_srv, preview_port, _preview_task) = preview::PreviewServer::start();
@@ -1265,6 +1369,37 @@ async fn active_controller(
                             Ok(_) => {} // frame omitido por el codificador
                             Err(e) => {
                                 emit.emit(ev("video_error", serde_json::json!({"detail": e.to_string()})));
+                            }
+                        }
+                    }
+                    Some(proto::envelope::Payload::AudioFrame(af)) => {
+                        // RF audio: wire → Opus → reproductor (sin reproductor: no decodifica).
+                        let frame = match arsp::audio_frame_from_wire(af) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                log.record(AuditEventKind::Error, session_id,
+                                    serde_json::json!({"audio": e.to_string()}))?;
+                                emit.emit(ev("audio_error", serde_json::json!({"detail": e.to_string()})));
+                                continue;
+                            }
+                        };
+                        if let (Some(codec), Some(pb)) = (codec.as_mut(), playback.as_ref()) {
+                            match codec.decode(&frame.data) {
+                                Ok(pcm) => {
+                                    pb.submit(pcm);
+                                    audio_frames += 1;
+                                    report.record_audio_recv(frame.data.len());
+                                    if audio_frames % 100 == 1 {
+                                        let (f, s) = pb.stats();
+                                        emit.emit(ev("audio_stats",
+                                            serde_json::json!({"frames": f, "samples": s})));
+                                    }
+                                }
+                                Err(e) => {
+                                    log.record(AuditEventKind::Error, session_id,
+                                        serde_json::json!({"audio": e.to_string()}))?;
+                                    emit.emit(ev("audio_error", serde_json::json!({"detail": e.to_string()})));
+                                }
                             }
                         }
                     }
