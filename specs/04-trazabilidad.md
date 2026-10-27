@@ -40,13 +40,15 @@
 | Hito M2 | RF-02a (visor) | captura→VP9→sesión→preview→render (validado en campo) | `m2-video-v0.2.0` | `evidence/m2-video-gate.md` |
 | Lote calidad v0.3.0 | robustez + RNF-02 | bye gracioso, `one_way`, `FileReady`+persistencia, bilineal, adaptativo | `calidad-v0.3.0` · PR #3 | `evidence/v030-quality-batch-gate.md` |
 | Lote UI v0.4.0 | RF-04 (UI) + resolución nativa | dropdown de perfiles + `--video-size native` | `ui-v0.4.0` · PR #4 | `evidence/ui-batch-gate.md` |
+| Entrada en sesión v0.5.0 | RF-02a (entrada) | wire `Key.ch` + mapeo owner en transport · `--allow-input` (D-07) · permiso por evento (`keyboard`/`mouse`) · visor con ratón (clic/arrastre/rueda) y teclado | `entrada-v0.5.0` | `evidence/input-session-gate.md` |
 
-**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) — `main` = `97530d3`.
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) — `main` = `7f0e3e5`.
 
 ## Pendientes (estado actual)
 
 1. Audio en sesión (semilla H-RD `audio_capture`/`CapturePcm`, codec Opus).
-2. Cablear `core/input` en la sesión (hoy: permisos concedidos pero sin transporte `InputEvent` → sin control remoto real de teclado/ratón).
+2. Entrada v0.5.0: prueba de campo en LAN + **acuse de inyección al controlador** (hoy `input_injected`/`input_denied` solo los audita el anfitrión).
 3. Identidad persistente + trust por dispositivo (hoy: ID efímero, `peer_trusted` siempre false).
 4. WAN (firewall/UPnP/NAT) y gates de CI (`clippy`/`fmt`).
-5. Ver [README § Pendientes](../README.md#pendientes) para el panel completo.
+5. Teclas F1..F12, Insert, PageUp/Down y bloqueos en la tabla de entrada.
+6. Ver [README § Pendientes](../README.md#pendientes) para el panel completo.

@@ -17,6 +17,7 @@ use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
 use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender};
 use anyremote_identity::{Identity, TrustStore};
 use anyremote_codec::VideoDecoder;
+use anyremote_input::InputInjector;
 use anyremote_session::{LinkStats, SessionEvent, SessionState};
 use anyremote_telemetry::{AuditEventKind, SessionLog, SessionReport};
 use anyremote_transport::arsp::{self, proto};
@@ -126,6 +127,11 @@ pub struct DaemonConfig {
     /// Política de un solo sentido para archivos (patrón OPTION_ONE_WAY_FILE_TRANSFER):
     /// solo controlador → controlado; el controlador RECHAZA ofertas entrantes.
     pub one_way_files: bool,
+    /// RF-02a (D-07): permite inyectar teclado/ratón en el controlado.
+    /// **Desactivado por defecto** (denegado salvo que se pida `--allow-input`).
+    pub allow_input: bool,
+    /// Backend de inyección: `Windows` (SendInput) en producción, `Recording` en tests.
+    pub input_backend: InputBackend,
     /// Fuente de cierre externa (tests): envía "bye" al canal de cierre.
     pub bye_source: Option<tokio::sync::mpsc::Receiver<String>>,
 }
@@ -147,9 +153,87 @@ impl DaemonConfig {
             video_fps: 10,
             codec: anyremote_codec::CodecFormat::Vp9,
             one_way_files: false,
+            allow_input: false,
+            input_backend: InputBackend::Windows,
             bye_source: None,
         }
     }
+}
+
+/// Backend de inyección de entrada (RF-02a): `Windows` en producción;
+/// `Recording` en tests (registra sin tocar el sistema, patrón H-RD-06).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InputBackend {
+    Recording,
+    Windows,
+}
+
+/// Construye el inyector según el backend configurado.
+fn make_injector(backend: InputBackend) -> anyremote_input::PlatformInjector {
+    use anyremote_input::{PlatformInjector, RecordingInjector};
+    match backend {
+        InputBackend::Recording => PlatformInjector::Recording(RecordingInjector::new()),
+        #[cfg(windows)]
+        InputBackend::Windows => {
+            PlatformInjector::Windows(anyremote_input::windows_backend::SendInputInjector::new())
+        }
+        // El producto es Windows; fuera de él solo existe el backend de registro
+        // para que el workspace compile (no inyección real).
+        #[cfg(not(windows))]
+        InputBackend::Windows => PlatformInjector::Recording(RecordingInjector::new()),
+    }
+}
+
+/// Permiso de sesión que exige cada evento (D-07): teclado vs ratón.
+fn input_permission(ev: &anyremote_input::InputEvent) -> &'static str {
+    use anyremote_input::InputEvent;
+    match ev {
+        InputEvent::KeyDown(_) | InputEvent::KeyUp(_) => "keyboard",
+        _ => "mouse",
+    }
+}
+
+/// Contrato de stdin del controlador (app → daemon): líneas `{"input":{...}}`
+/// (RF-02a). `Ok(None)` = JSON que no es un evento de entrada; `Err` = detalle
+/// para auditar. La validación reutiliza el mapeo owner del wire (transport).
+fn parse_input_line(line: &str) -> Result<Option<proto::InputEventMsg>, String> {
+    let v: serde_json::Value = serde_json::from_str(line).map_err(|e| format!("json: {e}"))?;
+    let Some(spec) = v.get("input") else {
+        return Ok(None);
+    };
+    let msg = if let Some(k) = spec.get("key") {
+        proto::InputEventMsg {
+            ev: Some(proto::input_event_msg::Ev::Key(proto::Key {
+                code: k.get("code").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                down: k.get("down").and_then(|x| x.as_bool()).unwrap_or(false),
+                extended: false,
+                ch: k.get("ch").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            })),
+        }
+    } else if let Some(p) = spec.get("pointer") {
+        proto::InputEventMsg {
+            ev: Some(proto::input_event_msg::Ev::Pointer(proto::Pointer {
+                x: p.get("x").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+                y: p.get("y").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+                absolute: p.get("absolute").and_then(|x| x.as_bool()).unwrap_or(true),
+            })),
+        }
+    } else if let Some(b) = spec.get("button") {
+        proto::InputEventMsg {
+            ev: Some(proto::input_event_msg::Ev::Button(proto::Button {
+                button: b.get("button").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+                down: b.get("down").and_then(|x| x.as_bool()).unwrap_or(false),
+                wheel: b.get("wheel").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+            })),
+        }
+    } else {
+        return Err("input sin key/pointer/button".into());
+    };
+    // Rechaza aquí mismo lo que el receptor no sabría inyectar (código/caracter inválido).
+    if arsp::input_event_from_wire(&msg).is_none() {
+        return Err("evento de entrada no soportado (código o carácter)".into());
+    }
+    Ok(Some(msg))
 }
 
 /// Política de transferencia derivada de la configuración del daemon.
@@ -161,11 +245,12 @@ fn file_policy(cfg: &DaemonConfig) -> anyremote_filexfer::TransferPolicy {
 }
 
 /// Fuente de cierre: inyectada (tests) o stdin del proceso (`bye` / fin de archivo).
+/// El buffer es grande porque el visor escribe también líneas `{"input":...}` (RF-02a).
 fn build_bye_source(cfg: &mut DaemonConfig) -> tokio::sync::mpsc::Receiver<String> {
     if let Some(rx) = cfg.bye_source.take() {
         return rx;
     }
-    let (tx, rx) = tokio::sync::mpsc::channel::<String>(2);
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
     tokio::spawn(async move {
         use tokio::io::{AsyncBufReadExt, BufReader};
         let mut lines = BufReader::new(tokio::io::stdin()).lines();
@@ -313,8 +398,9 @@ fn conn_gone(e: &anyremote_transport::TransportError) -> bool {
 
 /// Resultado del establecimiento con un cliente.
 enum Established {
-    /// Sesión autenticada y con permisos → pasar a `active_controlled`.
-    Active(arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>),
+    /// Sesión autenticada y con permisos → `active_controlled` con la
+    /// **concesión efectiva** (`granted`, D-07) para validar cada evento de entrada.
+    Active(arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>, Vec<String>),
     /// Permiso denegado: cliente descartado; el listener sigue vivo.
     Denied,
 }
@@ -394,7 +480,7 @@ async fn establish_controlled(
         session_id,
         serde_json::json!({"perms": granted.permissions}),
     )?;
-    Ok(Established::Active(ch))
+    Ok(Established::Active(ch, granted.permissions))
 }
 
 /// Lado controlado: acepta sesiones (`anyremoted listen`).
@@ -475,9 +561,9 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         .await;
 
         match attempt {
-            Ok(Ok(Established::Active(mut ch))) => {
+            Ok(Ok(Established::Active(mut ch, granted))) => {
                 // Errores de sesión en curso → cierre limpio auditable (no matan el listener como proceso con pánico).
-                return match active_controlled(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, bye_rx).await {
+                return match active_controlled(&mut ch, &mut log, &mut report, &mut emit, &cfg, &session_id, &granted, bye_rx).await {
                     Ok(o) => Ok(o),
                     Err(e) => {
                         log.record(AuditEventKind::Error, &session_id,
@@ -577,6 +663,7 @@ async fn active_controlled(
     emit: &mut Emit,
     cfg: &DaemonConfig,
     session_id: &str,
+    granted: &[String],
     mut bye_rx: tokio::sync::mpsc::Receiver<String>,
 ) -> Result<RunOutcome, DaemonError> {
     let mut engine = Engine::new(make_clipboard(cfg)?);
@@ -586,6 +673,8 @@ async fn active_controlled(
     let state = SessionState::Active;
     // Un fallo de portapapeles NO mata la sesión: se desactiva el subsistema (v0.1.4).
     let mut clip_off = false;
+    // RF-02a (D-07): sin `--allow-input` no hay inyector → toda entrada se deniega.
+    let mut injector = cfg.allow_input.then(|| make_injector(cfg.input_backend));
 
     // Hito M2: vídeo hacia el canal + preview local de la propia pantalla (solo listen).
     let (video_tx, mut video_rx) = mpsc::channel::<VideoMsg>(3);
@@ -681,6 +770,38 @@ async fn active_controlled(
                     }
                     Some(proto::envelope::Payload::VideoFrame(_)) => {
                         // El controlado no recibe vídeo (M2): ignora con seguridad.
+                    }
+                    Some(proto::envelope::Payload::InputEvent(m)) => {
+                        // RF-02a: entrada del controlador → validar permiso (D-07) → inyectar.
+                        let Some(iev) = arsp::input_event_from_wire(&m) else {
+                            log.record(AuditEventKind::InputDenied, session_id,
+                                serde_json::json!({"reason": "unsupported"}))?;
+                            emit.emit(ev("input_denied", serde_json::json!({"reason": "unsupported"})));
+                            continue;
+                        };
+                        let need = input_permission(&iev);
+                        let allowed = injector.is_some() && granted.iter().any(|p| p == need);
+                        if !allowed {
+                            log.record(AuditEventKind::InputDenied, session_id,
+                                serde_json::json!({"perm": need, "allow_input": cfg.allow_input}))?;
+                            emit.emit(ev("input_denied",
+                                serde_json::json!({"perm": need, "allow_input": cfg.allow_input})));
+                            continue;
+                        }
+                        match injector.as_mut().expect("inyector presente").inject(&iev) {
+                            Ok(()) => {
+                                // Clave `input` (no `event`: `ev()` propagaría la colisión y
+                                // taparía el tipo de evento en la UI).
+                                let detail = serde_json::json!({"perm": need, "input": format!("{iev:?}")});
+                                log.record(AuditEventKind::InputInjected, session_id, detail.clone())?;
+                                emit.emit(ev("input_injected", detail));
+                            }
+                            Err(e) => {
+                                log.record(AuditEventKind::Error, session_id,
+                                    serde_json::json!({"input": format!("{e:?}")}))?;
+                                emit.emit(ev("input_error", serde_json::json!({"detail": format!("{e:?}")})));
+                            }
+                        }
                     }
                     Some(proto::envelope::Payload::Bye(b)) => {
                         log.record(AuditEventKind::Disconnected, session_id,
@@ -1219,9 +1340,30 @@ async fn active_controller(
                     }
                 }
             }
-            reason = bye_rx.recv(), if !bye_done => {
-                let Some(reason) = reason else { bye_done = true; continue; };
-                let reason = if reason.trim().is_empty() { "stdin".to_string() } else { reason };
+            line = bye_rx.recv(), if !bye_done => {
+                let Some(line) = line else { bye_done = true; continue; };
+                // RF-02a: el visor escribe eventos `{"input":...}` por stdin → al canal.
+                if line.trim_start().starts_with('{') {
+                    match parse_input_line(&line) {
+                        Ok(Some(msg)) => {
+                            if let Err(e) = ch.send(proto::envelope::Payload::InputEvent(msg)).await {
+                                if conn_gone(&e) {
+                                    log.record(AuditEventKind::Disconnected, session_id,
+                                        serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                                    emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                                    break;
+                                }
+                                return Err(e.into());
+                            }
+                        }
+                        Ok(None) => {} // JSON sin `input`: no es un evento de entrada
+                        Err(detail) => {
+                            emit.emit(ev("input_error", serde_json::json!({"detail": detail})));
+                        }
+                    }
+                    continue;
+                }
+                let reason = if line.trim().is_empty() { "stdin".to_string() } else { line };
                 let _ = ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: reason.clone() })).await;
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await; // gracia de cierre
                 log.record(AuditEventKind::Disconnected, session_id,

@@ -29,6 +29,10 @@ pub enum AuditEventKind {
     FileTransfer,
     ClipboardSync,
     ProfileApplied,
+    /// RF-02a: evento de entrada inyectado en el controlado (bajo permiso D-07).
+    InputInjected,
+    /// RF-02a: evento de entrada rechazado (sin `--allow-input`, sin permiso o no soportado).
+    InputDenied,
     Error,
     Disconnected,
 }

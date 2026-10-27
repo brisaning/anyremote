@@ -5,7 +5,9 @@ import 'dart:typed_data';
 
 import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// anyremote — shell de escritorio v0.1.0 con integración daemon (`anyremoted`).
 ///
@@ -32,6 +34,27 @@ String normalizeTarget(String raw) {
 }
 
 bool looksLikeAlias(String target) => !target.contains(':');
+
+/// Códigos de tecla del wire ARSP (RF-02a) — espejo de `arsp.proto::Key` y de
+/// `anyremote-transport::arsp::input_event_from_wire`. `null` = tecla sin código
+/// propio → se envía como carácter (`ch`).
+int? keyCodeFor(LogicalKeyboardKey k) {
+  if (k == LogicalKeyboardKey.escape) return 1;
+  if (k == LogicalKeyboardKey.tab) return 2;
+  if (k == LogicalKeyboardKey.enter || k == LogicalKeyboardKey.numpadEnter) return 3;
+  if (k == LogicalKeyboardKey.backspace) return 4;
+  if (k == LogicalKeyboardKey.delete) return 5;
+  if (k == LogicalKeyboardKey.arrowLeft) return 6;
+  if (k == LogicalKeyboardKey.arrowRight) return 7;
+  if (k == LogicalKeyboardKey.arrowUp) return 8;
+  if (k == LogicalKeyboardKey.arrowDown) return 9;
+  if (k == LogicalKeyboardKey.home) return 10;
+  if (k == LogicalKeyboardKey.end) return 11;
+  if (k == LogicalKeyboardKey.controlLeft || k == LogicalKeyboardKey.controlRight) return 20;
+  if (k == LogicalKeyboardKey.altLeft || k == LogicalKeyboardKey.altRight) return 21;
+  if (k == LogicalKeyboardKey.shiftLeft || k == LogicalKeyboardKey.shiftRight) return 22;
+  return null;
+}
 
 /// Ubica `anyremoted.exe`: env ANYREMOTE_DAEMON (override) o junto al ejecutable.
 String resolveDaemonPath() {
@@ -79,6 +102,19 @@ class _HomePageState extends State<HomePage> {
   // Perfiles (C6) cargados del daemon: `anyremoted profiles --list`.
   List<String> _aliases = [];
   bool _loadingProfiles = false;
+
+  // RF-02a: entrada en sesión — foco del visor, sesión controladora activa,
+  // teclas de carácter mantenidas (para emparejar keyup con su carácter) y el
+  // flag D-07 que añade `--allow-input` al listener (denegado por defecto).
+  final FocusNode _inputFocus = FocusNode();
+  final Map<int, String> _heldChars = {};
+  bool _sessionActive = false;
+  bool _acceptRemoteControl = false;
+  /// Botón mantenido en el visor (0/1/2) para emitir su `up` al soltar.
+  int? _heldButton;
+  /// Contador visible de eventos de entrada (enviados por el visor o
+  /// inyectados/observados como anfitrión) — sin volcar cada uno al registro.
+  int _inputEvents = 0;
 
   // Hito M2: visor remoto (preview local del daemon controlador).
   Socket? _preview;
@@ -167,6 +203,8 @@ class _HomePageState extends State<HomePage> {
           case 'session_active':
             _append('[daemon] SESIÓN ACTIVA con ${ev['peer']} (${ev['role']})');
             _setStatus('Conectado', Colors.green);
+            // La entrada solo sale desde el rol controlador (el visor).
+            if (ev['role'] == 'controller') _sessionActive = true;
           case 'heartbeat':
             _setStatus('Conectado · rtt ${ev['rtt_ms']} ms', Colors.green);
           case 'file_ack':
@@ -196,9 +234,19 @@ class _HomePageState extends State<HomePage> {
             _append('[daemon] reanudando envío de ${ev['name']} desde offset ${ev['from_offset']}');
           case 'file_rejected':
             _append('[daemon] oferta rechazada: ${ev['detail']}');
+          case 'input_injected':
+            // RF-02a: no se loguea cada evento (inundaría el registro); solo el contador.
+            setState(() => _inputEvents += 1);
+          case 'input_denied':
+            _append('[daemon] entrada denegada en el anfitrión: ${ev['allow_input'] == false ? 'sin --allow-input (D-07)' : 'permiso ${ev['perm'] ?? '?'} no concedido'}');
+          case 'input_error':
+            _append('[daemon] evento de entrada no soportado: ${ev['detail']}');
           case 'closed':
             _append('[daemon] sesión cerrada: ${ev['reason']}');
             _setStatus('Desconectado', Colors.grey);
+            _sessionActive = false;
+            _heldButton = null;
+            _heldChars.clear();
           case 'error':
             _append('[daemon] error: ${ev['detail']}');
             final detail = '${ev['detail']}'.toLowerCase();
@@ -233,22 +281,27 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     try {
+      final args = <String>[
+        'listen',
+        '--bind', '0.0.0.0:21118',
+        '--clipboard', 'win',
+        // M2: el escuchador comparte SU pantalla por defecto (sino no hay qué ver).
+        '--video', 'on',
+        '--video-size', 'native',
+        '--video-fps', '15',
+        '--codec', 'vp9',
+      ];
+      // RF-02a (D-07): la entrada remota solo se acepta si el usuario la activa.
+      if (_acceptRemoteControl) args.add('--allow-input');
       final proc = await Process.start(
         _daemonBin,
-        [
-          'listen',
-          '--bind', '0.0.0.0:21118',
-          '--clipboard', 'win',
-          // M2: el escuchador comparte SU pantalla por defecto (sino no hay qué ver).
-          '--video', 'on',
-          '--video-size', 'native',
-          '--video-fps', '15',
-          '--codec', 'vp9',
-        ],
+        args,
         mode: ProcessStartMode.normal,
       );
       setState(() => _listener = proc);
-      _append('[ui] listener de red lanzado (0.0.0.0:21118 — vídeo 1280x720@15 vp9)');
+      _append(_acceptRemoteControl
+          ? '[ui] listener de red lanzado (0.0.0.0:21118 — vídeo nativo@15 vp9 + CONTROL REMOTO aceptado)'
+          : '[ui] listener de red lanzado (0.0.0.0:21118 — vídeo nativo@15 vp9; control remoto desactivado (D-07))');
       proc.stdout
           .transform(utf8.decoder)
           .transform(const LineSplitter())
@@ -297,6 +350,92 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       if (mounted) _append('[ui] no se pudieron listar las IPs: $e');
     }
+  }
+
+  // ---------- RF-02a: entrada en sesión (visor → stdin del daemon) ----------
+
+  /// Envía una línea `{"input":{...}}` al daemon controlador. El controlado es
+  /// quien valida el permiso real (D-07): aquí solo se traslada lo que el
+  /// usuario hace en el visor.
+  void _sendInput(Map<String, dynamic> spec) {
+    final proc = _daemon;
+    if (proc == null || !_sessionActive) return;
+    try {
+      // `IOSink.writeln` es síncrono: un pipe roto se notifica en `done`
+      // (suscriptor único instalado al lanzar el daemon).
+      proc.stdin.writeln(jsonEncode({'input': spec}));
+      setState(() => _inputEvents += 1);
+    } catch (e) {
+      if (mounted) _append('[ui] entrada no enviada: $e');
+    }
+  }
+
+  /// Punto del visor → píxeles del escritorio remoto. El `AspectRatio` usa el
+  /// mismo aspecto que el frame y `RawImage` es `BoxFit.contain` → el mapeo
+  /// local→remoto es lineal y sin letterboxing.
+  void _sendPointer(Offset local, Size box) {
+    final img = _lastImage;
+    if (img == null || box.width <= 0 || box.height <= 0) return;
+    final rx = (local.dx / box.width * img.width).round().clamp(0, img.width - 1);
+    final ry = (local.dy / box.height * img.height).round().clamp(0, img.height - 1);
+    _sendInput({
+      'pointer': {'x': rx, 'y': ry, 'absolute': true},
+    });
+  }
+
+  /// Botón de ratón: 0=izquierdo, 1=derecho, 2=medio.
+  void _sendButton(int button, bool down) {
+    _sendInput({
+      'button': {'button': button, 'down': down},
+    });
+  }
+
+  /// Suelta el botón que estuviera mantenido en el visor (si lo había).
+  void _releaseButton() {
+    final b = _heldButton;
+    if (b == null) return;
+    _heldButton = null;
+    _sendButton(b, false);
+  }
+
+  /// Rueda del ratón: una muesca por evento (el backend la multiplica a 120).
+  void _sendScroll(double dy) {
+    if (dy == 0) return;
+    _sendInput({
+      'button': {'wheel': dy > 0 ? 1 : -1},
+    });
+  }
+
+  /// Teclado del visor → wire: código propio (`keyCodeFor`) o carácter (`ch`).
+  KeyEventResult _onViewerKey(FocusNode node, KeyEvent event) {
+    if (!_sessionActive) return KeyEventResult.ignored;
+    final down = event is KeyDownEvent || event is KeyRepeatEvent;
+    if (!down && event is! KeyUpEvent) return KeyEventResult.ignored;
+
+    final key = event.logicalKey;
+    final code = keyCodeFor(key);
+    if (code != null) {
+      _sendInput({
+        'key': {'code': code, 'down': down},
+      });
+      return KeyEventResult.handled;
+    }
+    String? ch;
+    if (down) {
+      // El carácter producido respeta mayúsculas/dígitos; si no hay, su etiqueta.
+      final produced =
+          event is KeyDownEvent ? event.character : (event as KeyRepeatEvent).character;
+      ch = (produced != null && produced.length == 1) ? produced : key.keyLabel;
+      if (ch.length != 1) return KeyEventResult.ignored; // F5, Escape largo…
+      _heldChars[key.keyId] = ch;
+    } else {
+      ch = _heldChars.remove(key.keyId);
+      if (ch == null) return KeyEventResult.ignored;
+    }
+    _sendInput({
+      'key': {'code': 0, 'ch': ch, 'down': down},
+    });
+    return KeyEventResult.handled;
   }
 
   // ---------- Hito M2: visor remoto (preview local) ----------
@@ -448,6 +587,10 @@ class _HomePageState extends State<HomePage> {
       );
       setState(() => _daemon = proc);
       _setStatus('Conectando', Colors.orange);
+      // Un pipe roto (daemon fuera) llega por `done`: se traza, no revienta.
+      proc.stdin.done.catchError((Object e) {
+        if (mounted) _append('[ui] stdin del daemon cerrado: $e');
+      });
 
       proc.stdout
           .transform(utf8.decoder)
@@ -479,7 +622,12 @@ class _HomePageState extends State<HomePage> {
       return -9;
     });
     if (mounted) {
-      setState(() => _daemon = null);
+      setState(() {
+        _daemon = null;
+        _sessionActive = false;
+        _heldButton = null;
+        _heldChars.clear();
+      });
       _append('[ui] daemon detenido (código $code)');
       if (_listener != null) {
         _setStatus('Escuchando (red)', Colors.teal);
@@ -495,6 +643,7 @@ class _HomePageState extends State<HomePage> {
     _listener?.kill(ProcessSignal.sigkill);
     _preview?.destroy();
     _lastImage?.dispose();
+    _inputFocus.dispose();
     _target.dispose();
     super.dispose();
   }
@@ -580,6 +729,22 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ],
                     ),
+                    const SizedBox(height: 4),
+                    // D-07: sin marcar, el listener rechaza toda entrada (RF-02a).
+                    Row(
+                      children: [
+                        Checkbox(
+                          value: _acceptRemoteControl,
+                          onChanged: _listener != null
+                              ? null // no se cambia con el listener ya lanzado
+                              : (v) => setState(() => _acceptRemoteControl = v ?? false),
+                          visualDensity: VisualDensity.compact,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        const Text('Aceptar control remoto',
+                            style: TextStyle(fontSize: 12)),
+                      ],
+                    ),
                     const SizedBox(height: 10),
                     Row(
                       children: [
@@ -631,6 +796,10 @@ class _HomePageState extends State<HomePage> {
                           const Text('Visor remoto',
                               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                           const Spacer(),
+                          if (_inputEvents > 0)
+                            Text('entrada: $_inputEvents',
+                                style: const TextStyle(fontSize: 12, color: Colors.teal)),
+                          if (_inputEvents > 0) const SizedBox(width: 10),
                           Text(_videoStatus, style: const TextStyle(fontSize: 12, color: Colors.grey)),
                         ],
                       ),
@@ -640,7 +809,50 @@ class _HomePageState extends State<HomePage> {
                             ? _lastImage!.width / _lastImage!.height
                             : 16 / 9,
                         child: _lastImage != null
-                            ? RawImage(image: _lastImage, fit: BoxFit.contain)
+                            ? LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final box = Size(
+                                      constraints.maxWidth, constraints.maxHeight);
+                                  final img = _lastImage!;
+                                  return Listener(
+                                    // Ratón: cualquier movimiento (arrastrando o
+                                    // pasando por encima) → cursor remoto. El
+                                    // botón se mantiene mientras el puntero esté
+                                    // pulsado (arrastrar = down…moves…up).
+                                    onPointerDown: (e) {
+                                      _inputFocus.requestFocus();
+                                      _sendPointer(e.localPosition, box);
+                                      final b = e.buttons;
+                                      if (b & kPrimaryMouseButton != 0) {
+                                        _heldButton = 0;
+                                      } else if (b & kSecondaryMouseButton != 0) {
+                                        _heldButton = 1;
+                                      } else if (b & kMiddleMouseButton != 0) {
+                                        _heldButton = 2;
+                                      }
+                                      if (_heldButton != null) {
+                                        _sendButton(_heldButton!, true);
+                                      }
+                                    },
+                                    onPointerMove: (e) =>
+                                        _sendPointer(e.localPosition, box),
+                                    onPointerUp: (_) => _releaseButton(),
+                                    onPointerCancel: (_) => _releaseButton(),
+                                    onPointerSignal: (sig) {
+                                      if (sig is PointerScrollEvent) {
+                                        _sendScroll(sig.scrollDelta.dy);
+                                      }
+                                    },
+                                    child: Focus(
+                                      focusNode: _inputFocus,
+                                      autofocus: true,
+                                      onKeyEvent: _onViewerKey,
+                                      child:
+                                          RawImage(image: img, fit: BoxFit.contain),
+                                    ),
+                                  );
+                                },
+                              )
                             : const Center(
                                 child: Text('conectado… esperando primer frame',
                                     style: TextStyle(color: Colors.grey)),
@@ -662,9 +874,12 @@ class _HomePageState extends State<HomePage> {
                       const SizedBox(height: 10),
                       Expanded(
                         child: ListView.builder(
+                          // Invertido y anclado al final: la entrada más reciente
+                          // queda visible abajo aunque el registro crezca.
+                          reverse: true,
                           itemCount: _log.length,
                           itemBuilder: (_, i) => Text(
-                            _log[i],
+                            _log[_log.length - 1 - i],
                             style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
                           ),
                         ),
