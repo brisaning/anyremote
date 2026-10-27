@@ -11,10 +11,10 @@ _Última actualización: 2026-10-26_
 | Campo | Valor |
 |---|---|
 | Versión actual | **v0.7.2** (`anyremote_app.exe` + `anyremoted.exe`) |
-| Ramas | `main` = `efb1dc2` (PR #11) · `develop` = `d3cf723` (tag `perf-v0.7.1`) |
+| Ramas | `main` = `2e06d90` (PR #12) · `develop` = `1feb6f3` (tag `video-estatico-v0.7.2`) |
 | Gates actuales | **Rust 41 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 4/4 |
 | Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · cierre/reanudación · perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** · 🟡 audio · 🟡 fix control 720p/1080p · 🟡 toggles dinámicos · 🟡 rendimiento v0.7.1 · 🔴→🟡 **campo: sin vídeo en pantalla estática (v0.7.1) → fix v0.7.2** (captura en hilo propio + reenvío 1 fps), pendiente revalidar en LAN |
-| PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (v0.6.2 coords) · #10 (v0.7.0 dinámico) · **#11 (v0.7.1 perf)** |
+| PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (v0.6.2 coords) · #10 (v0.7.0 dinámico) · #11 (v0.7.1 perf) · **#12 (v0.7.2 fix vídeo estático)** |
 
 ### Requisitos
 
