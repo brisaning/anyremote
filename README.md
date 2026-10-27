@@ -72,7 +72,7 @@ Build: `cargo build --release -p anyremote-daemon --bin anyremoted` · `flutter 
 
 ## Diagnóstico de campo (v0.7.3)
 
-Si una sesión falla, copia `%APPDATA%nyremote\` (contiene `audit/`,
+Si una sesión falla, copia `%APPDATA%\anyremote\` (contiene `audit/`,
 `panic.log` del daemon y `ui.log` de la app con los `args` exactos y el código
 de salida). El anfitrión **no muestra su propia pantalla**: solo el registro (el
 visor es exclusivo del controlador).
