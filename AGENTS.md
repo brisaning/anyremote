@@ -3,6 +3,8 @@
 Aplicativo de escritorio remoto desarrollado bajo **Organic Driven Development** (ODD).
 Plan maestro: [specs/02-plan-implementacion.md](specs/02-plan-implementacion.md) · Spec: [specs/01-requerimientos.md](specs/01-requerimientos.md).
 
+> **Estado del proyecto (dinámico)**: [README § Estado](README.md#estado) — versión vigente, gates, requisitos y pendientes. Al cerrar cualquier fase/ciclo/lote: actualizar README + `specs/02` (tabla de ejecución) + `specs/04` (ciclos/trazabilidad) + bóveda, y commitear.
+
 ## Memoria del proyecto (obligatoria)
 
 La memoria persistente vive en la bóveda Obsidian **anyremote**:

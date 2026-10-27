@@ -36,3 +36,17 @@
 | C6 | RF-04 | `profile_applies_to_a_new_session` (6/6) | `ciclo-c6` | `evidence/c6-gate.md` |
 | C7 | RF-05 | `e2e_audit_events_and_diagnostic_report` | `ciclo-c7` | `evidence/c7-gate.md` |
 | C8 | RNF-01/02/05 | auditoría de secretos + benchmark final + checklist | `ciclo-c8` | `evidence/c8-checklist.md` |
+| Integración v0.1.x | daemon↔app | e2e daemon + fixes cross-device (pins, listener resiliente, recv cancellation-safe, portapapeles no fatal) | `integracion-v0.1.3`…`v0.1.6` | `evidence/integration-gate.md` |
+| Hito M2 | RF-02a (visor) | captura→VP9→sesión→preview→render (validado en campo) | `m2-video-v0.2.0` | `evidence/m2-video-gate.md` |
+| Lote calidad v0.3.0 | robustez + RNF-02 | bye gracioso, `one_way`, `FileReady`+persistencia, bilineal, adaptativo | `calidad-v0.3.0` · PR #3 | `evidence/v030-quality-batch-gate.md` |
+| Lote UI v0.4.0 | RF-04 (UI) + resolución nativa | dropdown de perfiles + `--video-size native` | `ui-v0.4.0` · PR #4 | `evidence/ui-batch-gate.md` |
+
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) — `main` = `97530d3`.
+
+## Pendientes (estado actual)
+
+1. Audio en sesión (semilla H-RD `audio_capture`/`CapturePcm`, codec Opus).
+2. Cablear `core/input` en la sesión (hoy: permisos concedidos pero sin transporte `InputEvent` → sin control remoto real de teclado/ratón).
+3. Identidad persistente + trust por dispositivo (hoy: ID efímero, `peer_trusted` siempre false).
+4. WAN (firewall/UPnP/NAT) y gates de CI (`clippy`/`fmt`).
+5. Ver [README § Pendientes](../README.md#pendientes) para el panel completo.

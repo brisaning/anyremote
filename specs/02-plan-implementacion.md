@@ -4,9 +4,38 @@
 |---|---|
 | Versión | 1.0.0 |
 | Fecha | 2026-10-26 |
-| Estado | Aprobado por el usuario (decisiones §0.1 registradas) |
+| Estado | Aprobado por el usuario (decisiones §0.1 registradas) — **ejecución en curso** (ver estado dinámico abajo) |
 | Spec origen | [01-requerimientos.md](01-requerimientos.md) |
 | Metodología | Organic Driven Development (ODD) |
+
+## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
+
+_Última actualización: 2026-10-26 · v0.4.0 · `main`=97530d3 · `develop`=1f30f13_
+
+| Fase/Ciclo/Lote | Estado | Tag / PR |
+|---|---|---|
+| Fase 0 Preparación | ✅ | `fase-0-completa` |
+| Fase 1 Indexación rustdesk (C-01) | ✅ | `fase-1-completa` |
+| Fase 2 RE AnyDesk | ✅ (Themida → vacíos aceptados) | `dceeb7f` |
+| Fase 3 Equivalencias H-RD | ✅ | `c82cfd2` |
+| Fase 4 Arquitectura D-01…D-11 | ✅ | `d831386` |
+| Fase 5 Scaffold workspace (10 crates) | ✅ | `a448354` |
+| Fase 6 Cierre RE (CA-01..06) | ✅ | `fase-6` |
+| Ciclo S0 Tronco TLS+identidad | ✅ gate 9/9+demo | `ciclo-s0` |
+| Ciclo C1 Sesión ARSP+permisos (RF-01) | ✅ | `ciclo-c1` |
+| Ciclo C2 Auth mutua+binding (RF-03) | ✅ | `ciclo-c2` |
+| Ciclo C3 Captura DXGI+vídeo e2e (RF-02a) | ✅ | `ciclo-c3` |
+| Ciclo C3-bis VP9 37fps@720p (RNF-02) | ✅ | `ciclo-c3-bis` |
+| Ciclo C4 Portapapeles (RF-02b) | ✅ | `ciclo-c4` |
+| Ciclo C5 Archivos+hash+reanudación (RF-02c) | ✅ | `ciclo-c5` |
+| Ciclo C6 Perfiles (RF-04) | ✅ | `ciclo-c6` |
+| Ciclo C7 Auditoría+diagnóstico (RF-05) | ✅ | `ciclo-c7` |
+| Ciclo C8 Consolidación (RNF-01/02/05) | ✅ | `ciclo-c8` |
+| Integración daemon↔app v0.1.x (cross-device fixes) | ✅ validada en campo | `integracion-v0.1.3`…`v0.1.6` |
+| Hito M2 Visor remoto | ✅ validado en campo | `m2-video-v0.2.0`, `integracion-v0.2.1` |
+| Lote calidad/robustez v0.3.0 | ✅ validado en campo | `calidad-v0.3.0` · PR #3 |
+| Lote UI v0.4.0 (nativo+perfiles) | ✅ | `ui-v0.4.0` · PR #4 |
+| **Pendientes** | 🟡 audio · entrada en sesión · identidad persistente · WAN · CI | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
