@@ -11,10 +11,10 @@ _Última actualización: 2026-10-26_
 | Campo | Valor |
 |---|---|
 | Versión actual | **v0.5.0** (`anyremote_app.exe` + `anyremoted.exe`) |
-| Ramas | `main` = `7f0e3e5` (PR #5) · `develop` = rama de integración (tag `entrada-v0.5.0`) |
+| Ramas | `main` = `34da66e` (PR #6) · `develop` = `dcadc5a` (tag `entrada-v0.5.0`) |
 | Gates actuales | **Rust 37 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 3/3 |
 | Validación de campo | ✅ LAN: sesión estable · portapapeles bidireccional · **visor de pantalla remota** · cierre ordenado · reanudación (v0.3.0+) · resolución nativa + perfiles (v0.4.0) · 🟡 **entrada en sesión (v0.5.0): gate verde, pendiente prueba de campo** |
-| PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) |
+| PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · **#6 (v0.5.0 entrada)** |
 
 ### Requisitos
 

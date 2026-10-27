@@ -42,7 +42,7 @@
 | Lote UI v0.4.0 | RF-04 (UI) + resolución nativa | dropdown de perfiles + `--video-size native` | `ui-v0.4.0` · PR #4 | `evidence/ui-batch-gate.md` |
 | Entrada en sesión v0.5.0 | RF-02a (entrada) | wire `Key.ch` + mapeo owner en transport · `--allow-input` (D-07) · permiso por evento (`keyboard`/`mouse`) · visor con ratón (clic/arrastre/rueda) y teclado | `entrada-v0.5.0` | `evidence/input-session-gate.md` |
 
-**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) — `main` = `7f0e3e5`.
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) — `main` = `34da66e`.
 
 ## Pendientes (estado actual)
 

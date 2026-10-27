@@ -10,7 +10,7 @@
 
 ## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
 
-_Última actualización: 2026-10-26 · v0.5.0 · `main`=7f0e3e5 · `develop`=tag `entrada-v0.5.0`_
+_Última actualización: 2026-10-26 · v0.5.0 · `main`=34da66e · `develop`=dcadc5a (tag `entrada-v0.5.0`)_
 
 | Fase/Ciclo/Lote | Estado | Tag / PR |
 |---|---|---|
