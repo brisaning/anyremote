@@ -208,6 +208,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _append(String line) {
+    _logToFile(line);
     setState(() => _log.add(line));
   }
 
@@ -218,7 +219,37 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  void _handleEvent(String line) {
+  /// Log persistente de la app (C-5): TODAS las líneas del registro se añaden
+  /// a `%APPDATA%\anyremote\ui.log` (misma carpeta que `audit/`, que ya se
+  /// copia para diagnóstico). Sin esto, si la app se cierra el registro se
+  /// pierde con la ventana. Se trunca al superar 1 MB.
+  static File? _uiLogFile;
+
+  static File? uiLogFile() {
+    final base = Platform.environment['APPDATA'];
+    if (base == null || base.isEmpty) return null;
+    final dir = '$base\\anyremote';
+    final f = File('$dir\\ui.log');
+    try {
+      Directory(dir).createSync(recursive: true);
+    } catch (_) {}
+    return f;
+  }
+
+  void _logToFile(String line) {
+    try {
+      final f = _uiLogFile ??= uiLogFile();
+      if (f == null) return;
+      if (f.existsSync() && f.lengthSync() > 1024 * 1024) f.deleteSync();
+      f.writeAsStringSync('${DateTime.now().toIso8601String()} $line\n',
+          mode: FileMode.append);
+    } catch (_) {}
+  }
+
+  /// `isListener`: la línea viene del proceso que COMPARTE (rol anfitrión).
+  /// En ese rol no se abre el visor: el anfitrión no debe mostrar su propia
+  /// pantalla compartida, solo el registro (requisito de campo C-5).
+  void _handleEvent(String line, {bool isListener = false}) {
     final trimmed = line.trim();
     if (trimmed.isEmpty) return;
     if (trimmed.startsWith('{')) {
@@ -255,6 +286,9 @@ class _HomePageState extends State<HomePage> {
           case 'cert_pinned':
             _append('[daemon] certificado del servidor pineado para ${ev['target']}');
           case 'preview':
+            // C-5: el anfitrión ignora SU preview (no muestra la pantalla que
+            // comparte); solo el controlador abre visor con su propio preview.
+            if (isListener) return;
             _startViewer((ev['port'] as num).toInt());
           case 'video_start':
             _append('[daemon] vídeo iniciando: ${ev['width']}x${ev['height']} @${ev['fps']} fps (${ev['codec']})');
@@ -397,10 +431,11 @@ class _HomePageState extends State<HomePage> {
               ? ' — sin control remoto ni audio (D-07)'
               : ' — acepta ${activos.join(' + ')}'}'
           ')');
+      _logToFile('--- listen args: ${args.join(' ')}');
       proc.stdout
           .transform(utf8.decoder)
           .transform(const LineSplitter())
-          .listen(_handleEvent);
+          .listen((line) => _handleEvent(line, isListener: true));
       proc.stderr
           .transform(utf8.decoder)
           .transform(const LineSplitter())
@@ -686,6 +721,7 @@ class _HomePageState extends State<HomePage> {
         if (mounted) _append('[ui] stdin del daemon cerrado: $e');
       });
 
+      _logToFile('--- connect args: ${args.join(' ')}');
       proc.stdout
           .transform(utf8.decoder)
           .transform(const LineSplitter())
