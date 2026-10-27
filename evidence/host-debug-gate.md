@@ -52,14 +52,14 @@
 
 ## Qué hace falta para cerrar el diagnóstico
 
-Una **reproducción de la combo que falla** (Control remoto + Micrófono, **sin**
-Audio del sistema) con la app v0.7.3 y copiar después:
-
-- `%APPDATA%\anyremote\ui.log` (registro completo con `args` y código de salida
-  del daemon — `listener finalizado (código N)`: **101 = pánico**), y
-- `%APPDATA%\anyremote\audit\` (+ `panic.log` si aparece).
-
-Con esos dos archivos se identifica la causa exacta de la muerte de la sesión.
+✅ **CERRADO EN CAMPO (2026-10-27, v0.7.3)**: el usuario reprodujo la prueba y
+**no se presentó el fallo — funcionó correctamente**. En esta versión el comando
+en caliente decide el estado con **un solo spawn de captura por sesión** (el
+segundo intento del arranque inicial — que solo ocurría cuando la combo inicial
+reducía las fuentes a `[mic]` — desapareció) y la app dejó de abrir visor en el
+rol anfitrión. Se mantiene la instrumentación (`ui.log` + `panic.log`) para
+cualquier incidencia futura: con ellos la próxima anomalía deja artefacto
+(args + código de salida + ubicación del pánico) sin pasos extra.
 
 ## Nota
 
