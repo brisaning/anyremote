@@ -198,9 +198,11 @@ async fn audio_denied_when_host_does_not_share() {
         "connect debe denegar: {:?}",
         ctl.events
     );
+    // C-2: el reproductor queda preparado (se emite `audio_start`), pero sin
+    // frames del anfitrión no hay reproducción ni métricas.
     assert!(
-        !has_event(&ctl_ev, "audio_start"),
-        "no debe abrir reproductor: {:?}",
+        !has_event(&ctl_ev, "audio_stats"),
+        "sin frames → sin audio_stats: {:?}",
         ctl.events
     );
     assert_eq!(ctl.report.audio_recv, 0);
