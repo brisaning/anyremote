@@ -11,10 +11,10 @@ _Última actualización: 2026-10-26_
 | Campo | Valor |
 |---|---|
 | Versión actual | **v0.7.3** (`anyremote_app.exe` + `anyremoted.exe`) |
-| Ramas | `main` = `2e06d90` (PR #12) · `develop` = `1feb6f3` (tag `video-estatico-v0.7.2`) |
+| Ramas | `main` = `2230df1` (PR #13) · `develop` = `2239170` (tag `diag-host-v0.7.3`) |
 | Gates actuales | **Rust 41 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 4/4 |
 | Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · **control remoto teclado/ratón (v0.5.0)** · vídeo en pantalla estática fix v0.7.2 · **sesión sana verificada con `source=system` (107 frames + cierre limpio)** · 🔴 combo «control remoto + micrófono» (sin audio del sistema) → fuente `[mic]` sin dispositivo y la sesión no produce vídeo → **instrumentación v0.7.3** (`panic.log` + `ui.log`) para capturar la causa |
-| PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (v0.6.2 coords) · #10 (v0.7.0 dinámico) · #11 (v0.7.1 perf) · **#12 (v0.7.2 fix vídeo estático)** |
+| PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (v0.6.2 coords) · #10 (v0.7.0 dinámico) · #11 (v0.7.1 perf) · #12 (v0.7.2 fix vídeo estático) · **#13 (v0.7.3 diagnóstico)** |
 
 ### Requisitos
 
