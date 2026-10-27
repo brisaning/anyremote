@@ -111,11 +111,22 @@ class _HomePageState extends State<HomePage> {
   bool _sessionActive = false;
   bool _acceptRemoteControl = false;
   bool _shareAudio = false;
+  /// Calidad del vídeo que comparte el listener. **720p por defecto**: en la
+  /// prueba de campo de 2026-10-27 `native` solo alcanzó ~4.6 fps en el
+  /// anfitrión y el enlace marcó RTT 57–782 ms (vídeo demasiado pesado).
+  String _videoQuality = '720p';
+  static const Map<String, String> _qualities = {
+    '720p': '1280x720',
+    '1080p': '1920x1080',
+    'Nativa': 'native',
+  };
   /// Botón mantenido en el visor (0/1/2) para emitir su `up` al soltar.
   int? _heldButton;
   /// Contador visible de eventos de entrada (enviados por el visor o
   /// inyectados/observados como anfitrión) — sin volcar cada uno al registro.
   int _inputEvents = 0;
+  /// Indicador de audio en la cabecera del visor (`audio ✓` / `sin señal`).
+  String _audioHint = '';
 
   // Hito M2: visor remoto (preview local del daemon controlador).
   Socket? _preview;
@@ -243,11 +254,22 @@ class _HomePageState extends State<HomePage> {
           case 'input_error':
             _append('[daemon] evento de entrada no soportado: ${ev['detail']}');
           case 'audio_start':
-            _append('[daemon] audio de sesión iniciado (${ev['mode']}, ${ev['rate']} Hz)');
+            _append(ev.containsKey('source')
+                ? '[daemon] audio compartido desde ${ev['source']} (${ev['rate']} Hz)'
+                : '[daemon] reproducción de audio activada (${ev['rate']} Hz)');
           case 'audio_denied':
             _append('[daemon] audio no concedido en esta sesión (D-07: el anfitrión debe compartirlo con "Compartir audio")');
           case 'audio_stats':
-            break; // se emite cada ~2 s: no debe inundar el registro
+            // Diagnóstico en la cabecera del visor: rms≈ 0 = silencio (el
+            // anfitrión no está reproduciendo nada o no está compartiendo).
+            final rms = (ev['rms'] as num?)?.toDouble() ?? 0.0;
+            final hint = rms > 0.002 ? 'audio ✓' : 'audio: sin señal';
+            if (_audioHint != hint) {
+              setState(() => _audioHint = hint);
+              if (hint != 'audio ✓') {
+                _append('[daemon] audio sin señal (rms 0): ¿está reproduciendo sonido el anfitrión?');
+              }
+            }
           case 'audio_error':
             _append('[daemon] audio desactivado en esta sesión: ${ev['detail']}');
           case 'closed':
@@ -256,6 +278,7 @@ class _HomePageState extends State<HomePage> {
             _sessionActive = false;
             _heldButton = null;
             _heldChars.clear();
+            _audioHint = '';
           case 'error':
             _append('[daemon] error: ${ev['detail']}');
             final detail = '${ev['detail']}'.toLowerCase();
@@ -296,7 +319,7 @@ class _HomePageState extends State<HomePage> {
         '--clipboard', 'win',
         // M2: el escuchador comparte SU pantalla por defecto (sino no hay qué ver).
         '--video', 'on',
-        '--video-size', 'native',
+        '--video-size', _qualities[_videoQuality] ?? '1280x720',
         '--video-fps', '15',
         '--codec', 'vp9',
       ];
@@ -314,7 +337,7 @@ class _HomePageState extends State<HomePage> {
         if (_acceptRemoteControl) 'control remoto',
         if (_shareAudio) 'audio',
       ];
-      _append('[ui] listener de red lanzado (0.0.0.0:21118 — vídeo nativo@15 vp9'
+      _append('[ui] listener de red lanzado (0.0.0.0:21118 — vídeo $_videoQuality@15 vp9'
           '${activos.isEmpty
               ? ' — sin control remoto ni audio (D-07)'
               : ' — acepta ${activos.join(' + ')}'}'
@@ -763,7 +786,7 @@ class _HomePageState extends State<HomePage> {
                         ),
                         const Text('Aceptar control remoto',
                             style: TextStyle(fontSize: 12)),
-                        const SizedBox(width: 16),
+                        const SizedBox(width: 10),
                         Checkbox(
                           value: _shareAudio,
                           onChanged: _listener != null
@@ -774,6 +797,30 @@ class _HomePageState extends State<HomePage> {
                         ),
                         const Text('Compartir audio',
                             style: TextStyle(fontSize: 12)),
+                        const SizedBox(width: 10),
+                        const Text('vídeo:',
+                            style: TextStyle(fontSize: 12)),
+                        const SizedBox(width: 4),
+                        // Calidad:720p por defecto (nativo resultó demasiado
+                        // pesado para el anfitrión en la prueba de campo).
+                        DropdownButton<String>(
+                          value: _videoQuality,
+                          items: _qualities.keys
+                              .map((q) => DropdownMenuItem(
+                                    value: q,
+                                    child:
+                                        Text(q, style: const TextStyle(fontSize: 12)),
+                                  ))
+                              .toList(),
+                          onChanged: _listener != null
+                              ? null
+                              : (v) {
+                                  if (v != null) {
+                                    setState(() => _videoQuality = v);
+                                  }
+                                },
+                          isDense: true,
+                        ),
                       ],
                     ),
                     const SizedBox(height: 10),
@@ -827,6 +874,14 @@ class _HomePageState extends State<HomePage> {
                           const Text('Visor remoto',
                               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                           const Spacer(),
+                          if (_audioHint.isNotEmpty)
+                            Text(_audioHint,
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: _audioHint == 'audio ✓'
+                                        ? Colors.teal
+                                        : Colors.orange)),
+                          if (_audioHint.isNotEmpty) const SizedBox(width: 10),
                           if (_inputEvents > 0)
                             Text('entrada: $_inputEvents',
                                 style: const TextStyle(fontSize: 12, color: Colors.teal)),

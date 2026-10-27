@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use anyremote_audio::AudioMode;
+use anyremote_audio::{AudioMode, AudioSource};
 use anyremote_codec::CodecFormat;
 use anyremote_daemon::video::VideoMode;
 use anyremote_daemon::{resolve_profile, run_connect, run_listen, ClipboardMode, DaemonConfig};
@@ -86,6 +86,13 @@ async fn main() {
             // RF audio: fuente de captura (off por defecto; `test` sin hardware).
             if let Some(a) = flag_value(&args, "--audio") {
                 cfg.audio = AudioMode::parse(&a).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                });
+            }
+            // Fuente: `system` (loopback, defecto: YouTube/altavoces) o `mic`.
+            if let Some(s) = flag_value(&args, "--audio-source") {
+                cfg.audio_source = AudioSource::parse(&s).unwrap_or_else(|e| {
                     eprintln!("{e}");
                     std::process::exit(2);
                 });
@@ -188,7 +195,7 @@ async fn main() {
         }
         _ => {
             eprintln!("anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio");
-            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|960x540] [--video-fps 10] [--codec vp9|deflate|raw] [--audio off|test|on] [--clipboard ...] [--allow-input] [--max-secs n]");
+            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--codec vp9|deflate|raw] [--audio off|test|on] [--audio-source system|mic] [--clipboard ...] [--allow-input] [--max-secs n]");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             std::process::exit(2);

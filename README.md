@@ -10,10 +10,10 @@ _Última actualización: 2026-10-26_
 
 | Campo | Valor |
 |---|---|
-| Versión actual | **v0.6.0** (`anyremote_app.exe` + `anyremoted.exe`) |
-| Ramas | `main` = `c5792b8` (PR #7) · `develop` = `7092cc0` (tag `audio-v0.6.0`) |
+| Versión actual | **v0.6.1** (`anyremote_app.exe` + `anyremoted.exe`) |
+| Ramas | `main` = `c5792b8` (PR #7) · `develop` = `2e2cd77` (tag `audio-v0.6.0`; correcciones de campo en `fix/field-audio-quality`) |
 | Gates actuales | **Rust 40 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 3/3 |
-| Validación de campo | ✅ LAN: sesión estable · portapapeles bidireccional · **visor de pantalla remota** · cierre ordenado · reanudación (v0.3.0+) · resolución nativa + perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** · 🟡 **audio (v0.6.0): gate verde, pendiente prueba de campo** |
+| Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · cierre/reanudación · perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** · 🟡 **audio: diagnosticado en campo → loopback v0.6.1 (verificado local, pendiente LAN)** · lentitud diagnosticada → calidad 720p por defecto (v0.6.1) |
 | PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · **#7 (v0.6.0 audio)** |
 
 ### Requisitos
@@ -23,7 +23,7 @@ _Última actualización: 2026-10-26_
 | RF-01 Sesiones iniciar/aceptar | ✅ | C1 (+C2) `evidence/*` |
 | RF-02a Pantalla + códec | ✅ | C3/C3-bis (VP9 37 fps@720p) + M2 visor |
 | RF-02a Entrada de teclado/ratón en sesión | ✅ (v0.5.0) — denegada por defecto (D-07, `--allow-input` / casilla "Aceptar control remoto") | `evidence/input-session-gate.md` |
-| Audio en sesión (capacidad D-05/D-07) | ✅ (v0.6.0) — micrófono→Opus 48 kHz→altavoz; opt-in con `--audio on` / casilla "Compartir audio" | `evidence/audio-gate.md` |
+| Audio en sesión (capacidad D-05/D-07) | ✅ (v0.6.0 → **v0.6.1**): **loopback (audio del sistema)** por defecto + micrófono opcional, Opus 48 kHz; opt-in con `--audio on` / casilla "Compartir audio" | `evidence/audio-gate.md` |
 | RF-02b Portapapeles | ✅ | C4 (contención de formatos) |
 | RF-02c Archivos | ✅ | C5 + reanudación persistente (v0.3.0) |
 | RF-03 Conexión por ID/dirección + auth | ✅ | C2 (ed25519 + channel binding + trust) |
@@ -33,7 +33,7 @@ _Última actualización: 2026-10-26_
 
 ### Pendientes
 
-1. **Audio**: prueba de campo en LAN; **audio del sistema** (loopback WASAPI), VAD/silencio y resampler de mayor orden.
+1. **Audio**: re-verificar en LAN con v0.6.1 (loopback); VAD/silencio y resampler de mayor orden.
 2. **Acuse de inyección al visor**: hoy `input_injected`/`input_denied` solo los audita el anfitrión; el visor cuenta únicamente lo que envía.
 3. **Identidad persistente + trust por dispositivo**: cada arranque genera un ID nuevo (`peer_trusted` siempre false) → persistir la clave en el directorio de config y confiar por ID conocido.
 4. **WAN**: firewall/UPnP/NAT (hoy LAN + regla `netsh` manual documentada).
@@ -49,17 +49,20 @@ _Última actualización: 2026-10-26_
 ## Puesta en marcha
 
 ```powershell
-# Anfitrión (comparte pantalla — nativa; --allow-input acepta control, --audio comparte micrófono):
-anyremoted listen --bind 0.0.0.0:21118 --video on --video-size native --clipboard win --allow-input --audio on
+# Anfitrión (la app usa 720p por defecto; --audio on comparte el AUDIO DEL SISTEMA vía loopback):
+anyremoted listen --bind 0.0.0.0:21118 --video on --video-size 1280x720 --clipboard win --allow-input --audio on
+# ... --audio-source mic para compartir el micrófono en lugar de la salida del sistema.
 # Invitado (o la app: destino IP:puerto o alias de perfil):
 anyremote connect <ip>:21118 --clipboard win [--send-file archivo] [--one-way-files]
 # Perfiles:
 anyremote profiles --add casa,192.168.1.10,21118
 ```
 En la app: marca **"Aceptar control remoto"** y/o **"Compartir audio"** antes de
-*Escuchar (red)* (D-07: sin marcar, la entrada y el audio se deniegan). El visor envía
-ratón (mover/clic/arrastre/rueda) y teclado por stdin al proceso `connect`; el audio
-viaja **Opus 48 kHz mono** y se reproduce en el controlador.
+*Escuchar (red)* (D-07: sin marcar, la entrada y el audio se deniegan) y elige la
+**calidad de vídeo** (720p por defecto · 1080p · Nativa). El visor envía ratón
+(mover/clic/arrastre/rueda) y teclado por stdin al proceso `connect`; el audio se
+captura del **sistema (loopback)** y viaja **Opus 48 kHz mono** hasta el controlador
+(indicador `audio ✓` / `audio: sin señal` en la cabecera del visor según el RMS).
 Build: `cargo build --release -p anyremote-daemon --bin anyremoted` · `flutter build windows --release` (ambos artefactos se sirven desde `app/build/windows/x64/runner/Release/`).
 **Requisito de build**: `opus` compila libopus con **CMake** — si hay que recompilar
 (`cargo clean`, nueva máquina), añadir al `PATH` `C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin` (VS Build Tools).

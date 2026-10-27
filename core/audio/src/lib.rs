@@ -62,6 +62,53 @@ impl AudioMode {
     }
 }
 
+/// Fuente de captura para `AudioMode::On` (solo el lado `listen`).
+/// Por defecto **`System`**: el audio que suena en los altavoces (YouTube,
+/// vídeos, llamadas) — el micrófono solo captura lo que ocurre en la sala.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AudioSource {
+    /// Audio del sistema vía **WASAPI loopback** (endpoint de render como
+    /// entrada: cpal activa `AUDCLNT_STREAMFLAGS_LOOPBACK` automáticamente).
+    System,
+    /// Micrófono (dispositivo de entrada por defecto).
+    Microphone,
+}
+
+impl AudioSource {
+    pub fn parse(s: &str) -> Result<Self, AudioError> {
+        match s.to_ascii_lowercase().as_str() {
+            "system" | "loopback" => Ok(Self::System),
+            "mic" | "microphone" => Ok(Self::Microphone),
+            other => Err(AudioError::Config(format!(
+                "--audio-source inválido: {other} (system|mic)"
+            ))),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Microphone => "mic",
+        }
+    }
+}
+
+impl Default for AudioSource {
+    fn default() -> Self {
+        Self::System
+    }
+}
+
+/// RMS de un bloque de PCM normalizado (0..1) — diagnóstico de
+/// "¿llega audio real o silencio?" en `audio_stats`.
+pub fn rms_i16(pcm: &[i16]) -> f64 {
+    if pcm.is_empty() {
+        return 0.0;
+    }
+    let scale = 1.0 / i16::MAX as f64;
+    (pcm.iter().map(|&s| (s as f64 * scale).powi(2)).sum::<f64>() / pcm.len() as f64).sqrt()
+}
+
 /// Frame de audio codificado listo para el wire (Opus, 48 kHz mono, 20 ms).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncodedAudio {
@@ -192,6 +239,7 @@ pub struct AudioCapture {
 impl AudioCapture {
     pub fn start(
         mode: AudioMode,
+        source: AudioSource,
         out: tokio::sync::mpsc::Sender<Vec<i16>>,
     ) -> Result<AudioCapture, AudioError> {
         if mode == AudioMode::Off {
@@ -206,11 +254,11 @@ impl AudioCapture {
                 thread: Some(thread),
             });
         }
-        // `On`: el hilo abre el dispositivo y notifica el resultado antes de
-        // entrar en el bucle (bloqueo acotado: el fallo llega en milisegundos).
+        // `On`: el hilo abre el dispositivo (según `source`) y notifica el
+        // resultado antes de entrar en el bucle (el fallo llega en milisegundos).
         let (tx, rx) = std::sync::mpsc::channel::<Result<(), AudioError>>();
         let stop2 = stop.clone();
-        let thread = std::thread::spawn(move || match open_capture() {
+        let thread = std::thread::spawn(move || match open_capture(source) {
             Err(e) => {
                 let _ = tx.send(Err(e));
             }
@@ -245,16 +293,38 @@ impl Drop for AudioCapture {
     }
 }
 
-/// Abre el micrófono por defecto con SU configuración (WASAPI rechaza tasas
-/// ajenas al formato de mezcla) y devuelve el stream vivo + buffer crudo.
-fn open_capture() -> Result<(cpal::Stream, Arc<Mutex<Vec<f32>>>, usize, u32), AudioError> {
+/// Abre la fuente de captura con SU configuración (WASAPI rechaza tasas ajenas
+/// al formato de mezcla) y devuelve el stream vivo + buffer crudo.
+///
+/// **Loopback (fuente `System`)**: usar el endpoint de *render* como entrada
+/// hace que cpal añada `AUDCLNT_STREAMFLAGS_LOOPBACK` → se captura TODO lo que
+/// suena en los altavoces (YouTube, vídeos, llamadas). En un endpoint de render
+/// el formato válido lo da `default_output_config` (`default_input_config`
+/// rechaza los endpoints de render).
+fn open_capture(
+    source: AudioSource,
+) -> Result<(cpal::Stream, Arc<Mutex<Vec<f32>>>, usize, u32), AudioError> {
     let host = cpal::default_host();
-    let dev = host
-        .default_input_device()
-        .ok_or_else(|| AudioError::Device("sin dispositivo de entrada".into()))?;
-    let supported = dev
-        .default_input_config()
-        .map_err(|e| AudioError::Device(e.to_string()))?;
+    let (dev, supported) = match source {
+        AudioSource::System => {
+            let d = host
+                .default_output_device()
+                .ok_or_else(|| AudioError::Device("sin dispositivo de salida (loopback)".into()))?;
+            let c = d
+                .default_output_config()
+                .map_err(|e| AudioError::Device(e.to_string()))?;
+            (d, c)
+        }
+        AudioSource::Microphone => {
+            let d = host
+                .default_input_device()
+                .ok_or_else(|| AudioError::Device("sin dispositivo de entrada".into()))?;
+            let c = d
+                .default_input_config()
+                .map_err(|e| AudioError::Device(e.to_string()))?;
+            (d, c)
+        }
+    };
     let channels = supported.channels() as usize;
     let rate = supported.sample_rate().0;
     let cfg: cpal::StreamConfig = supported.into();
@@ -521,6 +591,33 @@ mod tests {
     }
 
     #[test]
+    fn audio_source_defaults_to_system_and_parses_aliases() {
+        // El defecto es el audio del sistema: es lo que el usuario espera al
+        // compartir (YouTube, vídeos); el micrófono es opt-in explícito.
+        assert_eq!(AudioSource::default(), AudioSource::System);
+        assert_eq!(AudioSource::parse("system").unwrap(), AudioSource::System);
+        assert_eq!(AudioSource::parse("loopback").unwrap(), AudioSource::System);
+        assert_eq!(AudioSource::parse("MIC").unwrap(), AudioSource::Microphone);
+        assert!(AudioSource::parse("hdmi").is_err());
+        assert_eq!(AudioSource::System.as_str(), "system");
+    }
+
+    #[test]
+    fn rms_reports_silence_and_tone_levels() {
+        assert_eq!(rms_i16(&[]), 0.0);
+        assert_eq!(rms_i16(&[0i16; 960]), 0.0);
+        // Tono a media escala → RMS ≈ amplitud/√2.
+        let tone: Vec<i16> = (0..960)
+            .map(|i| (16_000.0 * (i as f64 * 0.13).sin()) as i16)
+            .collect();
+        let r = rms_i16(&tone);
+        assert!(
+            (0.30..0.40).contains(&r),
+            "RMS del tono fuera de rango: {r:.4}"
+        );
+    }
+
+    #[test]
     fn downmix_averages_channels_and_upmix_duplicates() {
         // Estéreo (1.0, -1.0) → promedio 0.
         let mono = interleaved_to_mono_i16(&[1.0, -1.0, 0.5, 0.5], 2);
@@ -577,7 +674,7 @@ mod tests {
     #[test]
     fn test_capture_emits_full_pcm_frames() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<i16>>(8);
-        let cap = AudioCapture::start(AudioMode::Test, tx).expect("capture");
+        let cap = AudioCapture::start(AudioMode::Test, AudioSource::default(), tx).expect("capture");
         let frame = rx.blocking_recv().expect("frame");
         assert_eq!(frame.len(), FRAME_SAMPLES);
         assert!(frame.iter().any(|&s| s != 0), "el tono no debe ser silencio");
