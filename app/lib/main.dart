@@ -35,6 +35,19 @@ String normalizeTarget(String raw) {
 
 bool looksLikeAlias(String target) => !target.contains(':');
 
+/// Punto del visor → **coordenadas normalizadas 0..65535** del wire (RF-02a).
+///
+/// Independiente de la resolución del vídeo y de la pantalla del anfitrión: con
+/// el mapeo anterior a píxeles de *frame* (v0.6.0-v0.6.1), un vídeo a 720p o
+/// 1080p comprimía el clic al cuadrante superior-izquierdo de la pantalla y el
+/// control remoto dejaba de funcionar (solo funcionaba en nativa).
+(int, int) normalizedPointer(Offset local, Size box) {
+  if (box.width <= 0 || box.height <= 0) return (0, 0);
+  final nx = (local.dx / box.width * 65535).round().clamp(0, 65535);
+  final ny = (local.dy / box.height * 65535).round().clamp(0, 65535);
+  return (nx, ny);
+}
+
 /// Códigos de tecla del wire ARSP (RF-02a) — espejo de `arsp.proto::Key` y de
 /// `anyremote-transport::arsp::input_event_from_wire`. `null` = tecla sin código
 /// propio → se envía como carácter (`ch`).
@@ -410,16 +423,13 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  /// Punto del visor → píxeles del escritorio remoto. El `AspectRatio` usa el
-  /// mismo aspecto que el frame y `RawImage` es `BoxFit.contain` → el mapeo
-  /// local→remoto es lineal y sin letterboxing.
+  /// Punto del visor → coordenadas **normalizadas 0..65535** (ver
+  /// `normalizedPointer`): funciona con cualquier calidad de vídeo.
   void _sendPointer(Offset local, Size box) {
-    final img = _lastImage;
-    if (img == null || box.width <= 0 || box.height <= 0) return;
-    final rx = (local.dx / box.width * img.width).round().clamp(0, img.width - 1);
-    final ry = (local.dy / box.height * img.height).round().clamp(0, img.height - 1);
+    if (box.width <= 0 || box.height <= 0) return;
+    final (nx, ny) = normalizedPointer(local, box);
     _sendInput({
-      'pointer': {'x': rx, 'y': ry, 'absolute': true},
+      'pointer': {'x': nx, 'y': ny, 'absolute': true},
     });
   }
 

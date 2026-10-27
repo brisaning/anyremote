@@ -99,4 +99,27 @@ void main() {
     expect(keyCodeFor(LogicalKeyboardKey.space), isNull);
     expect(keyCodeFor(LogicalKeyboardKey.f5), isNull);
   });
+
+  test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {
+    // Cualquier calidad de vídeo (720p, 1080p, nativa) produce el mismo
+    // resultado para la misma posición relativa (fix v0.6.2: a 720p/1080p el
+    // control remoto se perdía porque las coordenadas iban en píxeles de frame).
+    const box = Size(640, 360);
+    expect(normalizedPointer(Offset.zero, box), (0, 0));
+    expect(normalizedPointer(const Offset(640, 360), box), (65535, 65535));
+
+    final (cx, cy) = normalizedPointer(const Offset(320, 180), box);
+    expect(cx, inInclusiveRange(32760, 32775));
+    expect(cy, inInclusiveRange(32760, 32775));
+
+    // Misma posición relativa en visores de otro tamaño → idéntico valor.
+    final (small, _) = normalizedPointer(const Offset(160, 90), const Size(320, 180));
+    final (big, _) = normalizedPointer(const Offset(640, 360), const Size(1280, 720));
+    expect(small, big);
+
+    // Arrastre fuera del visor → recortado a los bordes (sin crash).
+    expect(normalizedPointer(const Offset(-50, 900), box), (0, 65535));
+    // Caja degenerada → (0,0) sin división por cero.
+    expect(normalizedPointer(Offset.zero, Size.zero), (0, 0));
+  });
 }

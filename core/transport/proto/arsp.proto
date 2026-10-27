@@ -106,6 +106,9 @@ message Key {
 }
 
 message Pointer {
+  // `absolute` = posición normalizada 0..65535 de pantalla (ejes X/Y): el wire
+  // no depende de la resolución del vídeo ni de la del anfitrión (fix v0.6.2:
+  // con píxeles de frame, el control se perdía al ir el vídeo escalado).
   int32 x = 1;
   int32 y = 2;
   bool absolute = 3;

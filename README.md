@@ -10,10 +10,10 @@ _Última actualización: 2026-10-26_
 
 | Campo | Valor |
 |---|---|
-| Versión actual | **v0.6.1** (`anyremote_app.exe` + `anyremoted.exe`) |
+| Versión actual | **v0.6.2** (`anyremote_app.exe` + `anyremoted.exe`) |
 | Ramas | `main` = `f4c9970` (PR #8) · `develop` = `921ef54` (tag `campo-v0.6.1`) |
 | Gates actuales | **Rust 40 suites / 0 fallos** · codec+`vpx` verde · `flutter analyze` limpio · `flutter test` 3/3 |
-| Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · cierre/reanudación · perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** · 🟡 **audio: diagnosticado en campo → loopback v0.6.1 (verificado local, pendiente LAN)** · lentitud diagnosticada → calidad 720p por defecto (v0.6.1) |
+| Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · cierre/reanudación · perfiles (v0.4.0) · **control remoto teclado/ratón (v0.5.0)** · 🟡 audio: loopback v0.6.1 (verificado local, pendiente LAN) · lentitud → 720p por defecto (v0.6.1) · 🟡 **fix: control a 720p/1080p con coordenadas normalizadas (v0.6.2, pendiente verificar)** |
 | PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · **#8 (v0.6.1 campo)** |
 
 ### Requisitos
@@ -22,7 +22,7 @@ _Última actualización: 2026-10-26_
 |---|---|---|
 | RF-01 Sesiones iniciar/aceptar | ✅ | C1 (+C2) `evidence/*` |
 | RF-02a Pantalla + códec | ✅ | C3/C3-bis (VP9 37 fps@720p) + M2 visor |
-| RF-02a Entrada de teclado/ratón en sesión | ✅ (v0.5.0) — denegada por defecto (D-07, `--allow-input` / casilla "Aceptar control remoto") | `evidence/input-session-gate.md` |
+| RF-02a Entrada de teclado/ratón en sesión | ✅ (v0.5.0) — denegada por defecto (D-07); coordenadas **normalizadas 0..65535** desde v0.6.2 → funciona con cualquier calidad de vídeo | `evidence/input-session-gate.md`, `evidence/control-coords-gate.md` |
 | Audio en sesión (capacidad D-05/D-07) | ✅ (v0.6.0 → **v0.6.1**): **loopback (audio del sistema)** por defecto + micrófono opcional, Opus 48 kHz; opt-in con `--audio on` / casilla "Compartir audio" | `evidence/audio-gate.md` |
 | RF-02b Portapapeles | ✅ | C4 (contención de formatos) |
 | RF-02c Archivos | ✅ | C5 + reanudación persistente (v0.3.0) |
