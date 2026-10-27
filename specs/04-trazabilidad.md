@@ -51,7 +51,7 @@
 | C-6 identidad + trust v0.8.0 | RF-03 (D-03) | `identity.key` persistente (mismo `NodeId` entre arranques) · `trusted.ids` con **TOFU** (`peer_trusted=true` en la 2ª sesión, ambos roles) · `session_active` con `peer_trusted` visible en la app | `identidad-v0.8.0` | `evidence/identity-gate.md` |
 | C-7 menores + CI v0.8.1 | RF-02a + RNF | **acuse `InputAck`** (el visor cuenta inyectadas y ve rechazos) · **F1..F12** (30..41) · clippy a 0 + rustfmt del workspace + workflow CI (fmt/clippy/test en windows-latest) | `menores-v0.8.1` | `evidence/menores-gate.md` |
 
-**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) — `main` = `2230df1`.
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) · #14 (identidad) · #15 (menores+CI) — `main` = `99c0f02`.
 
 ## Pendientes (estado actual)
 
