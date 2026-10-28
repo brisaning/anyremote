@@ -52,7 +52,7 @@
 | C-7 menores + CI v0.8.1 | RF-02a + RNF | **acuse `InputAck`** (el visor cuenta inyectadas y ve rechazos) · **F1..F12** (30..41) · clippy a 0 + rustfmt del workspace + workflow CI (fmt/clippy/test en windows-latest) | `menores-v0.8.1` | `evidence/menores-gate.md` |
 | C-8 listener repetidor v0.8.2 | RF-01 (reporte de campo) | **`--max-sessions 0`**: el `bye` de RED del invitado libera la escucha y se vuelve a aceptar · **fix del cuelgue** (lector de stdin en hilo propio: el proceso termina solo) · `bye` por stdin detiene la escucha también sin sesión · estado vuelve a «Escuchando (red)» · resumen sin `Nonems` | `repeat-v0.8.2` | `evidence/listener-repeat-gate.md` |
 
-**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) · #14 (identidad) · #15 (menores+CI) — `main` = `99c0f02`.
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) · #14 (identidad) · #15 (menores+CI) · #16 (docs+CI) · #17 (v0.8.2 listener repetidor) — `main` = `3521b3f`.
 
 ## Pendientes (estado actual)
 
