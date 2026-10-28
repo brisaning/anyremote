@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:anyremote_app/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
@@ -134,6 +136,51 @@ void main() {
     expect(args, contains('--audio-source'));
     expect(args[args.indexOf('--video-size') + 1], '1280x720');
     expect(args[args.indexOf('--max-bitrate') + 1], '3000');
+  });
+
+  testWidgets('C-9: el visor remoto cabe en la ventana (sin desbordes)',
+      (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    // Frame de anfitrión 1280x720 inyectado (misma ruta de render que el
+    // preview real: la tarjeta del visor pasa a estar visible).
+    final rec = ui.PictureRecorder();
+    final canvas = Canvas(rec);
+    canvas.drawRect(const Rect.fromLTWH(0, 0, 1280, 720),
+        Paint()..color = const Color(0xFF102030));
+    final frame = rec.endRecording().toImageSync(1280, 720);
+
+    // 1) Ventana pequeña (800x600, tamaño por defecto del test).
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+    st.debugShowViewerFrame(frame);
+    await tester.pump();
+    expect(tester.takeException(), isNull,
+        reason: 'el frame del anfitrión debe caber sin desbordar el Column');
+    expect(find.text('Visor remoto'), findsOneWidget);
+    expect(find.text('Registro'), findsOneWidget);
+
+    // 2) Maximizada (1600x900): la caja del visor crece con el ancho SIN
+    //    desbordar — regresión del reporte: antes solo se veía la parte
+    //    superior de la pantalla del anfitrión.
+    tester.view.physicalSize = const Size(1600, 900);
+    tester.view.devicePixelRatio = 1.0;
+    await tester.pump();
+    expect(tester.takeException(), isNull,
+        reason: 'sin desbordes al maximizar la ventana');
+    expect(find.text('Visor remoto'), findsOneWidget);
+    expect(find.text('Registro'), findsOneWidget);
+  });
+
+  testWidgets('C-9: ID de este equipo visible y copiable', (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+    st.debugSetLocalNodeId('ONDH6IU4RU');
+    await tester.pump();
+    expect(find.text('ID de este equipo:'), findsOneWidget);
+    expect(find.text('ONDH6IU4RU'), findsOneWidget);
+    expect(find.byTooltip('Copiar ID'), findsOneWidget);
   });
 
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {

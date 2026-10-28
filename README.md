@@ -12,10 +12,10 @@ _Última actualización: 2026-10-26_
 
 | Campo | Valor |
 |---|---|
-| Versión actual | **v0.8.2** (`anyremote_app.exe` + `anyremoted.exe`) |
+| Versión actual | **v0.8.3** (`anyremote_app.exe` + `anyremoted.exe`) |
 | Ramas | `main` = `3521b3f` (PR #17) · `develop` = `4b8b802` (tag `repeat-v0.8.2`) |
-| Gates actuales | **Rust 43 suites / 0 fallos** · **clippy 0 avisos** (`-D warnings`) · **fmt 0 diffs** · `flutter analyze` limpio · `flutter test` 5/5 · CI en `.github/workflows/ci.yml` |
-| Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · **control remoto teclado/ratón (v0.5.0)** · vídeo en pantalla estática fix v0.7.2 · sesión sana con `source=system` (107 frames + `bye`) · **✅ combo «control remoto + micrófono» verificada sin error con v0.7.3** (PR #13) · 🟡 pendiente revalidación audio/720p/Nativa en LAN |
+| Gates actuales | **Rust 44 suites / 0 fallos** · **clippy 0 avisos** (`-D warnings`) · **fmt 0 diffs** · `flutter analyze` limpio · `flutter test` 7/7 · CI en `.github/workflows/ci.yml` |
+| Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · **control remoto teclado/ratón (v0.5.0)** · vídeo en pantalla estática fix v0.7.2 · sesión sana con `source=system` (107 frames + `bye`) · **✅ combo «control remoto + micrófono» verificada sin error con v0.7.3** (PR #13) · **✅ reconexión sin reiniciar la escucha tras cerrar desde el invitado (v0.8.2)** · 🟡 pendiente revalidación audio/720p/Nativa y visor/ID con v0.8.3 |
 | PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (v0.6.2 coords) · #10 (v0.7.0 dinámico) · #11 (v0.7.1 perf) · #12 (v0.7.2 fix vídeo estático) · #13 (v0.7.3 diagnóstico) · #14 (v0.8.0 identidad) · #15 (v0.8.1 menores+CI) · #16 (docs+CI) · **#17 (v0.8.2 listener repetidor)** |
 
 ### Requisitos
@@ -23,12 +23,12 @@ _Última actualización: 2026-10-26_
 | RF | Estado | Ciclo/evidencia |
 |---|---|---|
 | RF-01 Sesiones iniciar/aceptar | ✅ · **v0.8.2 listener repetidor**: al cerrar el invitado la escucha se libera y acepta reconexiones sin reiniciar; el proceso termina solo al detenerse (fix de cuelgue) | C1 (+C2) `evidence/listener-repeat-gate.md` |
-| RF-02a Pantalla + códec | ✅ | C3/C3-bis (VP9 37 fps@720p) + M2 visor |
+| RF-02a Pantalla + códec | ✅ · **visor sin desbordes (v0.8.3)**: la pantalla del anfitrión se ve **completa** a cualquier tamaño de ventana (tarjeta flexible + centrada) | C3/C3-bis (VP9 37 fps@720p) + M2 visor · `evidence/viewer-id-gate.md` |
 | RF-02a Entrada de teclado/ratón en sesión | ✅ (v0.5.0) — D-07 por defecto; coordenadas **normalizadas 0..65535** (v0.6.2); **toggles dinámicos** (v0.7.0); **acuse de inyección** al visor y **F1..F12** (v0.8.1) | `evidence/input-session-gate.md`, `evidence/control-coords-gate.md`, `evidence/dynamic-perms-gate.md`, `evidence/menores-gate.md` |
 | Audio en sesión (capacidad D-05/D-07) | ✅ (v0.6.1 → **v0.7.0**): **loopback (audio del sistema)** + **micrófono** como fuentes (mezclables con `--audio-source system,mic`), Opus 48 kHz; toggles **dinámicos en caliente** | `evidence/audio-gate.md`, `evidence/dynamic-perms-gate.md` |
 | RF-02b Portapapeles | ✅ | C4 (contención de formatos) |
 | RF-02c Archivos | ✅ | C5 + reanudación persistente (v0.3.0) |
-| RF-03 Conexión por ID/dirección + auth | ✅ · **identidad persistente + trust TOFU (v0.8.0)** → mismo `NodeId` entre arranques y `peer_trusted=true` en la 2ª sesión | C2 (ed25519 + binding) · `evidence/identity-gate.md` |
+| RF-03 Conexión por ID/dirección + auth | ✅ · **identidad persistente + trust TOFU (v0.8.0)** → mismo `NodeId` entre arranques y `peer_trusted=true` en la 2ª sesión · **ID visible + copiable y CLI `anyremoted id` (v0.8.3)** (conectar por ID aún pendiente de resolutor) | C2 (ed25519 + binding) · `evidence/identity-gate.md`, `evidence/viewer-id-gate.md` |
 | RF-04 Perfiles | ✅ | C6 + selector en UI (v0.4.0) |
 | RF-05 Registro + diagnóstico | ✅ | C7 (JSONL + SessionReport) |
 | RNF-01..06 | ✅ | C8 (secretos fail-closed, benchmark, auditabilidad) |
@@ -56,6 +56,8 @@ anyremoted listen --bind 0.0.0.0:21118 --video on --video-size 1280x720 --clipbo
 anyremote connect <ip>:21118 --clipboard win [--send-file archivo] [--one-way-files]
 # Perfiles:
 anyremote profiles --add casa,192.168.1.10,21118
+# ID estable de este equipo (v0.8.3):
+anyremote id
 ```
 En la app: las tres casillas **"Control remoto", "Audio del sistema" y
 "Micrófono"** son **dinámicas** — se activan/desactivan **durante la sesión** y el
@@ -65,6 +67,14 @@ anfitrión las aplica en caliente (D-07 en caliente: manda quien comparte). La
 stdin al proceso `connect`; el audio (sistema y/o micrófono, **mezclados** si
 ambos) viaja **Opus 48 kHz mono** hasta el controlador (indicador `audio ✓` /
 `audio: sin señal` en la cabecera del visor según el RMS).
+
+**IDs de equipo (v0.8.3)**: el ID es el *nombre* del equipo (Base32 de 10
+caracteres, estable — `anyremote id` o la fila **«ID de este equipo»** con
+botón de copiar en la tarjeta Conexión). El ID **del anfitrión (remoto)**
+se ve en SU equipo en esa misma fila y, durante la sesión, en **«SESIÓN
+ACTIVA con …»** (con `✓ verificado` si ya se autenticó antes). Hoy el ID
+**identifica pero no resuelve**: la conexión sigue siendo `ip:puerto` o
+perfil (el conector por ID queda pendiente de un resolutor).
 Build: `cargo build --release -p anyremote-daemon --bin anyremoted` · `flutter build windows --release` (ambos artefactos se sirven desde `app/build/windows/x64/runner/Release/`).
 **Requisito de build**: `opus` compila libopus con **CMake** — si hay que recompilar
 (`cargo clean`, nueva máquina), añadir al `PATH` `C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin` (VS Build Tools).

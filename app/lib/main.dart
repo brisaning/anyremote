@@ -190,6 +190,10 @@ class _HomePageState extends State<HomePage> {
   /// Último motivo de rechazo acusado (para no repetirlo en cada evento).
   String _lastInputDenied = '';
 
+  // C-9: ID estable de este equipo (identidad D-03) — visible en la tarjeta
+  // Conexión. Proviene de `anyremoted id` al arrancar o del evento `listening`.
+  String? _localNodeId;
+
   // Hito M2: visor remoto (preview local del daemon controlador).
   Socket? _preview;
   Uint8List _videoBuf = Uint8List(0);
@@ -208,7 +212,36 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _loadLocalId();
     WidgetsBinding.instance.addPostFrameCallback((_) => _refreshProfiles());
+  }
+
+  /// C-9: obtiene el ID estable del equipo (`anyremoted id`, D-03) para
+  /// mostrarlo en la UI sin iniciar la escucha. Silencioso si no hay daemon
+  /// (entonces el ID llega con el evento `listening` al pulsar Escuchar).
+  Future<void> _loadLocalId() async {
+    final daemon = resolveDaemonPath();
+    if (!File(daemon).existsSync()) return;
+    try {
+      final res = await Process.run(daemon, ['id']);
+      final out = (res.stdout ?? '').toString().trim();
+      if (res.exitCode == 0 && RegExp(r'^[A-Z2-7]{10}$').hasMatch(out)) {
+        if (mounted) setState(() => _localNodeId = out);
+      }
+    } catch (_) {
+      // sin daemon no hay ID — se mostrará al iniciar la escucha.
+    }
+  }
+
+  /// Costura de test (C-9): inyecta un frame en el visor para verificar el
+  /// layout sin red real.
+  void debugShowViewerFrame(ui.Image image) {
+    setState(() => _lastImage = image);
+  }
+
+  /// Costura de test (C-9): fija el ID local mostrado en la tarjeta Conexión.
+  void debugSetLocalNodeId(String id) {
+    setState(() => _localNodeId = id);
   }
 
   /// Carga los aliases de perfil desde el daemon (`profiles --list`, JSONL).
@@ -300,6 +333,11 @@ class _HomePageState extends State<HomePage> {
         switch (kind) {
           case 'listening':
             _append('[daemon] anyremoted v${ev['daemon'] ?? '?'} escuchando en ${ev['bind']} (node ${ev['node_id']})');
+            // C-9: el evento trae el mismo ID estable que muestra `anyremoted id`.
+            final node = ev['node_id'];
+            if (node is String && node.isNotEmpty) {
+              setState(() => _localNodeId = node);
+            }
             if (_daemon == null) _setStatus('Escuchando (red)', Colors.teal);
             _showLanIps();
           case 'connecting':
@@ -742,6 +780,14 @@ class _HomePageState extends State<HomePage> {
       _append('[ui] indica un destino host:puerto o alias de perfil');
       return;
     }
+    // C-9: un ID (10 chars Base32) todavía NO resuelve a dirección — conectar
+    // por ID requiere un resolutor (pendiente en specs). Se explica en lugar
+    // de fallar como «perfil no encontrado».
+    if (RegExp(r'^[A-Z2-7]{10}$').hasMatch(target.toUpperCase())) {
+      _append('[ui] por ID aún no se puede conectar (resolutor pendiente): '
+          'usa la dirección del anfitrión (ip:puerto) — el ID identifica al equipo');
+      return;
+    }
     if (_daemon != null) {
       _append('[ui] ya hay una sesión en curso — pulsa Detener primero');
       return;
@@ -909,6 +955,48 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ],
                     ),
+                    const SizedBox(height: 6),
+                    // C-9: el ID del equipo (identidad estable D-03) — visible y
+                    // copiable. El ID del REMOTO aparece en la sesión/registro.
+                    Row(
+                      children: [
+                        const Text('ID de este equipo:',
+                            style: TextStyle(
+                                fontSize: 12, fontWeight: FontWeight.w600)),
+                        const SizedBox(width: 8),
+                        SelectableText(
+                          _localNodeId ?? '—',
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontFamily: 'monospace',
+                              letterSpacing: 1.2),
+                        ),
+                        const SizedBox(width: 4),
+                        IconButton(
+                          tooltip: 'Copiar ID',
+                          icon: const Icon(Icons.copy, size: 15),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 28, minHeight: 28),
+                          onPressed: _localNodeId == null
+                              ? null
+                              : () {
+                                  Clipboard.setData(
+                                      ClipboardData(text: _localNodeId!));
+                                  _append('[ui] ID $_localNodeId copiado');
+                                },
+                        ),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text(
+                            'el ID del anfitrión aparece en la sesión como «SESIÓN ACTIVA con …»',
+                            style:
+                                TextStyle(fontSize: 11, color: Colors.grey),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 4),
                     // C-2: los tres toggles son DINÁMICOS — se aplican en
                     // caliente durante la sesión (el anfitrión manda sobre lo
@@ -1013,7 +1101,13 @@ class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 12),
             if (_lastImage != null || _preview != null)
-              Card(
+              // C-9: tarjeta FLEXIBLE — antes era rígida: la caja del visor
+              // derivaba su ALTO del ancho de la ventana (AspectRatio) y
+              // desbordaba el Column; al maximizar solo se veía la parte
+              // superior de la pantalla del anfitrión.
+              Expanded(
+                flex: 3,
+                child: Card(
                 child: Padding(
                   padding: const EdgeInsets.all(12),
                   child: Column(
@@ -1042,7 +1136,12 @@ class _HomePageState extends State<HomePage> {
                         ],
                       ),
                       const SizedBox(height: 8),
-                      AspectRatio(
+                      // C-9: el marco reparte el alto restante de la tarjeta
+                      // y se centra → la pantalla del anfitrión se ve COMPLETA
+                      // a cualquier tamaño de ventana.
+                      Expanded(
+                        child: Center(
+                          child: AspectRatio(
                         aspectRatio: _lastImage != null
                             ? _lastImage!.width / _lastImage!.height
                             : 16 / 9,
@@ -1096,9 +1195,12 @@ class _HomePageState extends State<HomePage> {
                                     style: TextStyle(color: Colors.grey)),
                               ),
                       ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
+              ),
               ),
             const SizedBox(height: 12),
             Expanded(
