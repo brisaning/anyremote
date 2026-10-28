@@ -45,8 +45,9 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-5 diagnóstico del anfitrión v0.7.3 | ✅ gate verde · ✅ **validada en campo (prueba sin error)** | `diag-host-v0.7.3` · `evidence/host-debug-gate.md` |
 | C-6 identidad persistente + trust v0.8.0 | ✅ gate verde · 🟡 pendiente campo | `identidad-v0.8.0` · `evidence/identity-gate.md` |
 | C-7 menores + CI v0.8.1 | ✅ gate verde (acuse, F1..F12, clippy 0/fmt 0/CI) | `menores-v0.8.1` · `evidence/menores-gate.md` |
-| C-8 fix de campo: listener repetidor v0.8.2 | ✅ gate verde · 🟡 pendiente campo (reconexión real) | `repeat-v0.8.2` · `evidence/listener-repeat-gate.md` |
-| **Pendientes** | 🟡 re-verificación en LAN · rendimiento medio/largo (HW, UDP, red — §7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
+| C-8 fix de campo: listener repetidor v0.8.2 | ✅ gate verde · ✅ **validada en campo** («Funciona correctamente») | `repeat-v0.8.2` · `evidence/listener-repeat-gate.md` |
+| C-9 visor completo + ID visible v0.8.3 | ✅ gate verde (con control negativo de overflow) · 🟡 pendiente campo | `visor-id-v0.8.3` · `evidence/viewer-id-gate.md` |
+| **Pendientes** | 🟡 campo v0.8.3 (visor+ID) · reconexión v0.8.2 ✅ · conexión por ID (resolutor) · rendimiento medio/largo (HW, UDP, red — §7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 

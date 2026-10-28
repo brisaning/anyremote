@@ -4,6 +4,7 @@
 //!   anyremoted listen  [--bind 127.0.0.1:21118] [--clipboard off|memory|win] [--grant keyboard,mouse] [--allow-input] [--max-secs 600] [--max-sessions 1]
 //!   anyremoted connect <host:puerto> | --profile <alias>  [--clipboard ...] [--grant ...] [--send-file <ruta>] [--max-secs ...]
 //!   anyremoted profiles [--config-dir <dir>] [--list] [--add <alias,host,puerto>] [--remove <alias>]
+//!   anyremoted id [--config-dir <dir>]     (ID estable de este equipo, D-03)
 //!
 //! Salida: eventos JSONL por stdout (para UI) + log de auditoría en <config>/audit/.
 //! stdin: en `connect`, líneas `{"input":{key|pointer|button}}` → eventos de
@@ -269,6 +270,19 @@ async fn main() {
         "profiles" => {
             std::process::exit(run_profiles(&args, &cfg_dir));
         }
+        "id" => {
+            // C-9: identidad estable del equipo (D-03) — la app y los CLI la
+            // leen aquí para mostrar el ID SIN iniciar la escucha. Carga (o
+            // genera la primera vez) el mismo `identity.key` que usa `listen`.
+            match anyremote_identity::Identity::load_or_generate(&cfg_dir) {
+                Ok(id) => println!("{}", id.node_id()),
+                Err(e) => {
+                    eprintln!("identidad: {e:?}");
+                    std::process::exit(1);
+                }
+            }
+            std::process::exit(0);
+        }
         _ => {
             eprintln!(
                 "anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio"
@@ -276,6 +290,7 @@ async fn main() {
             eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
+            eprintln!("  anyremoted id                                       (ID estable de este equipo, D-03)");
             std::process::exit(2);
         }
     };
