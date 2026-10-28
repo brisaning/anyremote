@@ -16,7 +16,7 @@
 
 |RF|Estado|Trazabilidad|
 |---|---|---|
-|RF-01 Sesiones|✅ implementado (C1+C2)|`specs/04`|
+|RF-01 Sesiones|✅ implementado (C1+C2) · **v0.8.2 listener repetidor** (cierre del invitado → la escucha se libera y acepta reconexiones; el proceso termina al detenerse)|`specs/04`, `evidence/listener-repeat-gate.md`|
 |RF-02a Pantalla/códec|✅ VP9 + visor (C3/C3-bis/M2)|`evidence/c3*-gate`, `m2-video-gate`|
 |RF-02a Entrada (teclado/ratón)|✅ v0.5.0 cableado en la sesión (D-07 por defecto) · **validada en campo 2026-10-27** · v0.6.2 coordenadas normalizadas · v0.7.0 toggles dinámicos · **v0.8.1 acuse de inyección + F1..F12**|`evidence/input-session-gate.md`, `evidence/menores-gate.md`|
 |RF-02b Portapapeles|✅ (C4)|`c4-gate`|
@@ -25,7 +25,7 @@
 |RF-04 Perfiles|✅ (C6 + UI v0.4.0)|`c6-gate`, `ui-batch-gate`|
 |RF-05 Registro|✅ (C7)|`c7-gate`|
 |RF-06 Trazabilidad|✅ (fases 0–6 + evidencia versionada)|`evidence/`|
-|Pendientes globales|Re-verificación LAN · rendimiento medio/largo (HW/UDP/red — specs/02 §7) · resampler (único menor)|README § Pendientes|
+|Pendientes globales|Re-verificación LAN **v0.8.2** (reconexión tras cerrar el invitado) · rendimiento medio/largo (HW/UDP/red — specs/02 §7) · resampler (único menor)|README § Pendientes|
 
 ---
 

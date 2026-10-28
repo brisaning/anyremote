@@ -12,9 +12,9 @@ _Última actualización: 2026-10-26_
 
 | Campo | Valor |
 |---|---|
-| Versión actual | **v0.8.1** (`anyremote_app.exe` + `anyremoted.exe`) |
+| Versión actual | **v0.8.2** (`anyremote_app.exe` + `anyremoted.exe`) |
 | Ramas | `main` = `99c0f02` (PR #15) · `develop` = `a742ac8` (tags `identidad-v0.8.0`, `menores-v0.8.1`) |
-| Gates actuales | **Rust 42 suites / 0 fallos** · **clippy 0 avisos** (`-D warnings`) · **fmt 0 diffs** · `flutter analyze` limpio · `flutter test` 4/4 · CI en `.github/workflows/ci.yml` |
+| Gates actuales | **Rust 43 suites / 0 fallos** · **clippy 0 avisos** (`-D warnings`) · **fmt 0 diffs** · `flutter analyze` limpio · `flutter test` 5/5 · CI en `.github/workflows/ci.yml` |
 | Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · **control remoto teclado/ratón (v0.5.0)** · vídeo en pantalla estática fix v0.7.2 · sesión sana con `source=system` (107 frames + `bye`) · **✅ combo «control remoto + micrófono» verificada sin error con v0.7.3** (PR #13) · 🟡 pendiente revalidación audio/720p/Nativa en LAN |
 | PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (v0.6.2 coords) · #10 (v0.7.0 dinámico) · #11 (v0.7.1 perf) · #12 (v0.7.2 fix vídeo estático) · #13 (v0.7.3 diagnóstico) · #14 (v0.8.0 identidad) · **#15 (v0.8.1 menores+CI)** |
 
@@ -22,7 +22,7 @@ _Última actualización: 2026-10-26_
 
 | RF | Estado | Ciclo/evidencia |
 |---|---|---|
-| RF-01 Sesiones iniciar/aceptar | ✅ | C1 (+C2) `evidence/*` |
+| RF-01 Sesiones iniciar/aceptar | ✅ · **v0.8.2 listener repetidor**: al cerrar el invitado la escucha se libera y acepta reconexiones sin reiniciar; el proceso termina solo al detenerse (fix de cuelgue) | C1 (+C2) `evidence/listener-repeat-gate.md` |
 | RF-02a Pantalla + códec | ✅ | C3/C3-bis (VP9 37 fps@720p) + M2 visor |
 | RF-02a Entrada de teclado/ratón en sesión | ✅ (v0.5.0) — D-07 por defecto; coordenadas **normalizadas 0..65535** (v0.6.2); **toggles dinámicos** (v0.7.0); **acuse de inyección** al visor y **F1..F12** (v0.8.1) | `evidence/input-session-gate.md`, `evidence/control-coords-gate.md`, `evidence/dynamic-perms-gate.md`, `evidence/menores-gate.md` |
 | Audio en sesión (capacidad D-05/D-07) | ✅ (v0.6.1 → **v0.7.0**): **loopback (audio del sistema)** + **micrófono** como fuentes (mezclables con `--audio-source system,mic`), Opus 48 kHz; toggles **dinámicos en caliente** | `evidence/audio-gate.md`, `evidence/dynamic-perms-gate.md` |
