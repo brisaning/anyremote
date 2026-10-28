@@ -117,6 +117,11 @@ pub struct DaemonConfig {
     /// connect: archivo a enviar tras establecer la sesión (C5).
     pub send_file: Option<PathBuf>,
     pub max_secs: u64,
+    /// listen: sesiones completas aceptadas antes de terminar (v0.8.2).
+    /// **1 = one-shot** (comportamiento histórico); `0` = ilimitado: tras
+    /// cerrar cada sesión el listener vuelve a `accept()` y su vida ya no la
+    /// limita `max_secs` (solo `bye`/señal) — es el modo «Escuchar (red)».
+    pub max_sessions: usize,
     /// Directorio de configuración (cert-store + audit/) — por defecto el de perfiles.
     pub config_dir: PathBuf,
     pub on_event: Option<EventSink>,
@@ -157,6 +162,7 @@ impl DaemonConfig {
             clipboard_seed: None,
             send_file: None,
             max_secs: 600,
+            max_sessions: 1,
             config_dir,
             on_event: None,
             video: VideoMode::Off,
@@ -446,12 +452,28 @@ fn build_bye_source(cfg: &mut DaemonConfig) -> tokio::sync::mpsc::Receiver<Strin
         return rx;
     }
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
-    tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        let mut lines = BufReader::new(tokio::io::stdin()).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if tx.send(line).await.is_err() {
-                break;
+    // Hilo propio (v0.8.2): la lectura bloqueante de stdin vive en un hilo
+    // NORMAL, no en el bloqueo de tokio. Al salir de `main` el runtime se
+    // derrumba esperando las tareas bloqueantes en curso; con el lector de
+    // stdin dentro de ese pool el proceso quedaba **colgado** tras cerrar la
+    // sesión (observado en campo: `sesión cerrada: bye` y el proceso no salía
+    // hasta que la app escribía otro `bye` 31 s después). Un hilo suelto no
+    // retiene el runtime: el proceso termina y el hilo muere con él.
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        let mut reader = stdin.lock();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break, // EOF/error → se cierra el canal
+                Ok(_) => {
+                    let text = line.trim_end_matches(['\r', '\n']).to_string();
+                    if tx.blocking_send(text).is_err() {
+                        break; // receptor fuera: nadie escucha ya
+                    }
+                }
             }
         }
     });
@@ -610,6 +632,34 @@ enum Established {
     Denied,
 }
 
+/// Control de stdin compartido entre el bucle de aceptación del listener y
+/// cada sesión (v0.8.2): las líneas no se pierden al alternar entre «esperar
+/// cliente» y «sesión en curso».
+struct StdinCtl {
+    rx: tokio::sync::mpsc::Receiver<String>,
+    /// JSON `{"perm":...}` recibidos sin sesión → se aplican al abrirla (C-2).
+    pending: Vec<String>,
+    /// La sesión se cerró por stdin/señal → el listener debe detenerse también.
+    stop: bool,
+}
+
+/// Resultado de la espera idle del listener (aceptar / stdin / señal / tiempo).
+enum Idle {
+    Accept(TcpStream, std::net::SocketAddr),
+    /// `{"perm"...}` encolado para la próxima sesión.
+    Queue(String),
+    /// Línea de stdin (bye) → detener la escucha.
+    Stop(String),
+    /// stdin cerrado → se deja de vigilar (no detiene).
+    Eof,
+    /// `--max-secs` del listener agotado.
+    Timeout,
+    /// ctrl+c → detener.
+    Signal,
+    /// No se pudo instalar el manejador de ctrl+c → se ignora (no detiene).
+    SignalDead,
+}
+
 /// Handshake con UN cliente ya aceptado: bootstrap → TLS → auth (C2) → permisos (C1).
 /// Todo fallo aquí es del cliente (el caller continúa aceptando).
 #[allow(clippy::too_many_arguments)] // capas de sesión: cada parámetro tiene dueño claro.
@@ -703,8 +753,9 @@ async fn establish_controlled(
 ///
 /// **Resiliencia (prueba cross-device)**: un cliente que falle en cualquier etapa
 /// (TLS, auth, secuencia, silencio >15 s) se audita como `client_failed` y el
-/// listener **sigue aceptando**; solo termina con una sesión completada o al
-/// agotar `--max-secs` de vida del listener.
+/// listener **sigue aceptando**. Termina al completar `--max-sessions` sesiones
+/// (1 por defecto = one-shot; `0` = ilimitado → **vuelve a aceptar tras cada
+/// sesión**, v0.8.2), con `bye`/señal por stdin o al agotar `--max-secs`.
 pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError> {
     // D-03 (v0.8.0): identidad persistida → el NodeId es estable por equipo.
     let identity = Identity::load_or_generate(&cfg.config_dir)
@@ -715,8 +766,13 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         sink: cfg.on_event.take(),
     };
     let mut log = SessionLog::open(&cfg.config_dir.join("audit"))?;
-    let mut report = SessionReport::new(&session_id);
     let bye_rx = build_bye_source(&mut cfg);
+    // stdin compartido entre el bucle de aceptación y cada sesión (v0.8.2).
+    let mut ctl = StdinCtl {
+        rx: bye_rx,
+        pending: Vec::new(),
+        stop: false,
+    };
 
     let (cert, key) = anyremote_transport::cert_store::ensure(&cfg.config_dir)?;
     let srv_cfg = anyremote_transport::server_config_from(cert, key)?;
@@ -733,9 +789,19 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
     ));
 
     let acceptor = TlsAcceptor::from(Arc::new(srv_cfg));
-    let listen_deadline =
-        tokio::time::Instant::now() + std::time::Duration::from_secs(cfg.max_secs);
+    // Vida del listener: `--max-secs` (histórico) salvo `--max-sessions 0`
+    // (v0.8.2, modo de la app): entonces solo lo detiene `bye`/señal.
+    let listen_deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_secs(if cfg.max_sessions == 0 {
+            10 * 365 * 24 * 3600 // ~10 años: hasta que el usuario pare la escucha
+        } else {
+            cfg.max_secs
+        });
 
+    let mut sessions_done: usize = 0;
+    let mut last: Option<RunOutcome> = None;
+    let mut idle_bye_done = false;
+    let mut signal_dead = false;
     loop {
         let remaining = listen_deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
@@ -748,14 +814,60 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                 "closed",
                 serde_json::json!({"reason": "listen_timeout"}),
             ));
-            report.finish();
             break;
         }
 
-        let (tcp, peer) = match tokio::time::timeout(remaining, listener.accept()).await {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => return Err(DaemonError::Io(e.to_string())), // fallo del socket local
-            Err(_idle) => {
+        // Espera activa (v0.8.2): además de aceptar se vigila stdin (`bye`
+        // para detener la escucha también sin sesión) y la señal de consola.
+        let idle = tokio::select! {
+            r = tokio::time::timeout(remaining, listener.accept()) => match r {
+                Ok(Ok((tcp, peer))) => Idle::Accept(tcp, peer),
+                Ok(Err(e)) => return Err(DaemonError::Io(e.to_string())), // fallo del socket local
+                Err(_elapsed) => Idle::Timeout,
+            },
+            line = ctl.rx.recv(), if !idle_bye_done => match line {
+                Some(l) if l.trim_start().starts_with('{') => Idle::Queue(l),
+                Some(l) => Idle::Stop(if l.trim().is_empty() { "stdin".to_string() } else { l }),
+                None => Idle::Eof, // stdin cerrado: se deja de vigilar
+            },
+            sig = tokio::signal::ctrl_c(), if !signal_dead => match sig {
+                Ok(()) => Idle::Signal,
+                Err(_) => Idle::SignalDead, // sin consola: no debe cortar la escucha
+            },
+        };
+        let (tcp, peer) = match idle {
+            Idle::Queue(line) => {
+                // `{"perm"...}` sin sesión → se aplica al abrirla (C-2).
+                ctl.pending.push(line);
+                continue;
+            }
+            Idle::Eof => {
+                idle_bye_done = true;
+                continue;
+            }
+            Idle::SignalDead => {
+                signal_dead = true;
+                continue;
+            }
+            Idle::Stop(reason) => {
+                log.record(
+                    AuditEventKind::Disconnected,
+                    &session_id,
+                    serde_json::json!({"reason": reason, "role":"listener"}),
+                )?;
+                emit.emit(ev("closed", serde_json::json!({"reason": reason})));
+                break;
+            }
+            Idle::Signal => {
+                log.record(
+                    AuditEventKind::Disconnected,
+                    &session_id,
+                    serde_json::json!({"reason":"signal","role":"listener"}),
+                )?;
+                emit.emit(ev("closed", serde_json::json!({"reason": "signal"})));
+                break;
+            }
+            Idle::Timeout => {
                 log.record(
                     AuditEventKind::Disconnected,
                     &session_id,
@@ -765,9 +877,9 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                     "closed",
                     serde_json::json!({"reason": "listen_timeout"}),
                 ));
-                report.finish();
                 break;
             }
+            Idle::Accept(tcp, peer) => (tcp, peer),
         };
 
         let attempt = tokio::time::timeout(
@@ -787,8 +899,11 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
 
         match attempt {
             Ok(Ok(Established::Active(mut ch, granted))) => {
-                // Errores de sesión en curso → cierre limpio auditable (no matan el listener como proceso con pánico).
-                return match active_controlled(
+                // Errores de sesión en curso → cierre limpio auditable (no matan
+                // el listener como proceso con pánico). Informe POR sesión
+                // (v0.8.2): el listener repetidor acumula varias sesiones.
+                let mut report = SessionReport::new(&session_id);
+                let outcome = match active_controlled(
                     &mut ch,
                     &mut log,
                     &mut report,
@@ -796,11 +911,11 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                     &cfg,
                     &session_id,
                     &granted,
-                    bye_rx,
+                    &mut ctl,
                 )
                 .await
                 {
-                    Ok(o) => Ok(o),
+                    Ok(o) => o,
                     Err(e) => {
                         log.record(
                             AuditEventKind::Error,
@@ -817,13 +932,27 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                             &session_id,
                             report.disconnect_event(),
                         )?;
-                        Ok(RunOutcome {
+                        RunOutcome {
                             report,
-                            events: emit.events,
+                            events: Vec::new(),
                             clipboard_final: None,
-                        })
+                        }
                     }
                 };
+                sessions_done += 1;
+                // ¿Sigue escuchando? Solo si NO se pidió detener (bye/señal
+                // desde stdin) y quedan sesiones (`0` = ilimitadas). El `bye`
+                // que llega por la RED (el invitado cierra) NO detiene: ése es
+                // el fix del reporte de campo.
+                if !ctl.stop && (cfg.max_sessions == 0 || sessions_done < cfg.max_sessions) {
+                    last = Some(outcome);
+                    continue;
+                }
+                return Ok(RunOutcome {
+                    report: outcome.report,
+                    events: emit.events,
+                    clipboard_final: outcome.clipboard_final,
+                });
             }
             Ok(Ok(Established::Denied)) => {
                 // Cliente descartado tras auditoría → sigue escuchando.
@@ -857,12 +986,21 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         }
     }
 
-    log.record(
-        AuditEventKind::Disconnected,
-        &session_id,
-        report.disconnect_event(),
-    )?;
-    let clipboard_final = None;
+    // Si hubo sesiones, cada una ya registró su `disconnected`; sin sesiones
+    // (timeout/bye del listener) se registra el cierre del propio listener.
+    if last.is_none() {
+        let mut report = SessionReport::new(&session_id);
+        report.finish();
+        log.record(
+            AuditEventKind::Disconnected,
+            &session_id,
+            report.disconnect_event(),
+        )?;
+    }
+    let clipboard_final = last.as_ref().and_then(|o| o.clipboard_final.clone());
+    let report = last
+        .map(|o| o.report)
+        .unwrap_or_else(|| SessionReport::new(&session_id));
     Ok(RunOutcome {
         report,
         events: emit.events,
@@ -915,7 +1053,7 @@ async fn active_controlled(
     cfg: &DaemonConfig,
     session_id: &str,
     granted: &[String],
-    mut bye_rx: tokio::sync::mpsc::Receiver<String>,
+    ctl: &mut StdinCtl,
 ) -> Result<RunOutcome, DaemonError> {
     let mut engine = Engine::new(make_clipboard(cfg)?);
     let mut files =
@@ -946,7 +1084,13 @@ async fn active_controlled(
     // listener; se aplica ANTES del primer evento de la sesión (sin carrera
     // con la primera entrada que llegue del controlador).
     let mut pending_bye: Option<String> = None;
-    while let Ok(line) = bye_rx.try_recv() {
+    // Primero lo encolado mientras no había sesión (permisos de la UI) y
+    // después lo que haya llegado mientras se establecía ésta (v0.8.2).
+    let mut queued: Vec<String> = std::mem::take(&mut ctl.pending);
+    while let Ok(line) = ctl.rx.try_recv() {
+        queued.push(line);
+    }
+    for line in queued {
         match parse_perm_line(&line) {
             Ok(Some(perm)) => {
                 perms.apply(
@@ -1012,6 +1156,9 @@ async fn active_controlled(
         // Cierre encolado antes de la sesión (p. ej. `bye` escrito al arrancar
         // el listener): se cumple al iniciar ésta.
         if let Some(reason) = pending_bye.take() {
+            // Cierre pedido por stdin (bye) → además de cerrar la sesión, el
+            // listener se detiene (v0.8.2): «Detener listen» es total.
+            ctl.stop = true;
             let reason = if reason.trim().is_empty() {
                 "stdin".to_string()
             } else {
@@ -1282,7 +1429,7 @@ async fn active_controlled(
                     }
                 }
             }
-            line = bye_rx.recv(), if !bye_done => {
+            line = ctl.rx.recv(), if !bye_done => {
                 let Some(line) = line else { bye_done = true; continue; };
                 // C-2: comandos dinámicos de permisos del anfitrión (stdin de la
                 // UI) → aplicados en caliente sin reconectar.
@@ -1300,6 +1447,10 @@ async fn active_controlled(
                         }
                     }
                 }
+                // Cierre por stdin (bye) → la sesión termina Y el listener se
+                // detiene también (v0.8.2). El `bye` que llega por la RED no
+                // pasa por aquí: ese caso vuelve a aceptar.
+                ctl.stop = true;
                 let reason = if line.trim().is_empty() { "stdin".to_string() } else { line };
                 let _ = ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: reason.clone() })).await;
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await; // gracia de cierre
@@ -1309,6 +1460,7 @@ async fn active_controlled(
                 break;
             }
             _ = tokio::signal::ctrl_c() => {
+                ctl.stop = true; // ctrl+c durante la sesión → parar también
                 let _ = ch.send(proto::envelope::Payload::Bye(proto::Bye { reason: "signal".into() })).await;
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 log.record(AuditEventKind::Disconnected, session_id,

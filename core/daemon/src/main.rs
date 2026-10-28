@@ -1,13 +1,16 @@
 //! `anyremoted` — daemon de anyremote (integración de los ciclos S0–C8).
 //!
 //! Uso:
-//!   anyremoted listen  [--bind 127.0.0.1:21118] [--clipboard off|memory|win] [--grant keyboard,mouse] [--allow-input] [--max-secs 600]
+//!   anyremoted listen  [--bind 127.0.0.1:21118] [--clipboard off|memory|win] [--grant keyboard,mouse] [--allow-input] [--max-secs 600] [--max-sessions 1]
 //!   anyremoted connect <host:puerto> | --profile <alias>  [--clipboard ...] [--grant ...] [--send-file <ruta>] [--max-secs ...]
 //!   anyremoted profiles [--config-dir <dir>] [--list] [--add <alias,host,puerto>] [--remove <alias>]
 //!
 //! Salida: eventos JSONL por stdout (para UI) + log de auditoría en <config>/audit/.
-//! stdin (connect): líneas `{"input":{key|pointer|button}}` → eventos de entrada
-//! reenviados al controlado (RF-02a) y `bye` para cerrar la sesión.
+//! stdin: en `connect`, líneas `{"input":{key|pointer|button}}` → eventos de
+//! entrada reenviados al controlado (RF-02a) y `bye` para cerrar la sesión; en
+//! `listen`, `{"perm":...}` (toggles D-07) y `bye` para detener la escucha
+//! (v0.8.2: con `--max-sessions 0` el listener vuelve a aceptar tras cada
+//! sesión y solo `bye`/señal lo detiene).
 
 use std::path::{Path, PathBuf};
 
@@ -155,6 +158,12 @@ async fn main() {
             if let Some(v) = flag_value(&args, "--max-secs") {
                 cfg.max_secs = v.parse().unwrap_or(600);
             }
+            // v0.8.2: sesiones que acepta el listener — 1 (one-shot, histórico)
+            // o 0 = ilimitado: vuelve a aceptar tras cerrar cada sesión (la app
+            // «Escuchar (red)» pasa 0 para permitir reconexiones).
+            if let Some(v) = flag_value(&args, "--max-sessions") {
+                cfg.max_sessions = v.parse().unwrap_or(1);
+            }
             // Hito M2: flags de vídeo (solo tiene efecto en listen).
             if let Some(v) = flag_value(&args, "--video") {
                 cfg.video = VideoMode::parse(&v).unwrap_or_else(|e| {
@@ -264,7 +273,7 @@ async fn main() {
             eprintln!(
                 "anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio"
             );
-            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n]");
+            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             std::process::exit(2);
@@ -274,9 +283,12 @@ async fn main() {
     match result {
         Ok(out) => {
             eprintln!(
-                "sesión cerrada: heartbeats={} rtt_min={:?}ms archivos={} bytes_sent={}",
+                "sesión cerrada: heartbeats={} rtt_min={} archivos={} bytes_sent={}",
                 out.report.heartbeats_ok,
-                out.report.rtt_min_ms,
+                out.report
+                    .rtt_min_ms
+                    .map(|v| format!("{v}ms"))
+                    .unwrap_or_else(|| "-".into()),
                 out.report.files_transferred,
                 out.report.bytes_sent
             );

@@ -119,6 +119,23 @@ void main() {
     expect(keyCodeFor(LogicalKeyboardKey.printScreen), isNull);
   });
 
+  test('buildListenArgs: el listener de la app es repetidor (v0.8.2)', () {
+    // Regresión del reporte de campo: al cerrar la sesión desde el invitado el
+    // anfitrión debe seguir aceptando reconexiones → la app pasa
+    // `--max-sessions 0` (escucha ilimitada hasta «Detener listen»).
+    final args = buildListenArgs(size: '1280x720', kbps: 3000);
+    expect(args.first, 'listen');
+    final i = args.indexOf('--max-sessions');
+    expect(i, greaterThan(0), reason: 'la app debe pedir escucha repetidora');
+    expect(args[i + 1], '0', reason: '0 = ilimitado: vuelve a aceptar tras cada sesión');
+
+    // El resto de la configuración de campo no cambia.
+    expect(args, contains('--allow-input'));
+    expect(args, contains('--audio-source'));
+    expect(args[args.indexOf('--video-size') + 1], '1280x720');
+    expect(args[args.indexOf('--max-bitrate') + 1], '3000');
+  });
+
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {
     // Cualquier calidad de vídeo (720p, 1080p, nativa) produce el mismo
     // resultado para la misma posición relativa (fix v0.6.2: a 720p/1080p el

@@ -82,6 +82,32 @@ int? keyCodeFor(LogicalKeyboardKey k) {
   return null;
 }
 
+/// Argumentos de `anyremoted listen` (extraídos para testearlos).
+///
+/// v0.8.2: **`--max-sessions 0`** hace el listener *repetidor*: tras cerrar
+/// una sesión (p. ej. el invitado pulsa «Detener») vuelve a `accept()` en
+/// lugar de terminar — antes el proceso moría (y de paso se colgaba) y el
+/// estado «Escuchar (red)» quedaba activo sin aceptar reconexiones.
+List<String> buildListenArgs({required String size, required int kbps}) => [
+      'listen',
+      '--bind', '0.0.0.0:21118',
+      '--clipboard', 'win',
+      // M2: el escuchador comparte SU pantalla por defecto (sino no hay qué ver).
+      '--video', 'on',
+      '--video-size', size,
+      '--video-fps', '15',
+      '--max-bitrate', '$kbps',
+      '--codec', 'vp9',
+      // C-2: la CAPACIDAD está siempre disponible; el estado real lo fija
+      // `{"perm":...}` (se envía ya y en cada cambio de casilla → los
+      // toggles son dinámicos durante la sesión, D-07 en caliente).
+      '--allow-input',
+      '--audio', 'on',
+      '--audio-source', 'system,mic',
+      // v0.8.2: escucha repetidora (ver doc de esta función).
+      '--max-sessions', '0',
+    ];
+
 /// Ubica `anyremoted.exe`: env ANYREMOTE_DAEMON (override) o junto al ejecutable.
 String resolveDaemonPath() {
   final override = Platform.environment['ANYREMOTE_DAEMON'];
@@ -368,11 +394,18 @@ class _HomePageState extends State<HomePage> {
             _append('[daemon] audio desactivado en esta sesión: ${ev['detail']}');
           case 'closed':
             _append('[daemon] sesión cerrada: ${ev['reason']}');
-            _setStatus('Desconectado', Colors.grey);
             _sessionActive = false;
             _heldButton = null;
             _heldChars.clear();
             _audioHint = '';
+            // v0.8.2: con el listener repetidor, cerrar una sesión (p. ej. el
+            // invitado pulsa «Detener») vuelve a «Escuchando (red)»: sigue
+            // aceptando reconexiones. Sin listener → Desconectado.
+            if (isListener && _listener != null) {
+              _setStatus('Escuchando (red)', Colors.teal);
+            } else {
+              _setStatus('Desconectado', Colors.grey);
+            }
           case 'error':
             _append('[daemon] error: ${ev['detail']}');
             final detail = '${ev['detail']}'.toLowerCase();
@@ -427,23 +460,10 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     try {
-      final args = <String>[
-        'listen',
-        '--bind', '0.0.0.0:21118',
-        '--clipboard', 'win',
-        // M2: el escuchador comparte SU pantalla por defecto (sino no hay qué ver).
-        '--video', 'on',
-        '--video-size', _qualities[_videoQuality] ?? '1280x720',
-        '--video-fps', '15',
-        '--max-bitrate', '${_qualityKbps[_videoQuality] ?? 3000}',
-        '--codec', 'vp9',
-        // C-2: la CAPACIDAD está siempre disponible; el estado real lo fija
-        // `{"perm":...}` (se envía ya y en cada cambio de casilla → los
-        // toggles son dinámicos durante la sesión, D-07 en caliente).
-        '--allow-input',
-        '--audio', 'on',
-        '--audio-source', 'system,mic',
-      ];
+      final args = buildListenArgs(
+        size: _qualities[_videoQuality] ?? '1280x720',
+        kbps: _qualityKbps[_videoQuality] ?? 3000,
+      );
       final proc = await Process.start(
         _daemonBin,
         args,
