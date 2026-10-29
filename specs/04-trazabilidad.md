@@ -55,7 +55,7 @@
 | C-10 modo visor (cliente) v0.8.4 | RF-02a pantalla (UX de campo) | `viewerVisible`: **Conexión y Registro ocultos** con el visor visible · **`Detener` en `AppBar` a la izquierda del estado** · toggles C-2 en la **cabecera del visor** (helper `_permToggles`, única copia) · las secciones **vuelven** al cerrar (`closed` + `onDone`/`onError` del preview) | `visor-mode-v0.8.4` | `evidence/viewer-mode-gate.md` |
 | C-11 cursor remoto visible (overlay) v0.8.5 | RF-02a pantalla (decisión de backlog) | Hilo de sondeo 50 ms con `GetCursorPos`/`GetCursorInfo` → **solo cambios** por `watch` · wire `CursorState` (campo 25, 0..65535 = métrica del inyector → el overlay cae donde los clics) · controlador emite `cursor` **sin auditoría** · visor: `Stack` + flecha `_RemoteCursorPainter` (dibujo propio) | `cursor-v0.8.5` | `evidence/cursor-gate.md` |
 
-**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) · #14 (identidad) · #15 (menores+CI) · #16 (docs+CI) · #17 (v0.8.2 listener repetidor) · #18 (v0.8.3 visor+ID) · #19 (v0.8.4 modo visor) — `main` = `75aae72`.
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) · #14 (identidad) · #15 (menores+CI) · #16 (docs+CI) · #17 (v0.8.2 listener repetidor) · #18 (v0.8.3 visor+ID) · #19 (v0.8.4 modo visor) · #20 (v0.8.5 cursor) — `main` = `ad2c5a4`.
 
 ## Pendientes (estado actual)
 
