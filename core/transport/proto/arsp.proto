@@ -24,6 +24,7 @@ message Envelope {
     AudioFrame audio_frame = 23;
     InputAck input_ack = 24;
     CursorState cursor_state = 25;
+    NetHint net_hint = 26;
   }
 }
 
@@ -82,6 +83,13 @@ message VideoFrame {
   uint32 height = 3;
   CodecFormatEnum format = 4;
   bytes data = 5;
+}
+
+// Pista de red para el adaptador del anfitrión (C-13): el CONTROLADOR es el
+// que mide el RTT de los latidos (1/s) y se lo devuelve al codificador — la
+// congestión se nota en el receptor, pero el que baja el bitrate es el host.
+message NetHint {
+  uint32 rtt_ms = 1; // RTT medido por el controlador (0 = sin datos)
 }
 
 // Estado del cursor del anfitrión (C-11): DXGI NO lo dibuja en los frames —

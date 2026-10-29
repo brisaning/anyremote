@@ -84,6 +84,18 @@ pub fn scale_frame(src: &Frame, w: u32, h: u32) -> Frame {
     }
 }
 
+// C-13: umbrales de la adaptación por RED (decisión documentada en
+// `evidence/net-adapt-gate.md`). El WiFi en campo marcaba 57–782 ms y la LAN
+// <10 ms: 200/100 separan congestión real de ruido. Confirmación de 3
+// observaciones (los latidos llegan 1/s), recuperación a los 10 con 20 s de
+// cooldown anti-oscilación. La escalera es la PROBADA (bitrate primero,
+// escala después); el fps no se toca (`--video-fps` ya tiene su suelo).
+const NET_RTT_HIGH_MS: u32 = 200;
+const NET_RTT_LOW_MS: u32 = 100;
+const NET_CONFIRM: u32 = 3;
+const NET_RECOVER: u32 = 10;
+const NET_COOLDOWN: u32 = 20;
+
 /// Decisión del controlador adaptativo de calidad.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct AdaptDecision {
@@ -103,6 +115,13 @@ pub struct AdaptState {
     pub frames_since: u32,
     max_bps: usize,
     min_bps: usize,
+    // C-13: estado de la adaptación por red (pista del controlador).
+    net_high: u32,
+    net_low: u32,
+    net_cooldown: u32,
+    /// true mientras la red esté congestionada: bloquea las recuperaciones
+    /// de CPU (encode) para que las dos políticas no se peleen (oscilación).
+    net_congested: bool,
 }
 
 impl AdaptState {
@@ -119,6 +138,10 @@ impl AdaptState {
             frames_since: 0,
             max_bps: cap,
             min_bps: 200_000.min(cap),
+            net_high: 0,
+            net_low: 0,
+            net_cooldown: 0,
+            net_congested: false,
         }
     }
 
@@ -159,11 +182,18 @@ impl AdaptState {
             }
             return None;
         }
-        if self.ema_ms < 0.4 * budget_ms {
+        // C-13: mientras la red está congestionada NO se recupera por CPU
+        // (las dos políticas se pelearían → oscilación). La PRESIÓN de encode
+        // sigue permitida (bajar siempre es válido).
+        if self.ema_ms < 0.4 * budget_ms && !self.net_congested {
             // Sobra capacidad: primero recupera escala, luego bitrate.
             if self.size != self.initial_size {
                 self.size = self.initial_size;
-                self.bps = (self.size.0 as usize * self.size.1 as usize * 3).max(150_000);
+                // QW-3: el tope también rige al restaurar la escala (antes el
+                // bitrate «saltaba» el tope justo aquí — fix en el mismo ciclo).
+                self.bps = (self.size.0 as usize * self.size.1 as usize * 3)
+                    .max(150_000)
+                    .min(self.max_bps);
                 return Some(AdaptDecision {
                     video_size: Some(self.size),
                     target_bps: None,
@@ -176,6 +206,88 @@ impl AdaptState {
                     video_size: None,
                     target_bps: Some(self.bps),
                     reason: "recupera_bitrate",
+                });
+            }
+        }
+        None
+    }
+
+    /// C-13: observa el RTT (ms) medido por el **controlador** (1/s).
+    /// Política anti-oscilación (`specs/02` §7):
+    /// - congestión: RTT ≥ alto en **3 muestras** → baja bitrate 50 % (o
+    ///   escala 85 % si ya está en el suelo) y activa **cooldown de 20 s**;
+    /// - sanidad: RTT ≤ bajo en **10 muestras** y cooldown agotado →
+    ///   recupera escala o bitrate (+50 %, tope QW-3);
+    /// - mientras haya congestión, `net_congested` bloquea las recuperaciones
+    ///   de CPU (`observe`).
+    ///
+    /// Semántica de contadores: `net_high` solo se limpia con RTT sano
+    /// (la zona neutral 100–200 ms no borra la evidencia); `net_low` exige
+    /// RTT estrictamente sano.
+    pub fn observe_net(&mut self, rtt_ms: u32) -> Option<AdaptDecision> {
+        if rtt_ms <= NET_RTT_LOW_MS {
+            self.net_low = self.net_low.saturating_add(1);
+            self.net_high = 0;
+        } else {
+            self.net_low = 0;
+            if rtt_ms >= NET_RTT_HIGH_MS {
+                self.net_high = self.net_high.saturating_add(1);
+            }
+        }
+
+        if self.net_high >= NET_CONFIRM {
+            self.net_high = 0;
+            self.net_cooldown = NET_COOLDOWN;
+            self.net_congested = true;
+            if self.bps > self.min_bps {
+                self.bps = (self.bps / 2).max(self.min_bps);
+                return Some(AdaptDecision {
+                    video_size: None,
+                    target_bps: Some(self.bps),
+                    reason: "red_bitrate",
+                });
+            }
+            // Ya en el suelo de bitrate → baja la escala (la escalera probada).
+            let (w0, h0) = self.size;
+            let nw = ((w0 as f32 * 0.85) as u32).max(320);
+            let nh = ((h0 as f32 * 0.85) as u32).max(180);
+            if (nw, nh) != self.size {
+                self.size = (nw, nh);
+                self.bps = (nw as usize * nh as usize * 3)
+                    .max(150_000)
+                    .min(self.max_bps);
+                return Some(AdaptDecision {
+                    video_size: Some(self.size),
+                    target_bps: None,
+                    reason: "red_escala",
+                });
+            }
+            return None; // suelo absoluto (320x180 / min_bps): nada más que bajar
+        }
+
+        if self.net_cooldown > 0 {
+            self.net_cooldown -= 1;
+        }
+        if self.net_low >= NET_RECOVER && self.net_cooldown == 0 {
+            self.net_low = 0;
+            self.net_congested = false;
+            if self.size != self.initial_size {
+                self.size = self.initial_size;
+                self.bps = (self.size.0 as usize * self.size.1 as usize * 3)
+                    .max(150_000)
+                    .min(self.max_bps);
+                return Some(AdaptDecision {
+                    video_size: Some(self.size),
+                    target_bps: None,
+                    reason: "red_recupera_escala",
+                });
+            }
+            if self.bps < self.max_bps {
+                self.bps = (self.bps * 3 / 2).min(self.max_bps);
+                return Some(AdaptDecision {
+                    video_size: None,
+                    target_bps: Some(self.bps),
+                    reason: "red_recupera_bitrate",
                 });
             }
         }
@@ -216,6 +328,8 @@ pub fn spawn_video_task(
     out: mpsc::Sender<VideoMsg>,
     preview: PreviewServer,
     stop: Arc<AtomicBool>,
+    // C-13: pista de red del controlador (RTT ms; 0 = sin datos).
+    mut net_rx: tokio::sync::watch::Receiver<u32>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         // Resolución nativa (0,0): en Test se fija ya; en Auto espera al primer frame.
@@ -302,9 +416,19 @@ pub fn spawn_video_task(
                 let _ = out.try_send(VideoMsg::Frame(enc)); // backpressure: descarte
             }
 
-            // Control adaptativo de calidad (bitrate/escala) cada ~60 frames.
+            // Control adaptativo de calidad: pista de RED (C-13, la observa
+            // el controlador 1/s) o la observación de encode cada ~60 frames.
+            let mut net_rtt = None;
+            if net_rx.has_changed().unwrap_or(false) {
+                net_rtt = Some(*net_rx.borrow_and_update());
+            }
             if let Some(st) = adapt.as_mut() {
-                if let Some(dec) = st.observe(took_ms, budget_ms) {
+                let dec = match net_rtt {
+                    Some(rtt) => st.observe_net(rtt),
+                    None => None,
+                }
+                .or_else(|| st.observe(took_ms, budget_ms));
+                if let Some(dec) = dec {
                     let mut applied = false;
                     if let Some(bps) = dec.target_bps {
                         if encoder.set_target_bitrate(bps) {
@@ -400,6 +524,97 @@ mod tests {
         // Sin cambios → clon idéntico.
         let same = scale_frame(&src, 4, 4);
         assert_eq!(same, src);
+    }
+
+    #[test]
+    fn net_adaptation_confirms_then_lowers_and_recovers_after_cooldown() {
+        let mut s = AdaptState::new((1280, 720), Some(3_000_000));
+        let start = s.bps;
+        // Confirmación: 1 y 2 muestras altas → nada aún.
+        assert_eq!(s.observe_net(300), None, "1ª muestra");
+        assert_eq!(s.observe_net(300), None, "2ª muestra");
+        // 3ª → baja bitrate (no escala).
+        let d = s.observe_net(300).expect("3ª muestra → decisión");
+        assert_eq!(d.reason, "red_bitrate");
+        assert_eq!(d.target_bps, Some((start / 2).max(200_000)));
+        assert!(d.video_size.is_none());
+        assert!(s.net_congested, "marca congestión");
+        // RTT en zona neutral (100–200) NO borra la evidencia de alta…
+        assert_eq!(s.observe_net(150), None);
+        // …pero una muestra sana sí limpia net_high (sin re-accionar).
+        assert_eq!(s.observe_net(0), None);
+        assert_eq!(s.net_high, 0);
+        // Cooldown: ni las primeras muestras sanas recuperan.
+        for i in 0..15 {
+            assert_eq!(s.observe_net(0), None, "cooldown activo (obs {i})");
+        }
+        // Sano sostenido + cooldown agotado → recupera bitrate.
+        let mut got = None;
+        for _ in 0..15 {
+            got = got.or_else(|| s.observe_net(0));
+        }
+        let d = got.expect("recupera tras cooldown");
+        assert_eq!(d.reason, "red_recupera_bitrate");
+        assert_eq!(
+            d.target_bps,
+            Some(((start / 2).max(200_000) * 3 / 2).min(3_000_000))
+        );
+        assert!(!s.net_congested, "recuperación desbloquea la CPU");
+    }
+
+    #[test]
+    fn net_congestion_at_floor_scales_down_and_blocks_cpu_recovery() {
+        // Tope pequeño → bitrate ya arranca cerca del suelo.
+        let mut s = AdaptState::new((960, 540), Some(250_000));
+        s.bps = s.min_bps; // al suelo: la red debe bajar ESCALA
+        assert_eq!(s.observe_net(500), None);
+        assert_eq!(s.observe_net(500), None);
+        let d = s.observe_net(500).expect("en suelo → escala");
+        assert_eq!(d.reason, "red_escala");
+        assert!(d.video_size.is_some());
+        assert!(s.size != s.initial_size);
+        // Con CPU holgada, la recuperación de encode está BLOQUEADA (C-13):
+        for _ in 0..60 {
+            assert_eq!(
+                s.observe(1.0, 100.0),
+                None,
+                "CPU no recupera con red saturada"
+            );
+        }
+        // La recuperación de RED desbloquea todo (cooldown + sanidad).
+        let mut got = None;
+        for _ in 0..30 {
+            got = got.or_else(|| s.observe_net(0));
+        }
+        let d = got.expect("la red recupera");
+        assert_eq!(d.reason, "red_recupera_escala");
+        assert_eq!(s.size, s.initial_size);
+        assert!(!s.net_congested);
+        // Ahora sí: con el bitrate POR DEBAJO del tope, la CPU vuelve a
+        // poder recuperar (prueba el desbloqueo + el tope QW-3).
+        s.bps = s.min_bps;
+        let mut cpu = None;
+        for _ in 0..60 {
+            cpu = cpu.or_else(|| s.observe(1.0, 100.0));
+        }
+        let d = cpu.expect("la CPU recupera tras desbloquear");
+        assert_eq!(d.reason, "recupera_bitrate");
+        assert!(d.target_bps.unwrap() <= 250_000, "respeta el tope QW-3");
+    }
+
+    #[test]
+    fn scale_recovery_respects_the_bitrate_cap() {
+        // Fix en este ciclo: restaurar la escala no debe «saltarse» el tope.
+        let mut s = AdaptState::new((960, 540), Some(400_000));
+        s.size = (640, 360);
+        s.bps = 300_000;
+        let mut got = None;
+        for _ in 0..60 {
+            got = got.or_else(|| s.observe(1.0, 100.0));
+        }
+        let d = got.expect("recupera escala");
+        assert_eq!(d.reason, "recupera_escala");
+        assert!(s.bps <= 400_000, "el tope rige también aquí: {}", s.bps);
     }
 
     #[test]
