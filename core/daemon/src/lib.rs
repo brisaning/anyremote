@@ -469,17 +469,30 @@ fn build_bye_source(cfg: &mut DaemonConfig) -> tokio::sync::mpsc::Receiver<Strin
         let stdin = std::io::stdin();
         let mut reader = stdin.lock();
         let mut line = String::new();
+        // C-12: ¿hubo un GESTOR (alguna línea leída)? Si el pipe muere con
+        // gestor visto → el dueño desapareció (la app se cerró o crasheó:
+        // en Windows cerrar la ventana NO ejecuta `dispose` de la app) y hay
+        // que soltarlo todo. Sin líneas (stdin nulo/despreocupado) el EOF es
+        // rutinario y NO detiene nada (modo desatendido, tests).
+        let mut lines_read = 0usize;
         loop {
             line.clear();
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break, // EOF/error → se cierra el canal
                 Ok(_) => {
+                    lines_read += 1;
                     let text = line.trim_end_matches(['\r', '\n']).to_string();
                     if tx.blocking_send(text).is_err() {
-                        break; // receptor fuera: nadie escucha ya
+                        return; // receptor fuera: nadie escucha ya
                     }
                 }
             }
+        }
+        if lines_read > 0 {
+            // Dueño ausente → se avisa por el MISMO canal: la escucha/sesión
+            // se detiene con este motivo (fix del listener huérfano al cerrar
+            // el programa, reporte de campo C-12).
+            let _ = tx.blocking_send("dueño ausente (stdin cerrado)".to_string());
         }
     });
     rx

@@ -927,6 +927,11 @@ class _HomePageState extends State<HomePage> {
       proc.stdin.done.catchError((Object e) {
         if (mounted) _append('[ui] stdin del daemon cerrado: $e');
       });
+      // C-12: línea de gestión inofensiva (el daemon la ignora: JSON sin
+      // `input`) — registra que HAY gestor desde el primer instante: si la
+      // app muere (cerrar ventana no ejecuta `dispose`), el daemon detecta el
+      // EOF del dueño y cierra la sesión en lugar de quedar huérfano.
+      proc.stdin.writeln('{"ui":"ready"}');
 
       _logToFile('--- connect args: ${args.join(' ')}');
       proc.stdout

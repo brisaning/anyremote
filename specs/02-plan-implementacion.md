@@ -48,8 +48,9 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-8 fix de campo: listener repetidor v0.8.2 | ✅ gate verde · ✅ **validada en campo** («Funciona correctamente») | `repeat-v0.8.2` · `evidence/listener-repeat-gate.md` |
 | C-9 visor completo + ID visible v0.8.3 | ✅ gate verde (con control negativo de overflow) · 🟡 pendiente campo | `visor-id-v0.8.3` · `evidence/viewer-id-gate.md` |
 | C-10 modo visor (cliente) v0.8.4 | ✅ gate verde · 🟡 pendiente campo | `visor-mode-v0.8.4` · `evidence/viewer-mode-gate.md` |
-| C-11 cursor remoto visible (overlay) v0.8.5 | ✅ gate verde (change-detection + overlay) · 🟡 pendiente campo | `cursor-v0.8.5` · `evidence/cursor-gate.md` |
-| **Pendientes** | 🟡 campo v0.8.5 (cursor) · v0.8.4 (modo visor) · v0.8.3 (visor+ID) · reconexión v0.8.2 ✅ · conexión por ID (resolutor) · rendimiento medio/largo (HW, UDP, red — §7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
+| C-11 cursor remoto visible (overlay) v0.8.5 | ✅ gate verde (change-detection + overlay) · ✅ **probado en campo** | `cursor-v0.8.5` · `evidence/cursor-gate.md` |
+| C-12 bug: dueño ausente v0.8.6 | ✅ gate verde (regresión de proceso + discriminador) · 🟡 pendiente campo | `owner-exit-v0.8.6` · `evidence/owner-gate.md` |
+| **Pendientes** | 🟡 campo v0.8.6 (dueño ausente) · cursor v0.8.5 ✅ · reconexión v0.8.2 ✅ · conexión por ID (resolutor) · rendimiento medio/largo (HW, UDP, red — §7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
