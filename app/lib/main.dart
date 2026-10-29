@@ -82,6 +82,40 @@ int? keyCodeFor(LogicalKeyboardKey k) {
   return null;
 }
 
+/// Flecha del cursor remoto (C-11) — dibujo propio en canvas, sin assets.
+/// La punta en (0,0) coincide con la posición exacta del cursor (hotspot).
+class _RemoteCursorPainter extends CustomPainter {
+  const _RemoteCursorPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width / 13.0;
+    final path = Path()
+      ..moveTo(0, 0)
+      ..lineTo(0, 16.5 * s)
+      ..lineTo(4.0 * s, 12.8 * s)
+      ..lineTo(6.6 * s, 18.8 * s)
+      ..lineTo(8.9 * s, 17.7 * s)
+      ..lineTo(6.3 * s, 11.9 * s)
+      ..lineTo(11.9 * s, 11.9 * s)
+      ..close();
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = Colors.black
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4);
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.fill);
+  }
+
+  @override
+  bool shouldRepaint(covariant _RemoteCursorPainter oldDelegate) => false;
+}
+
 /// Argumentos de `anyremoted listen` (extraídos para testearlos).
 ///
 /// v0.8.2: **`--max-sessions 0`** hace el listener *repetidor*: tras cerrar
@@ -203,6 +237,10 @@ class _HomePageState extends State<HomePage> {
   int _lastRenderMs = 0;
   bool _rendering = false;
   String _videoStatus = 'sin vídeo';
+  // C-11: overlay del cursor del anfitrión (DXGI no lo dibuja en los frames).
+  int? _cursorNx;
+  int? _cursorNy;
+  bool _cursorVisible = false;
   final List<String> _log = [
     '[build] anyremote $kVersion · rev $kGitRev',
     '[build] Flutter $kFlutterBuild · windows-x64',
@@ -249,6 +287,15 @@ class _HomePageState extends State<HomePage> {
   void debugStopViewerForTest() {
     unawaited(_stopViewer());
     setState(() {});
+  }
+
+  /// Costura de test (C-11): fija el cursor remoto del overlay.
+  void debugSetRemoteCursor(int nx, int ny, bool visible) {
+    setState(() {
+      _cursorNx = nx;
+      _cursorNy = ny;
+      _cursorVisible = visible;
+    });
   }
 
   /// Carga los aliases de perfil desde el daemon (`profiles --list`, JSONL).
@@ -385,6 +432,21 @@ class _HomePageState extends State<HomePage> {
             if (mounted) setState(() {});
           case 'video_adapt':
             _append('[daemon] calidad adaptada: ${ev['reason']} → ${ev['size']}${ev['bps'] != null ? ' @${ev['bps']} bps' : ''}');
+          case 'cursor':
+            // C-11: posición del cursor del anfitrión → overlay sobre el
+            // vídeo. Sin visor no hay dónde dibujarlo (evita rebuilds ~20 Hz).
+            // Sin `_append`: ~20 Hz inundarían el registro.
+            final cnx = ev['nx'] as num?;
+            final cny = ev['ny'] as num?;
+            if (cnx != null &&
+                cny != null &&
+                (_lastImage != null || _preview != null)) {
+              setState(() {
+                _cursorNx = cnx.toInt();
+                _cursorNy = cny.toInt();
+                _cursorVisible = ev['visible'] == true;
+              });
+            }
           case 'file_resume':
             _append('[daemon] reanudando envío de ${ev['name']} desde offset ${ev['from_offset']}');
           case 'file_rejected':
@@ -446,6 +508,7 @@ class _HomePageState extends State<HomePage> {
             _heldButton = null;
             _heldChars.clear();
             _audioHint = '';
+            _cursorVisible = false;
             // v0.8.2: con el listener repetidor, cerrar una sesión (p. ej. el
             // invitado pulsa «Detener») vuelve a «Escuchando (red)»: sigue
             // aceptando reconexiones. Sin listener → Desconectado.
@@ -749,6 +812,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _stopViewer() async {
     _preview?.destroy();
     _preview = null;
+    _cursorVisible = false;
     _videoBuf = Uint8List(0);
     final img = _lastImage;
     _lastImage = null;
@@ -1216,8 +1280,30 @@ class _HomePageState extends State<HomePage> {
                                       focusNode: _inputFocus,
                                       autofocus: true,
                                       onKeyEvent: _onViewerKey,
-                                      child:
+                                      // C-11: vídeo + overlay del cursor
+                                      // remoto. `StackFit.expand` conserva
+                                      // las restricciones ajustadas de antes
+                                      // (RawImage sigue rellenando la caja).
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
                                           RawImage(image: img, fit: BoxFit.contain),
+                                          if (_cursorVisible &&
+                                              _cursorNx != null &&
+                                              _cursorNy != null)
+                                            Positioned(
+                                              // Normalizado del anfitrión →
+                                              // caja de la imagen (0..65535).
+                                              left: _cursorNx! / 65535 * box.width,
+                                              top: _cursorNy! / 65535 * box.height,
+                                              child: const CustomPaint(
+                                                key: Key('remote-cursor'),
+                                                size: Size(16, 24),
+                                                painter: _RemoteCursorPainter(),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
                                     ),
                                   );
                                 },

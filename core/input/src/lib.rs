@@ -133,6 +133,10 @@ impl InputInjector for PlatformInjector {
 #[cfg(windows)]
 pub mod windows_backend;
 
+/// Cursor del sistema para el overlay del visor (C-11): DXGI no incluye el
+/// cursor en los frames capturados → el anfitrión lo sondea y lo publica.
+pub mod cursor;
+
 #[cfg(test)]
 mod tests {
     use super::*;
