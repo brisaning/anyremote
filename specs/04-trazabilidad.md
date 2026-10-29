@@ -54,7 +54,7 @@
 | C-9 visor completo + ID visible v0.8.3 | RF-02a pantalla + RF-03 (2 reportes de campo) | Visor: tarjeta `Expanded` + marco `Center(AspectRatio)` → **sin desbordes** a cualquier tamaño (regresión de widget test con **control negativo verificado**) · ID: subcomanda **`anyremoted id`** (mismo `identity.key` que `listen`), fila **«ID de este equipo»** con copiar, refresco desde `listening` y aviso al escribir un ID en el campo de destino | `visor-id-v0.8.3` | `evidence/viewer-id-gate.md` |
 | C-10 modo visor (cliente) v0.8.4 | RF-02a pantalla (UX de campo) | `viewerVisible`: **Conexión y Registro ocultos** con el visor visible · **`Detener` en `AppBar` a la izquierda del estado** · toggles C-2 en la **cabecera del visor** (helper `_permToggles`, única copia) · las secciones **vuelven** al cerrar (`closed` + `onDone`/`onError` del preview) | `visor-mode-v0.8.4` | `evidence/viewer-mode-gate.md` |
 
-**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) · #14 (identidad) · #15 (menores+CI) · #16 (docs+CI) · #17 (v0.8.2 listener repetidor) · #18 (v0.8.3 visor+ID) — `main` = `826e89d`.
+**PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) · #14 (identidad) · #15 (menores+CI) · #16 (docs+CI) · #17 (v0.8.2 listener repetidor) · #18 (v0.8.3 visor+ID) · #19 (v0.8.4 modo visor) — `main` = `75aae72`.
 
 ## Pendientes (estado actual)
 
