@@ -142,6 +142,9 @@ pub struct DaemonConfig {
     /// C-11: fuente del cursor para el overlay del visor (`Windows` en
     /// producción; backends de prueba en los gates).
     pub cursor_backend: CursorBackend,
+    /// C-13: fija el RTT enviado en `NetHint` (solo tests: en loopback el
+    /// RTT real es ~0 y la política de red no se podría exercitar).
+    pub net_rtt_override: Option<u32>,
     /// RF audio (D-07): modo de audio de sesión — `listen`: fuente de captura,
     /// `connect`: reproductor. `Off` por defecto; `Test` sin hardware (gates).
     pub audio: AudioMode,
@@ -177,6 +180,7 @@ impl DaemonConfig {
             allow_input: false,
             input_backend: InputBackend::Windows,
             cursor_backend: CursorBackend::Windows,
+            net_rtt_override: None,
             audio: AudioMode::Off,
             video_max_bps: None,
             audio_sources: vec![AudioSource::System],
@@ -1173,6 +1177,10 @@ async fn active_controlled(
         });
     }
     let mut cursor_on = true;
+    // C-13: pista de red (RTT del controlador) → adaptador de calidad del
+    // hilo de vídeo (`watch`: último valor, sin encolar; si no hay vídeo el
+    // receptor no existe y la pista se descarta sin ruido).
+    let (net_tx, net_rx) = tokio::sync::watch::channel::<u32>(0);
     if cfg.video != VideoMode::Off {
         let (preview_srv, preview_port, _preview_task) = preview::PreviewServer::start();
         emit.emit(ev("preview", serde_json::json!({ "port": preview_port })));
@@ -1193,6 +1201,7 @@ async fn active_controlled(
             video_tx,
             preview_srv,
             stop,
+            net_rx,
         );
     }
 
@@ -1252,6 +1261,13 @@ async fn active_controlled(
                         report.record_bytes_recv(0);
                     }
                     Some(proto::envelope::Payload::Heartbeat(_)) => {}
+                    Some(proto::envelope::Payload::NetHint(n)) => {
+                        // C-13: el controlador devuelve su RTT → adaptador del
+                        // codificador. Además enriquece el informe del host:
+                        // su `heartbeats`/`rtt_min` pasaban de 0/None a reales.
+                        report.record_heartbeat(n.rtt_ms as u64);
+                        let _ = net_tx.send(n.rtt_ms);
+                    }
                     Some(proto::envelope::Payload::Clipboard(w)) => {
                         let content = arsp::clipboard_from_wire(w)?;
                         match engine.apply_remote(&content) {
@@ -1917,6 +1933,23 @@ async fn active_controller(
                         stats.record_rtt(rtt);
                         report.record_heartbeat(rtt);
                         emit.emit(ev("heartbeat", serde_json::json!({"seq": h.seq, "rtt_ms": rtt})));
+                        // C-13: devuelve la pista de red al anfitrión (1/s, con
+                        // los latidos): el RTT se nota AQUÍ (receptor) y actúa
+                        // en el codificador de ALLÁ. `net_rtt_override` = tests.
+                        let hinted = cfg
+                            .net_rtt_override
+                            .unwrap_or(rtt.min(u32::MAX as u64) as u32);
+                        if let Err(e) = ch.send(proto::envelope::Payload::NetHint(proto::NetHint {
+                            rtt_ms: hinted,
+                        })).await {
+                            if conn_gone(&e) {
+                                log.record(AuditEventKind::Disconnected, session_id,
+                                    serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                                emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                                break;
+                            }
+                            return Err(e.into());
+                        }
                     }
                     Some(proto::envelope::Payload::Heartbeat(_)) => {}
                     Some(proto::envelope::Payload::Clipboard(w)) => {
