@@ -244,6 +244,13 @@ class _HomePageState extends State<HomePage> {
     setState(() => _localNodeId = id);
   }
 
+  /// Costura de test (C-10): cierra el visor para verificar que el layout
+  /// vuelve a las secciones Conexión + Registro.
+  void debugStopViewerForTest() {
+    unawaited(_stopViewer());
+    setState(() {});
+  }
+
   /// Carga los aliases de perfil desde el daemon (`profiles --list`, JSONL).
   Future<void> _refreshProfiles() async {
     final daemon = resolveDaemonPath();
@@ -432,6 +439,9 @@ class _HomePageState extends State<HomePage> {
             _append('[daemon] audio desactivado en esta sesión: ${ev['detail']}');
           case 'closed':
             _append('[daemon] sesión cerrada: ${ev['reason']}');
+            // C-10: fin de sesión → se limpia el visor; Conexión y Registro
+            // vuelven a mostrarse (permite reconectar sin reiniciar la app).
+            unawaited(_stopViewer());
             _sessionActive = false;
             _heldButton = null;
             _heldChars.clear();
@@ -486,6 +496,45 @@ class _HomePageState extends State<HomePage> {
       if (mounted) _append('[ui] no se pudieron enviar los permisos: $e');
     }
   }
+
+  /// C-2/C-10: los tres toggles de permisos DINÁMICOS (una sola copia).
+  /// Viven en la sección Conexión y — en modo visor, donde esa sección
+  /// queda oculta (C-10) — en la cabecera del visor. En ambos lugares se
+  /// aplican EN CALIENTE durante la sesión (D-07).
+  List<Widget> _permToggles({double fontSize = 12}) => [
+        Checkbox(
+          value: _acceptRemoteControl,
+          onChanged: (v) {
+            setState(() => _acceptRemoteControl = v ?? false);
+            _sendPerms();
+          },
+          visualDensity: VisualDensity.compact,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        Text('Control remoto', style: TextStyle(fontSize: fontSize)),
+        const SizedBox(width: 10),
+        Checkbox(
+          value: _shareAudio,
+          onChanged: (v) {
+            setState(() => _shareAudio = v ?? false);
+            _sendPerms();
+          },
+          visualDensity: VisualDensity.compact,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        Text('Audio del sistema', style: TextStyle(fontSize: fontSize)),
+        const SizedBox(width: 10),
+        Checkbox(
+          value: _shareMic,
+          onChanged: (v) {
+            setState(() => _shareMic = v ?? false);
+            _sendPerms();
+          },
+          visualDensity: VisualDensity.compact,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        Text('Micrófono', style: TextStyle(fontSize: fontSize)),
+      ];
 
   Future<void> _startLocalListen() async {
     if (_listener != null) {
@@ -681,16 +730,14 @@ class _HomePageState extends State<HomePage> {
       sock.listen(
         _onVideoBytes,
         onDone: () {
-          if (mounted) {
-            setState(() => _preview = null);
-            _videoStatus = 'visor finalizado';
-          }
+          // C-10: el preview terminó → se limpia el visor; sin esto
+          // quedaría el último frame con el layout de modo visor «congelado».
+          unawaited(_stopViewer());
+          if (mounted) setState(() => _videoStatus = 'visor finalizado');
         },
         onError: (Object e) {
-          if (mounted) {
-            setState(() => _preview = null);
-            _videoStatus = 'visor con error: $e';
-          }
+          unawaited(_stopViewer());
+          if (mounted) setState(() => _videoStatus = 'visor con error: $e');
         },
         cancelOnError: true,
       );
@@ -877,6 +924,9 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final running = _daemon != null;
+    // C-10: modo visor — con el visor visible, la sección Conexión y el
+    // Registro quedan OCULTOS y «Detener» sube a la barra superior.
+    final viewerVisible = _lastImage != null || _preview != null;
     return Scaffold(
       appBar: AppBar(
         title: Row(
@@ -897,6 +947,19 @@ class _HomePageState extends State<HomePage> {
             child: Center(
               child: Row(
                 children: [
+                  // C-10: la sección Conexión está oculta en modo visor →
+                  // «Detener» vive en la barra superior, justo a la izquierda
+                  // del estado («Conectado» durante la sesión).
+                  if (viewerVisible) ...[
+                    OutlinedButton.icon(
+                      onPressed: running ? _stop : null,
+                      icon: const Icon(Icons.stop, size: 16),
+                      label: const Text('Detener'),
+                      style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
+                    ),
+                    const SizedBox(width: 12),
+                  ],
                   CircleAvatar(radius: 6, backgroundColor: _statusColor),
                   const SizedBox(width: 8),
                   Text(_status),
@@ -911,6 +974,7 @@ class _HomePageState extends State<HomePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (!viewerVisible)
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -1000,46 +1064,9 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 4),
                     // C-2: los tres toggles son DINÁMICOS — se aplican en
                     // caliente durante la sesión (el anfitrión manda sobre lo
-                    // que comparte; D-07 en caliente).
-                    Row(
-                      children: [
-                        Checkbox(
-                          value: _acceptRemoteControl,
-                          onChanged: (v) {
-                            setState(() => _acceptRemoteControl = v ?? false);
-                            _sendPerms();
-                          },
-                          visualDensity: VisualDensity.compact,
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        const Text('Control remoto',
-                            style: TextStyle(fontSize: 12)),
-                        const SizedBox(width: 10),
-                        Checkbox(
-                          value: _shareAudio,
-                          onChanged: (v) {
-                            setState(() => _shareAudio = v ?? false);
-                            _sendPerms();
-                          },
-                          visualDensity: VisualDensity.compact,
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        const Text('Audio del sistema',
-                            style: TextStyle(fontSize: 12)),
-                        const SizedBox(width: 10),
-                        Checkbox(
-                          value: _shareMic,
-                          onChanged: (v) {
-                            setState(() => _shareMic = v ?? false);
-                            _sendPerms();
-                          },
-                          visualDensity: VisualDensity.compact,
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        const Text('Micrófono',
-                            style: TextStyle(fontSize: 12)),
-                      ],
-                    ),
+                    // que comparte; D-07 en caliente). En modo visor (C-10)
+                    // la MISMA fila vive en la cabecera del visor.
+                    Row(children: _permToggles()),
                     const SizedBox(height: 10),
                     Row(
                       children: [
@@ -1100,7 +1127,7 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
             const SizedBox(height: 12),
-            if (_lastImage != null || _preview != null)
+            if (viewerVisible)
               // C-9: tarjeta FLEXIBLE — antes era rígida: la caja del visor
               // derivaba su ALTO del ancho de la ventana (AspectRatio) y
               // desbordaba el Column; al maximizar solo se veía la parte
@@ -1135,7 +1162,12 @@ class _HomePageState extends State<HomePage> {
                           Text(_videoStatus, style: const TextStyle(fontSize: 12, color: Colors.grey)),
                         ],
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 6),
+                      // C-10: los toggles dinámicos (C-2) viajan a la cabecera
+                      // del visor: en modo visor la sección Conexión queda
+                      // oculta, pero los permisos siguen cambiando en caliente.
+                      Row(children: _permToggles(fontSize: 11)),
+                      const SizedBox(height: 6),
                       // C-9: el marco reparte el alto restante de la tarjeta
                       // y se centra → la pantalla del anfitrión se ve COMPLETA
                       // a cualquier tamaño de ventana.
@@ -1202,9 +1234,10 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: Card(
+            if (!viewerVisible) const SizedBox(height: 12),
+            if (!viewerVisible)
+              Expanded(
+                child: Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(

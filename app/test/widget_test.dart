@@ -159,7 +159,8 @@ void main() {
     expect(tester.takeException(), isNull,
         reason: 'el frame del anfitrión debe caber sin desbordar el Column');
     expect(find.text('Visor remoto'), findsOneWidget);
-    expect(find.text('Registro'), findsOneWidget);
+    expect(find.text('Registro'), findsNothing,
+        reason: 'C-10: en modo visor el Registro queda oculto');
 
     // 2) Maximizada (1600x900): la caja del visor crece con el ancho SIN
     //    desbordar — regresión del reporte: antes solo se veía la parte
@@ -170,7 +171,8 @@ void main() {
     expect(tester.takeException(), isNull,
         reason: 'sin desbordes al maximizar la ventana');
     expect(find.text('Visor remoto'), findsOneWidget);
-    expect(find.text('Registro'), findsOneWidget);
+    expect(find.text('Registro'), findsNothing,
+        reason: 'C-10: en modo visor el Registro queda oculto');
   });
 
   testWidgets('C-9: ID de este equipo visible y copiable', (tester) async {
@@ -181,6 +183,59 @@ void main() {
     expect(find.text('ID de este equipo:'), findsOneWidget);
     expect(find.text('ONDH6IU4RU'), findsOneWidget);
     expect(find.byTooltip('Copiar ID'), findsOneWidget);
+  });
+
+  testWidgets(
+      'C-10: modo visor oculta Conexión/Registro y sube Detener a la barra',
+      (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+
+    // Sin visor: layout normal (Conexión + Registro + Detener dentro de la
+    // sección Conexión, y los toggles en esa sección).
+    expect(find.text('Conexión'), findsOneWidget);
+    expect(find.text('Registro'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Detener'), findsOneWidget);
+    expect(find.byType(Checkbox), findsNWidgets(3));
+
+    // Con visor visible (frame inyectado = sesión con vídeo en marcha).
+    final rec = ui.PictureRecorder();
+    final canvas = Canvas(rec);
+    canvas.drawRect(const Rect.fromLTWH(0, 0, 1280, 720),
+        Paint()..color = const Color(0xFF102030));
+    st.debugShowViewerFrame(rec.endRecording().toImageSync(1280, 720));
+    await tester.pump();
+
+    // 1) Las secciones pedidas quedan OCULTAS.
+    expect(find.text('Conexión'), findsNothing, reason: 'C-10: modo visor');
+    expect(find.text('Registro'), findsNothing, reason: 'C-10: modo visor');
+
+    // 2) Un ÚNICO botón Detener y en la barra superior, a la IZQUIERDA del
+    //    estado (posición real, no solo presencia).
+    final btn = find.widgetWithText(OutlinedButton, 'Detener');
+    expect(btn, findsOneWidget);
+    final btnRect = tester.getRect(btn);
+    final statusRect = tester.getRect(find.text('Desconectado'));
+    expect(
+        btnRect.top,
+        lessThan(tester.getRect(find.text('Visor remoto')).top),
+        reason: 'el botón está en la barra superior, sobre el cuerpo');
+    expect(btnRect.right, lessThanOrEqualTo(statusRect.left),
+        reason: 'Detener a la izquierda del estado');
+
+    // 3) Los toggles dinámicos siguen disponibles en la cabecera del visor.
+    expect(find.byType(Checkbox), findsNWidgets(3));
+    expect(find.text('Control remoto'), findsOneWidget);
+    expect(find.text('Audio del sistema'), findsOneWidget);
+    expect(find.text('Micrófono'), findsOneWidget);
+
+    // 4) Al cerrar el visor vuelven las secciones (reconectar sin reiniciar).
+    st.debugStopViewerForTest();
+    await tester.pump();
+    expect(find.text('Conexión'), findsOneWidget);
+    expect(find.text('Registro'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Detener'), findsOneWidget);
+    expect(find.text('Control remoto'), findsOneWidget);
   });
 
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {
