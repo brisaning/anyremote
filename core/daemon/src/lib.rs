@@ -18,6 +18,7 @@ use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
 use anyremote_codec::VideoDecoder;
 use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender};
 use anyremote_identity::{Identity, TrustStore};
+use anyremote_input::cursor::{CursorBackend, CursorPos};
 use anyremote_input::InputInjector;
 use anyremote_session::{LinkStats, SessionEvent, SessionState};
 use anyremote_telemetry::{AuditEventKind, SessionLog, SessionReport};
@@ -138,6 +139,9 @@ pub struct DaemonConfig {
     pub allow_input: bool,
     /// Backend de inyección: `Windows` (SendInput) en producción, `Recording` en tests.
     pub input_backend: InputBackend,
+    /// C-11: fuente del cursor para el overlay del visor (`Windows` en
+    /// producción; backends de prueba en los gates).
+    pub cursor_backend: CursorBackend,
     /// RF audio (D-07): modo de audio de sesión — `listen`: fuente de captura,
     /// `connect`: reproductor. `Off` por defecto; `Test` sin hardware (gates).
     pub audio: AudioMode,
@@ -172,6 +176,7 @@ impl DaemonConfig {
             one_way_files: false,
             allow_input: false,
             input_backend: InputBackend::Windows,
+            cursor_backend: CursorBackend::Windows,
             audio: AudioMode::Off,
             video_max_bps: None,
             audio_sources: vec![AudioSource::System],
@@ -1129,6 +1134,32 @@ async fn active_controlled(
     let _stop_guard = StopGuard(stop.clone());
     let mut video_done = false;
     let mut bye_done = false;
+    // C-11: overlay del cursor — DXGI NO lo dibuja en los frames; un hilo
+    // propio lo sondea (~50 ms) y publica SOLO cambios por un canal `watch`
+    // (siempre el último estado, sin encolar). Se envía también sin vídeo:
+    // el visor solo dibuja el overlay si hay frame.
+    let (cursor_tx, mut cursor_rx) = tokio::sync::watch::channel(CursorPos::default());
+    {
+        let mut backend = cfg.cursor_backend.clone();
+        std::thread::spawn(move || {
+            let mut last: Option<CursorPos> = None;
+            loop {
+                if cursor_tx.is_closed() {
+                    break; // sesión terminada: nadie escucha
+                }
+                if let Some(p) = backend.poll() {
+                    if last != Some(p) {
+                        last = Some(p);
+                        if cursor_tx.send(p).is_err() {
+                            break;
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+    }
+    let mut cursor_on = true;
     if cfg.video != VideoMode::Off {
         let (preview_srv, preview_port, _preview_task) = preview::PreviewServer::start();
         emit.emit(ev("preview", serde_json::json!({ "port": preview_port })));
@@ -1392,6 +1423,25 @@ async fn active_controlled(
                             Err(e) => return Err(e.into()),
                         }
                     }
+                }
+            }
+            st = async {
+                cursor_rx.changed().await.ok().map(|_| *cursor_rx.borrow_and_update())
+            }, if cursor_on => {
+                // C-11: estado nuevo del cursor → wire (solo cambios; sin
+                // auditoría: ~20 Hz inundaría el registro).
+                let Some(pos) = st else { cursor_on = false; continue; };
+                match ch.send(proto::envelope::Payload::CursorState(proto::CursorState {
+                    nx: pos.nx, ny: pos.ny, visible: pos.visible,
+                })).await {
+                    Ok(()) => {}
+                    Err(e) if conn_gone(&e) => {
+                        log.record(AuditEventKind::Disconnected, session_id,
+                            serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                        emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                        break;
+                    }
+                    Err(e) => return Err(e.into()),
                 }
             }
             pcm = async {
@@ -1954,6 +2004,14 @@ async fn active_controller(
                                 emit.emit(ev("video_error", serde_json::json!({"detail": e.to_string()})));
                             }
                         }
+                    }
+                    Some(proto::envelope::Payload::CursorState(c)) => {
+                        // C-11: overlay del cursor del anfitrión — solo
+                        // display (~20 Hz): SIN auditoría (ruido, no es un
+                        // evento de sesión).
+                        emit.emit(ev("cursor", serde_json::json!({
+                            "nx": c.nx, "ny": c.ny, "visible": c.visible,
+                        })));
                     }
                     Some(proto::envelope::Payload::AudioFrame(af)) => {
                         // RF audio: wire → Opus → reproductor (sin reproductor: no decodifica).

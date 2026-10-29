@@ -48,7 +48,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-8 fix de campo: listener repetidor v0.8.2 | ✅ gate verde · ✅ **validada en campo** («Funciona correctamente») | `repeat-v0.8.2` · `evidence/listener-repeat-gate.md` |
 | C-9 visor completo + ID visible v0.8.3 | ✅ gate verde (con control negativo de overflow) · 🟡 pendiente campo | `visor-id-v0.8.3` · `evidence/viewer-id-gate.md` |
 | C-10 modo visor (cliente) v0.8.4 | ✅ gate verde · 🟡 pendiente campo | `visor-mode-v0.8.4` · `evidence/viewer-mode-gate.md` |
-| **Pendientes** | 🟡 campo v0.8.4 (modo visor) · v0.8.3 (visor+ID) · reconexión v0.8.2 ✅ · conexión por ID (resolutor) · rendimiento medio/largo (HW, UDP, red — §7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
+| C-11 cursor remoto visible (overlay) v0.8.5 | ✅ gate verde (change-detection + overlay) · 🟡 pendiente campo | `cursor-v0.8.5` · `evidence/cursor-gate.md` |
+| **Pendientes** | 🟡 campo v0.8.5 (cursor) · v0.8.4 (modo visor) · v0.8.3 (visor+ID) · reconexión v0.8.2 ✅ · conexión por ID (resolutor) · rendimiento medio/largo (HW, UDP, red — §7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
@@ -177,7 +178,7 @@ su coste o riesgo; la lista queda aquí como backlog de rendimiento/capacidad:
 | **Aceleración por hardware** (NVENC/AMF/QSV/Media Foundation) | L | Alto | Cambia el contrato de `VideoEncoder` (entrada GPU; hoy el readback en `core/capture/dxgi.rs` es obligatorio); **fallback a libvpx obligatorio** (patrón RustDesk `video_service.rs`); limpieza legal: clean-room desde APIs públicas — no copiar el fork AGPL `hwcodec` |
 | **Adaptación por red** (RTT/pérdida, no solo tiempo de codificación) | M | Alto | Los latidos ya miden RTT; añadir señal de enlace a `AdaptState` con política estable (umbrales, confirmación en 2–3 muestras, cooldown; patrón `video_qos.rs`: bitrate primero, fps con suelo). Riesgo: oscilación |
 | **Transporte UDP (KCP) / QUIC** | L | Alto | Rediseño de seguridad: la autenticación se ancla hoy al binding sobre **TLS/TCP** → UDP exige DTLS/Noise + renegociación; NAT/firewall (mantener TCP como fallback, como RustDesk con `disable-udp`); pérdida → ARQ |
-| **Cursor propio (overlay no embebido)** | M | Alto | Ahorraría re-codificar por cada movimiento de ratón y haría **visible el cursor remoto** (DXGI nunca lo incluye en el frame); requiere mensaje de protocolo + render en la app |
+| ~~**Cursor propio (overlay no embebido)**~~ | M | Alto | ✅ **hecho en v0.8.5 (C-11)**: `CursorState` (campo 25) con sondeo a 50 ms **solo cambios** + flecha dibujada en el visor (misma métrica 0..65535 que los clics). Ver `evidence/cursor-gate.md` |
 | VP8 como opción de CPU barata | M | Medio | `shiguredo_libvpx` ya lo soporta (`Vp8Config.static_threshold`) → exponer `--codec vp8` (proto + negociación) |
 | Captura/encode con buffers reutilizados | M | Medio | El vídeo ya corre en hilo propio (v0.7.2); queda eliminar las allocaciones por frame en `bgra_to_i420`/`scale_frame` |
 | libyuv/SIMD en vez de `bgra_to_i420` scalar | M | Medio | Dependencia nativa de build (patrón `libs/scrap/build.rs`) o crate `yuv` |
@@ -186,4 +187,4 @@ su coste o riesgo; la lista queda aquí como backlog de rendimiento/capacidad:
 | Profundidad de color reducida (16/8 bits) | L | Bajo | VP9 ya submuestrea 4:2:0 → ahorro marginal |
 
 **Orden recomendado** (impacto/esfuerzo): adaptación por red → aceleración por
-hardware → cursor propio → UDP/QUIC.
+hardware → UDP/QUIC (cursor propio ✅ hecho en v0.8.5).

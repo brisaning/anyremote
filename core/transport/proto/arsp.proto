@@ -23,6 +23,7 @@ message Envelope {
     FileReady file_ready = 22;
     AudioFrame audio_frame = 23;
     InputAck input_ack = 24;
+    CursorState cursor_state = 25;
   }
 }
 
@@ -81,6 +82,17 @@ message VideoFrame {
   uint32 height = 3;
   CodecFormatEnum format = 4;
   bytes data = 5;
+}
+
+// Estado del cursor del anfitrión (C-11): DXGI NO lo dibuja en los frames —
+// sin esto el visor no ve dónde está el cursor remoto. Coordenadas
+// normalizadas 0..65535 contra el monitor primario (la MISMA métrica que usa
+// el inyector con MOUSEEVENTF_ABSOLUTE → el overlay aparece donde caen los
+// clics). Solo se envían CAMBIOS (≈50 ms de sondeo en el anfitrión).
+message CursorState {
+  uint32 nx = 1;    // 0..65535 horizontal
+  uint32 ny = 2;    // 0..65535 vertical
+  bool visible = 3; // false = cursor oculto (sin CURSOR_SHOWING)
 }
 
 // Acuse de entrada (RF-02a): el controlado confirma si el evento se INYECTÓ

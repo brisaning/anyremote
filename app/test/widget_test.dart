@@ -238,6 +238,38 @@ void main() {
     expect(find.text('Control remoto'), findsOneWidget);
   });
 
+  testWidgets('C-11: overlay del cursor remoto sobre el vídeo', (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+
+    // Frame inyectado (modo visor con vídeo en marcha).
+    final rec = ui.PictureRecorder();
+    final canvas = Canvas(rec);
+    canvas.drawRect(const Rect.fromLTWH(0, 0, 1280, 720),
+        Paint()..color = const Color(0xFF102030));
+    st.debugShowViewerFrame(rec.endRecording().toImageSync(1280, 720));
+    await tester.pump();
+
+    // Sin estado de cursor → sin overlay.
+    expect(find.byKey(const Key('remote-cursor')), findsNothing);
+
+    // Posición normalizada del anfitrión (nx≈0.75, ny≈0.25) → sobre la caja
+    // de la imagen en la MISMA proporción (0..65535).
+    st.debugSetRemoteCursor(49151, 16384, true);
+    await tester.pump();
+    final cur = find.byKey(const Key('remote-cursor'));
+    expect(cur, findsOneWidget, reason: 'el overlay se dibuja al llegar el estado');
+    final img = tester.getRect(find.byType(RawImage));
+    final topLeft = tester.getTopLeft(cur);
+    expect((topLeft.dx - img.left) / img.width, closeTo(49151 / 65535, 0.03));
+    expect((topLeft.dy - img.top) / img.height, closeTo(16384 / 65535, 0.03));
+
+    // Cursor oculto (CURSOR_SHOWING ausente) → desaparece.
+    st.debugSetRemoteCursor(0, 0, false);
+    await tester.pump();
+    expect(find.byKey(const Key('remote-cursor')), findsNothing);
+  });
+
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {
     // Cualquier calidad de vídeo (720p, 1080p, nativa) produce el mismo
     // resultado para la misma posición relativa (fix v0.6.2: a 720p/1080p el
