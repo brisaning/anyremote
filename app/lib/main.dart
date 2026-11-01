@@ -131,7 +131,9 @@ List<String> buildListenArgs({required String size, required int kbps}) => [
       '--video-size', size,
       '--video-fps', '15',
       '--max-bitrate', '$kbps',
-      '--codec', 'vp9',
+      // C-14: H.264 por Media Foundation (menos CPU que VP9); si la máquina
+      // no tiene MFT utilizable, el daemon cae a VP9 y lo dice en el log.
+      '--codec', 'h264',
       // C-2: la CAPACIDAD está siempre disponible; el estado real lo fija
       // `{"perm":...}` (se envía ya y en cada cambio de casilla → los
       // toggles son dinámicos durante la sesión, D-07 en caliente).
@@ -432,6 +434,10 @@ class _HomePageState extends State<HomePage> {
             if (mounted) setState(() {});
           case 'video_adapt':
             _append('[daemon] calidad adaptada: ${ev['reason']} → ${ev['size']}${ev['bps'] != null ? ' @${ev['bps']} bps' : ''}');
+          case 'video_backend':
+            // C-14: backend realmente usado (mf_h264 o fallback vpx_vp9).
+            _append('[daemon] códec de vídeo: ${ev['encoder']}'
+                '${ev['detail'] != null ? ' — ${ev['detail']}' : ''}');
           case 'cursor':
             // C-11: posición del cursor del anfitrión → overlay sobre el
             // vídeo. Sin visor no hay dónde dibujarlo (evita rebuilds ~20 Hz).

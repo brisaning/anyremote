@@ -25,6 +25,16 @@ pub enum VideoMsg {
     Event(serde_json::Value),
 }
 
+/// Nombre del backend realmente usado (evento `video_backend`, C-14).
+fn backend_label(codec: CodecFormat) -> &'static str {
+    match codec {
+        CodecFormat::H264 => "mf_h264",
+        CodecFormat::Vp9 => "vpx_vp9",
+        CodecFormat::Deflate => "deflate",
+        CodecFormat::Raw => "raw",
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VideoMode {
     Off,
@@ -348,6 +358,12 @@ pub fn spawn_video_task(
         let mut encoder = encoder_for(codec);
         // QW-4: el códec debe conocer el fps real (control de tasa).
         encoder.set_fps(fps.max(1) as u32);
+        // C-14: backend efectivo → visible en el registro (y en el gate).
+        let mut backend = backend_label(codec);
+        let mut mf_failed = false;
+        let _ = out.try_send(VideoMsg::Event(serde_json::json!({
+            "event": "video_backend", "encoder": backend,
+        })));
         let mut adapt: Option<AdaptState> = None;
         let budget_ms = 1000.0 / fps.max(1) as f64;
         let period = Duration::from_millis(1000 / fps.max(1).max(1));
@@ -398,12 +414,39 @@ pub fn spawn_video_task(
             let te = std::time::Instant::now();
             let enc = match encoder.encode(&frame) {
                 Ok(e) => e,
-                Err(_) => {
-                    let elapsed = t0.elapsed();
-                    if elapsed < period {
-                        std::thread::sleep(period - elapsed);
+                Err(e) => {
+                    // C-14: si el backend H.264/MF no sirve en esta máquina
+                    // (sin MFT sync utilizable), cae a VP9/libvpx de forma
+                    // VISIBLE con evento `video_backend`.
+                    if backend == "mf_h264" && !mf_failed {
+                        mf_failed = true;
+                        backend = "vpx_vp9";
+                        encoder = encoder_for(CodecFormat::Vp9);
+                        encoder.set_fps(fps.max(1) as u32);
+                        if let Some(st) = adapt.as_ref() {
+                            let _ = encoder.set_target_bitrate(st.bps);
+                        }
+                        let _ = out.try_send(VideoMsg::Event(serde_json::json!({
+                            "event": "video_backend", "encoder": "vpx_vp9",
+                            "detail": format!("fallback desde mf_h264: {e:?}"),
+                        })));
+                        match encoder.encode(&frame) {
+                            Ok(e2) => e2,
+                            Err(_) => {
+                                let elapsed = t0.elapsed();
+                                if elapsed < period {
+                                    std::thread::sleep(period - elapsed);
+                                }
+                                continue;
+                            }
+                        }
+                    } else {
+                        let elapsed = t0.elapsed();
+                        if elapsed < period {
+                            std::thread::sleep(period - elapsed);
+                        }
+                        continue;
                     }
-                    continue;
                 }
             };
             let took_ms = te.elapsed().as_secs_f64() * 1000.0;
@@ -447,8 +490,23 @@ pub fn spawn_video_task(
                                 capturer =
                                     PlatformCapturer::TestPattern(TestPatternCapturer::new(w, h));
                             }
-                            encoder = encoder_for(codec); // recreado con la nueva escala
+                            // C-14: si MF ya falló, no se reintenta (evita
+                            // oscilar entre backends); si no, vuelve a intentarlo.
+                            encoder = if mf_failed {
+                                encoder_for(CodecFormat::Vp9)
+                            } else {
+                                encoder_for(codec)
+                            };
+                            backend = if mf_failed {
+                                "vpx_vp9"
+                            } else {
+                                backend_label(codec)
+                            };
                             encoder.set_fps(fps.max(1) as u32); // QW-4
+                            if let Some(st) = adapt.as_ref() {
+                                // restaura la tasa vigente en el encoder nuevo
+                                let _ = encoder.set_target_bitrate(st.bps);
+                            }
                             let _ = out.try_send(VideoMsg::Event(json!({
                                 "event": "video_adapt", "reason": dec.reason,
                                 "size": format!("{}x{}", w, h),

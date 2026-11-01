@@ -51,7 +51,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-11 cursor remoto visible (overlay) v0.8.5 | ✅ gate verde (change-detection + overlay) · ✅ **probado en campo** | `cursor-v0.8.5` · `evidence/cursor-gate.md` |
 | C-12 bug: dueño ausente v0.8.6 | ✅ gate verde (regresión de proceso + discriminador) · 🟡 pendiente campo | `owner-exit-v0.8.6` · `evidence/owner-gate.md` |
 | C-13 adaptación por red (RTT) v0.8.7 | ✅ gate verde (política + e2e con RTT forzado) · 🟡 pendiente campo | `net-adapt-v0.8.7` · `evidence/net-adapt-gate.md` |
-| **Pendientes** | 🟡 campo v0.8.6/7 (dueño ausente + adaptación por red) · cursor v0.8.5 ✅ · reconexión v0.8.2 ✅ · conexión por ID (resolutor) · rendimiento medio/largo (HW, UDP — §7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
+| C-14 aceleración por hardware: H.264/MF v0.9.0 | ✅ gate verde (stream validado con ffmpeg + e2e punta a punta) · 🟡 pendiente campo | `hwcodec-v0.9.0` · `evidence/hwcodec-gate.md` |
+| **Pendientes** | 🟡 campo v0.9.0 (H.264 + dueño ausente + red) · reconexión ✅ · cursor ✅ · conexión por ID (resolutor) · UDP/QUIC (§7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
@@ -177,7 +178,7 @@ su coste o riesgo; la lista queda aquí como backlog de rendimiento/capacidad:
 
 | Propuesta | Esfuerzo | Impacto | Riesgos / notas |
 |---|---|---|---|
-| **Aceleración por hardware** (NVENC/AMF/QSV/Media Foundation) | L | Alto | Cambia el contrato de `VideoEncoder` (entrada GPU; hoy el readback en `core/capture/dxgi.rs` es obligatorio); **fallback a libvpx obligatorio** (patrón RustDesk `video_service.rs`); limpieza legal: clean-room desde APIs públicas — no copiar el fork AGPL `hwcodec` |
+| ~~**Aceleración por hardware** (NVENC/AMF/QSV/Media Foundation)~~ | L | Alto | ✅ **hecho en v0.9.0 (C-14)** por vía **Media Foundation**: encoder H.264 sync (salida→entrada, CBR, perfil Base, `MF_LOW_LATENCY`) con **fallback VP9 visible** + decoder **Cisco OpenH264 (BSD)**. Limpieza legal: clean-room + tercero BSD — no se copió el fork AGPL `hwcodec`. Los MFT de GPU modernos (NVIDIA/AMD/DX12) son **V2 asíncronos** → GPU directa queda como futuro (protocolo async o SDKs). Stream validado con ffmpeg. `evidence/hwcodec-gate.md` |
 | ~~**Adaptación por red** (RTT/pérdida, no solo tiempo de codificación)~~ | M | Alto | ✅ **hecho en v0.8.7 (C-13)**: `NetHint` (campo 26, 1/s desde el que mide) → `watch` al hilo de vídeo → `observe_net` (200/100 ms, confirmación 3, recuperación 10, cooldown 20, `net_congested` bloquea la CPU) + fix del tope al restaurar escala. Ver `evidence/net-adapt-gate.md` |
 | **Transporte UDP (KCP) / QUIC** | L | Alto | Rediseño de seguridad: la autenticación se ancla hoy al binding sobre **TLS/TCP** → UDP exige DTLS/Noise + renegociación; NAT/firewall (mantener TCP como fallback, como RustDesk con `disable-udp`); pérdida → ARQ |
 | ~~**Cursor propio (overlay no embebido)**~~ | M | Alto | ✅ **hecho en v0.8.5 (C-11)**: `CursorState` (campo 25) con sondeo a 50 ms **solo cambios** + flecha dibujada en el visor (misma métrica 0..65535 que los clics). Ver `evidence/cursor-gate.md` |
@@ -188,5 +189,5 @@ su coste o riesgo; la lista queda aquí como backlog de rendimiento/capacidad:
 | Codificación por regiones sucias | L | Bajo | **Ni RustDesk lo implementa** (solo un comentario) → pospuesto |
 | Profundidad de color reducida (16/8 bits) | L | Bajo | VP9 ya submuestrea 4:2:0 → ahorro marginal |
 
-**Orden recomendado** (impacto/esfuerzo): aceleración por hardware → UDP/QUIC
-(adaptación por red ✅ v0.8.7 · cursor propio ✅ v0.8.5).
+**Orden recomendado**: solo queda **UDP/QUIC** (adaptación por red ✅ v0.8.7 ·
+cursor propio ✅ v0.8.5 · aceleración por hardware ✅ v0.9.0).
