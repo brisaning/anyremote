@@ -168,36 +168,6 @@ unsafe fn try_available_type(
     Ok(false)
 }
 
-/// Renegocia SOLO la tasa del tipo de salida (la entrada NV12 no cambia: es
-/// lo que los MFT aceptan en caliente; si lo rechazan, el llamador
-/// reconstruye el MFT en el próximo frame).
-unsafe fn retype_output(
-    t: &mf::IMFTransform,
-    w: u32,
-    h: u32,
-    fps: u32,
-    bitrate: u32,
-) -> Result<(), CodecError> {
-    let outmt = video_type(mf::MFVideoFormat_H264)?;
-    frame_size_attr(&outmt, w, h)?;
-    common_video_attrs(&outmt, w, h, fps)?;
-    outmt
-        .SetUINT32(&mf::MF_MT_AVG_BITRATE, bitrate)
-        .map_err(|e| CodecError::Encode(format!("MF_MT_AVG_BITRATE: {e}")))?;
-    outmt
-        .SetUINT32(
-            &mf::MF_MT_MPEG2_PROFILE,
-            mf::eAVEncH264VProfile_Base.0 as u32,
-        )
-        .map_err(|e| CodecError::Encode(format!("MF_MT_MPEG2_PROFILE: {e}")))?;
-    outmt
-        .SetUINT32(&mf::MF_LOW_LATENCY, 1)
-        .map_err(|e| CodecError::Encode(format!("MF_LOW_LATENCY: {e}")))?;
-    t.SetOutputType(0, &outmt, 0)
-        .map_err(|e| CodecError::Encode(format!("SetOutputType: {e}")))?;
-    Ok(())
-}
-
 /// Configura un MFT codificador: **salida H.264 primero** (orden exigido por
 /// el MFT de Microsoft — observado en desarrollo), luego entrada NV12.
 unsafe fn configure_encoder(
@@ -251,6 +221,15 @@ unsafe fn configure_encoder(
         let _ = attrs.SetUINT32(&mf::CODECAPI_AVEncCommonRateControlMode, 0);
     }
     Ok(())
+}
+
+/// Tamaño mínimo del buffer de salida: el máximo entre el NV12 crudo y el
+/// `cbSize` que declara el MFT (`GetOutputStreamInfo`) + holgura.
+fn output_slot_size(t: &mf::IMFTransform, nv12_len: usize) -> u32 {
+    let cb = unsafe { t.GetOutputStreamInfo(0) }
+        .map(|i| i.cbSize as usize)
+        .unwrap_or(0);
+    (cb.max(nv12_len) + 64 * 1024) as u32
 }
 
 /// Busca el primer MFT codificador utilizable (hardware → software) y lo
@@ -422,7 +401,11 @@ impl MfH264Encoder {
         let t = find_encoder_mft(ew, eh, self.fps, self.bitrate)?;
         let nv12_len = (ew as usize) * (eh as usize) * 3 / 2;
         let input = make_slot(nv12_len as u32)?;
-        let output = make_slot(nv12_len as u32 + 64 * 1024)?; // holgura por ruido
+        // Tamaño de salida = cbSize DECLARADO por el MFT (no el nuestro):
+        // a 720p el de Microsoft exige más que `raw+64k` y devuelve
+        // MF_E_BUFFERTOOSMALL (reporte de campo en v0.9.0).
+        let out_max = output_slot_size(&t, nv12_len);
+        let output = make_slot(out_max)?;
         self.transform = Some(t);
         self.width = ew;
         self.height = eh;
@@ -502,6 +485,10 @@ impl MfH264Encoder {
                 Ok(Some(data))
             }
             Err(e) if e.code() == mf::MF_E_TRANSFORM_NEED_MORE_INPUT => Ok(None),
+            // Prefijo estable para que `encode` reasiente el buffer y reintente.
+            Err(e) if e.code() == mf::MF_E_BUFFERTOOSMALL => {
+                Err(CodecError::Encode(format!("MF_E_BUFFERTOOSMALL: {e}")))
+            }
             Err(e) => Err(CodecError::Encode(format!("ProcessOutput: {e}"))),
         }
     }
@@ -532,7 +519,34 @@ impl VideoEncoder for MfH264Encoder {
             t.ProcessInput(0, &input.sample, 0)
                 .map_err(|e| CodecError::Encode(format!("ProcessInput: {e}")))?;
         }
-        let mut payload = self.drain(&t)?.unwrap_or_default();
+        let mut payload = match self.drain(&t) {
+            Ok(v) => v.unwrap_or_default(),
+            Err(err) if matches!(&err, CodecError::Encode(m) if m.starts_with("MF_E_BUFFERTOOSMALL")) =>
+            {
+                // El MFT pide más buffer del preparado (p. ej. primer GOP
+                // grande a 720p): se agranda y se reintenta UNA vez; si
+                // vuelve a fallar → error real (el llamador hace fallback).
+                let grown = self
+                    .output
+                    .as_ref()
+                    .and_then(|s| unsafe { s.buffer.GetMaxLength() }.ok())
+                    .map(|cur| (cur as usize) * 2)
+                    .unwrap_or(0);
+                let nv = (self.width as usize) * (self.height as usize) * 3 / 2;
+                let want = grown.max(nv + 65_536) as u32;
+                let mut retried = false;
+                if let Ok(slot) = make_slot(want) {
+                    self.output = Some(slot);
+                    retried = true;
+                }
+                if retried {
+                    self.drain(&t)?.unwrap_or_default()
+                } else {
+                    return Err(err);
+                }
+            }
+            Err(e) => return Err(e),
+        };
         self.load_seq_header(&t);
         if !payload.is_empty() && !self.seq_hdr.is_empty() && !payload.starts_with(&self.seq_hdr) {
             let mut with_hdr = self.seq_hdr.clone();
@@ -560,15 +574,13 @@ impl VideoEncoder for MfH264Encoder {
             return true;
         }
         self.bitrate = bps;
-        if let Some(t) = self.transform.clone() {
-            // Renegociación en caliente (solo la salida); si el MFT la
-            // rechaza → reconstrucción perezosa en el próximo frame.
-            let re = unsafe { retype_output(&t, self.width, self.height, self.fps, bps) };
-            if re.is_err() {
-                self.transform = None;
-                self.seq_hdr.clear();
-            }
-        }
+        // Reasignación DIFERIDA (v0.9.1): un `SetOutputType` en caliente
+        // (con entradas ya en cola) dejó al MFT sin emitir — observado a
+        // 720p en campo. Se marca reconstrucción y el PRÓXIMO frame rehace
+        // la configuración completa (camino que sí funciona), con el cbSize
+        // nuevo de `GetOutputStreamInfo`.
+        self.transform = None;
+        self.seq_hdr.clear();
         true
     }
 
@@ -669,6 +681,54 @@ mod tests {
             all.len(),
             path.display()
         );
+    }
+
+    /// Regresión de campo (v0.9.0 → v0.9.1): a **1280×720** con cambios de
+    /// tasa (como los de `AdaptState`), el MFT exigía más buffer que
+    /// `raw+64k` y devolvía `MF_E_BUFFERTOOSMALL` (0xC00D36B1) → fallback a
+    /// VP9 en el anfitrión. Ahora el slot sale de `GetOutputStreamInfo` y
+    /// hay reintento al agrandar.
+    #[test]
+    fn h264_720p_with_bitrate_changes_does_not_overflow() {
+        if mf_ready().is_err() {
+            eprintln!("MF no disponible: se omite");
+            return;
+        }
+        let frame = TestPatternCapturer::render(1280, 720, 11);
+        let mut enc = MfH264Encoder::new(15, 2_000_000);
+        let mut dec = crate::NativeDecoder::new();
+        let mut produced = 0usize;
+        let mut decoded: Option<Frame> = None;
+        // Calentamiento del MFT a720p ≈16 frames + 2 reconstrucciones
+        // (i=5 y i=15) que lo reinician: 50 deja holgura (el primero sale
+        // en i≈31).
+        for i in 0..50 {
+            if i == 5 {
+                // igual que AdaptState al crearse: tasa ≠ inicial
+                assert!(enc.set_target_bitrate(3_000_000));
+            }
+            if i == 15 {
+                // adaptación en caliente (C-13)
+                assert!(enc.set_target_bitrate(1_500_000));
+            }
+            let f = enc
+                .encode(&frame)
+                .expect("encode 720p sin MF_E_BUFFERTOOSMALL");
+            if !f.data.is_empty() {
+                produced += 1;
+                assert_eq!((f.width, f.height), (1280, 720));
+                if decoded.is_none() {
+                    match dec.decode(&f) {
+                        Ok(fr) => decoded = Some(fr),
+                        Err(CodecError::Decode(e)) if e.contains("NEED_MORE_INPUT") => {}
+                        Err(e) => panic!("decode 720p: {e:?}"),
+                    }
+                }
+            }
+        }
+        assert!(produced > 0, "frames a 720p");
+        let out = decoded.expect("algún frame 720p decodifica con OpenH264");
+        assert_eq!((out.width, out.height), (1280, 720));
     }
 
     /// Recorte a dims pares: un frame impar se recorta (1 px) sin error.

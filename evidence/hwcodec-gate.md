@@ -81,3 +81,49 @@ los gates de vídeo M2 (Deflate) y de las rondas anteriores pasan sin cambios.
   `--max-bitrate` y la adaptación por red (C-13) lo gestionan.
 - El **decoder** depende de un tercero (BSD, `openh264` 0.9.9, se builda con
   CMake ya exigido por el proyecto); el encoder no depende de terceros.
+
+---
+
+## Hotfix v0.9.1 — «en el anfitrión apareció vp9» (reporte de campo)
+
+**Evidencia** (`E:\audiany\anyremote\ui.log`):
+
+```
+15:07:06 [daemon] códec de vídeo: mf_h264                       ← MF arrancó
+15:07:13 [daemon] códec de vídeo: vpx_vp9 — fallback desde mf_h264:
+         Encode("ProcessOutput: El buffer era demasiado pequeño… (0xC00D36B1)")
+```
+
+**Causa raíz (doble)** a **1280×720** (configuración del reporte: 720p@15, tope 3 Mbps):
+
+1. **Buffer de salida mal dimensionado**: yo usaba `raw + 64 KB`; el MFT
+   exige su **`GetOutputStreamInfo().cbSize`** → `MF_E_BUFFERTOOSMALL`
+   (los tests de codec usaban 320×180, donde el margen bastaba — por eso no
+   saltó en gate).
+2. **`SetOutputType` en caliente**: la primera tasa de `AdaptState` se
+   renegociaba con entradas ya en cola y dejaba al MFT sin emitir (aislado
+   empíricamente: sin la llamada → producía; con ella → cero frames).
+
+**Fix**:
+
+- Slot de salida dimensionado por **`cbSize` del MFT** (`output_slot_size`)
+  en la creación **y** en cada cambio de tasa.
+- **Reasignación diferida de bitrate**: `set_target_bitrate` ya no negocia en
+  caliente — marca reconstrucción y el siguiente frame rehace la
+  configuración completa (camino probado). Coste honesto: el MFT de 720p
+  tarda **≈16 frames (~1 s a 15 fps) en su primer frame** y cada
+  reconstrucción reinicia ese calentamiento (los cambios de tasa son
+  frecuentes solo bajo presión; el cooldown de C-13 limita los de red).
+- **Reintento**: si el MFT aún devuelve `MF_E_BUFFERTOOSMALL`, se agranda el
+  slot al doble y se reintenta una vez (el error real propaga → fallback).
+
+**Tests de regresión**:
+
+- `h264_720p_with_bitrate_changes_does_not_overflow` — la configuración
+  EXACTA del reporte (1280×720 + `set_target_bitrate` a 3 Mbps y a 1,5 Mbps
+  en caliente): frames fluyen y OpenH264 los decodifica (sin fix: cero
+  frames / fallback).
+- `daemon_h264_e2e` ajustado a **1280×720@15 con tope 3000** (su sesión):
+  punta a punta con preview BGRA 1280×720.
+
+**Gates**: Rust 48/0 · clippy 0/0 · fmt 0 · Flutter 9/9.

@@ -51,7 +51,7 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-11 cursor remoto visible (overlay) v0.8.5 | ✅ gate verde (change-detection + overlay) · ✅ **probado en campo** | `cursor-v0.8.5` · `evidence/cursor-gate.md` |
 | C-12 bug: dueño ausente v0.8.6 | ✅ gate verde (regresión de proceso + discriminador) · 🟡 pendiente campo | `owner-exit-v0.8.6` · `evidence/owner-gate.md` |
 | C-13 adaptación por red (RTT) v0.8.7 | ✅ gate verde (política + e2e con RTT forzado) · 🟡 pendiente campo | `net-adapt-v0.8.7` · `evidence/net-adapt-gate.md` |
-| C-14 aceleración por hardware: H.264/MF v0.9.0 | ✅ gate verde (stream validado con ffmpeg + e2e punta a punta) · 🟡 pendiente campo | `hwcodec-v0.9.0` · `evidence/hwcodec-gate.md` |
+| C-14 aceleración por hardware: H.264/MF v0.9.0 (+ hotfix v0.9.1) | ✅ gate verde (stream validado con ffmpeg + e2e720p punta a punta) · 🟡 pendiente campo | `hwcodec-v0.9.0`, `hwcodec-v0.9.1` · `evidence/hwcodec-gate.md` |
 | **Pendientes** | 🟡 campo v0.9.0 (H.264 + dueño ausente + red) · reconexión ✅ · cursor ✅ · conexión por ID (resolutor) · UDP/QUIC (§7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
