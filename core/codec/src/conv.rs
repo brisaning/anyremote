@@ -86,8 +86,7 @@ pub fn crop_bgra(src: &[u8], stride_w: u32, ew: u32, eh: u32) -> Vec<u8> {
     for row in 0..eh as usize {
         let from = row * src_stride;
         let to = row * dst_stride;
-        out[to..to + dst_stride]
-            .copy_from_slice(&src[from..from + dst_stride]);
+        out[to..to + dst_stride].copy_from_slice(&src[from..from + dst_stride]);
     }
     out
 }

@@ -205,10 +205,13 @@ async fn main() {
             if let Some(c) = flag_value(&args, "--codec") {
                 cfg.codec = match c.as_str() {
                     "vp9" => CodecFormat::Vp9,
+                    // C-14: H.264 por Media Foundation con fallback a VP9
+                    // (evento `video_backend` si el MFT no sirve en la máquina).
+                    "h264" => CodecFormat::H264,
                     "deflate" => CodecFormat::Deflate,
                     "raw" => CodecFormat::Raw,
                     other => {
-                        eprintln!("--codec espera vp9|deflate|raw (recibido {other})");
+                        eprintln!("--codec espera vp9|h264|deflate|raw (recibido {other})");
                         std::process::exit(2);
                     }
                 };
@@ -287,7 +290,7 @@ async fn main() {
             eprintln!(
                 "anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio"
             );
-            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
+            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             eprintln!("  anyremoted id                                       (ID estable de este equipo, D-03)");

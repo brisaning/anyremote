@@ -12,6 +12,7 @@ vpx = ["dep:shiguredo_libvpx"]
 [dependencies]
 anyremote-capture = { workspace = true }
 flate2 = "1"
+openh264 = "0.9.9"
 shiguredo_libvpx = { version = "2026.2.0-canary.3", optional = true }
 
 [target.'cfg(windows)'.dependencies]

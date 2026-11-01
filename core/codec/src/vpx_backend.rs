@@ -19,7 +19,6 @@ const KEYFRAME_INTERVAL: u32 = 60;
 /// BGRA8 → I420 (BT.601). Croma promediado 2x2.
 pub use crate::conv::{bgra_to_i420, i420_to_bgra};
 
-
 /// Encoder VP9 con estado GOP (keyframe inicial + periódico) y cola de paquetes.
 pub struct Vp9Encoder {
     inner: Option<Encoder>,

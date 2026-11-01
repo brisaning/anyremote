@@ -134,6 +134,8 @@ void main() {
     // El resto de la configuración de campo no cambia.
     expect(args, contains('--allow-input'));
     expect(args, contains('--audio-source'));
+    // C-14: la app pide H.264/MF (con fallback a VP9 visible en el log).
+    expect(args[args.indexOf('--codec') + 1], 'h264');
     expect(args[args.indexOf('--video-size') + 1], '1280x720');
     expect(args[args.indexOf('--max-bitrate') + 1], '3000');
   });
