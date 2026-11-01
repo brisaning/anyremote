@@ -17,80 +17,8 @@ use crate::{CodecError, CodecFormat, EncodedFrame, VideoDecoder, VideoEncoder};
 const KEYFRAME_INTERVAL: u32 = 60;
 
 /// BGRA8 → I420 (BT.601). Croma promediado 2x2.
-pub fn bgra_to_i420(width: u32, height: u32, bgra: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    let w = width as usize;
-    let h = height as usize;
-    debug_assert!(
-        w.is_multiple_of(2) && h.is_multiple_of(2),
-        "dimensiones pares requeridas (4:2:0)"
-    );
-    let mut y = vec![0u8; w * h];
-    let cw = w / 2;
-    let mut u = vec![0u8; cw * (h / 2)];
-    let mut v = vec![0u8; cw * (h / 2)];
+pub use crate::conv::{bgra_to_i420, i420_to_bgra};
 
-    for row in 0..h {
-        for col in 0..w {
-            let i = (row * w + col) * 4;
-            let b = bgra[i] as i32;
-            let g = bgra[i + 1] as i32;
-            let r = bgra[i + 2] as i32;
-            let yy = (77 * r + 150 * g + 29 * b) >> 8; // rango completo sin offset
-            y[row * w + col] = yy.clamp(0, 255) as u8;
-            if row % 2 == 0 && col % 2 == 0 {
-                let mut sb = 0i32;
-                let mut sg = 0i32;
-                let mut sr = 0i32;
-                for dy in 0..2usize {
-                    for dx in 0..2usize {
-                        let j = ((row + dy) * w + (col + dx)) * 4;
-                        sb += bgra[j] as i32;
-                        sg += bgra[j + 1] as i32;
-                        sr += bgra[j + 2] as i32;
-                    }
-                }
-                let (b, g, r) = (sb / 4, sg / 4, sr / 4);
-                let uu = ((-43 * r - 85 * g + 128 * b + 128) >> 8) + 128;
-                let vv = ((128 * r - 107 * g - 21 * b + 128) >> 8) + 128;
-                let ci = (row / 2) * cw + col / 2;
-                u[ci] = uu.clamp(0, 255) as u8;
-                v[ci] = vv.clamp(0, 255) as u8;
-            }
-        }
-    }
-    (y, u, v)
-}
-
-/// I420 → BGRA8 (BT.601; croma por muestreo simple).
-pub fn i420_to_bgra(
-    width: usize,
-    height: usize,
-    y: &[u8],
-    u: &[u8],
-    v: &[u8],
-    y_s: usize,
-    c_s: usize,
-) -> Vec<u8> {
-    let mut out = vec![0u8; width * height * 4];
-    for row in 0..height {
-        for col in 0..width {
-            let yy = y[row * y_s + col] as i32; // rango completo (par coherente con bgra_to_i420)
-            let uu = u[(row / 2) * c_s + col / 2] as i32;
-            let vv = v[(row / 2) * c_s + col / 2] as i32;
-            let ep = vv - 128;
-            let eu = uu - 128;
-            let r = (256 * yy + 359 * ep + 128) >> 8;
-            let g = (256 * yy - 88 * eu - 183 * ep + 128) >> 8;
-            let b = (256 * yy + 453 * eu + 128) >> 8;
-            let i = (row * width + col) * 4;
-            out[i] = b.clamp(0, 255) as u8;
-            out[i + 1] = g.clamp(0, 255) as u8;
-            out[i + 2] = r.clamp(0, 255) as u8;
-            out[i + 3] = 255;
-        }
-    }
-    out
-}
 
 /// Encoder VP9 con estado GOP (keyframe inicial + periódico) y cola de paquetes.
 pub struct Vp9Encoder {

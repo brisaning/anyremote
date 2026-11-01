@@ -75,6 +75,7 @@ dependencies = [
  "anyremote-capture",
  "flate2",
  "shiguredo_libvpx",
+ "windows 0.61.3",
 ]
 
 [[package]]

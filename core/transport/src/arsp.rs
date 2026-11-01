@@ -123,6 +123,7 @@ pub fn welcome(node_id: &str) -> proto::envelope::Payload {
                 proto::CodecFormatEnum::RawCodec as i32,
                 proto::CodecFormatEnum::DeflateCodec as i32,
                 proto::CodecFormatEnum::Vp9Codec as i32,
+                proto::CodecFormatEnum::H264Codec as i32,
             ],
         }),
     })

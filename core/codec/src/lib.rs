@@ -5,6 +5,14 @@
 
 use anyremote_capture::{CaptureError, Frame, PixelFormat};
 
+/// Conversiones de color del pipeline (BGRA↔I420↔NV12): independientes de
+/// features — las usan el backend VP9 (vpx) y el de H.264/MF (C-14).
+pub mod conv;
+
+/// H.264 por Media Foundation (C-14): solo en Windows.
+#[cfg(windows)]
+pub mod mf_backend;
+
 #[cfg(feature = "vpx")]
 pub mod vpx_backend;
 
@@ -14,6 +22,8 @@ pub enum CodecFormat {
     Raw = 0,
     Deflate = 1,
     Vp9 = 2,
+    /// C-14: H.264 por Media Foundation (hardware con fallback a VP9).
+    H264 = 3,
 }
 
 impl CodecFormat {
@@ -22,6 +32,7 @@ impl CodecFormat {
             0 => Some(Self::Raw),
             1 => Some(Self::Deflate),
             2 => Some(Self::Vp9),
+            3 => Some(Self::H264),
             _ => None,
         }
     }
@@ -139,6 +150,8 @@ impl VideoEncoder for DeflateEncoder {
 pub struct NativeDecoder {
     #[cfg(feature = "vpx")]
     vp9: Option<vpx_backend::Vp9Decoder>,
+    #[cfg(windows)]
+    h264: Option<mf_backend::MfH264Decoder>,
 }
 
 impl NativeDecoder {
@@ -146,6 +159,8 @@ impl NativeDecoder {
         Self {
             #[cfg(feature = "vpx")]
             vp9: None,
+            #[cfg(windows)]
+            h264: None,
         }
     }
 }
@@ -171,6 +186,18 @@ impl VideoDecoder for NativeDecoder {
             #[cfg(not(feature = "vpx"))]
             return Err(CodecError::Unsupported(CodecFormat::Vp9));
         }
+        if frame.format == CodecFormat::H264 {
+            // C-14: delegado al decodificador MF con estado.
+            #[cfg(windows)]
+            {
+                if self.h264.is_none() {
+                    self.h264 = Some(mf_backend::MfH264Decoder::new());
+                }
+                return self.h264.as_mut().unwrap().decode(frame);
+            }
+            #[cfg(not(windows))]
+            return Err(CodecError::Unsupported(CodecFormat::H264));
+        }
         let expect = (frame.width * frame.height * 4) as usize;
         let data = match frame.format {
             CodecFormat::Raw => frame.data.clone(),
@@ -181,7 +208,7 @@ impl VideoDecoder for NativeDecoder {
                     .map_err(|e| CodecError::Decode(e.to_string()))?;
                 out
             }
-            CodecFormat::Vp9 => unreachable!("manejado arriba"),
+            CodecFormat::Vp9 | CodecFormat::H264 => unreachable!("manejado arriba"),
         };
         if data.len() != expect {
             return Err(CodecError::Decode(format!(
@@ -228,6 +255,20 @@ pub fn encoder_for(format: CodecFormat) -> Box<dyn VideoEncoder> {
                 // Sin feature `vpx`: rechazo explícito (gate de C3-bis).
                 Box::new(UnsupportedEncoder {
                     format: CodecFormat::Vp9,
+                })
+            }
+        }
+        // C-14: H.264 perezoso — el MFT se crea en el primer frame (con sus
+        // dimensiones); si MF no sirve, `encode` falla y video.rs cae a VP9.
+        CodecFormat::H264 => {
+            #[cfg(windows)]
+            {
+                Box::new(mf_backend::MfH264Encoder::new(15, 2_000_000))
+            }
+            #[cfg(not(windows))]
+            {
+                Box::new(UnsupportedEncoder {
+                    format: CodecFormat::H264,
                 })
             }
         }
