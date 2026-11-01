@@ -51,10 +51,12 @@ async fn h264_flows_host_encoder_to_viewer_decoder() {
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Off;
         c.video = VideoMode::Test;
-        c.video_size = (320, 200);
-        c.video_fps = 10;
-        // C-14: H.264 por MF en el anfitrión (fallback VP9 explícito si no).
+        // Configuración EXACTA del reporte de campo (v0.9.0): 720p@15 con
+        // tope 3 Mbps — el escenario donde el MFT daba BUFFERTOOSMALL.
+        c.video_size = (1280, 720);
+        c.video_fps = 15;
         c.codec = CodecFormat::H264;
+        c.video_max_bps = Some(3_000_000);
         c.max_secs = 8;
         c.on_event = Some(Box::new(move |l: String| le.lock().unwrap().push(l)));
         c
@@ -149,8 +151,8 @@ async fn h264_flows_host_encoder_to_viewer_decoder() {
 
     // --- Preview local: cabecera BGRA correcta ---
     let (w, h, _seq, len) = header;
-    assert_eq!((w, h), (320, 200), "dimensiones del preview");
-    assert_eq!(len, 320 * 200 * 4, "payload BGRA completo");
+    assert_eq!((w, h), (1280, 720), "dimensiones del preview");
+    assert_eq!(len, 1280 * 720 * 4, "payload BGRA completo");
 
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }
