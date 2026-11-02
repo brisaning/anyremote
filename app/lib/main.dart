@@ -122,9 +122,17 @@ class _RemoteCursorPainter extends CustomPainter {
 /// una sesión (p. ej. el invitado pulsa «Detener») vuelve a `accept()` en
 /// lugar de terminar — antes el proceso moría (y de paso se colgaba) y el
 /// estado «Escuchar (red)» quedaba activo sin aceptar reconexiones.
-List<String> buildListenArgs({required String size, required int kbps}) => [
+List<String> buildListenArgs({
+  required String size,
+  required int kbps,
+  bool udp = false,
+}) =>
+    [
       'listen',
       '--bind', '0.0.0.0:21118',
+      // C-15: udp = QUIC con stream de vídeo dedicado; el listener acepta
+      // TCP y UDP a la vez, así que los peers viejos siguen conectando.
+      if (udp) ...['--transport', 'udp'],
       '--clipboard', 'win',
       // M2: el escuchador comparte SU pantalla por defecto (sino no hay qué ver).
       '--video', 'on',
@@ -204,6 +212,8 @@ class _HomePageState extends State<HomePage> {
   /// prueba de campo de 2026-10-27 `native` solo alcanzó ~4.6 fps en el
   /// anfitrión y el enlace marcó RTT 57–782 ms (vídeo demasiado pesado).
   String _videoQuality = '720p';
+  /// C-15: transporte UDP/QUIC para listen y connect (default TCP = histórico).
+  bool _useUdp = false;
   static const Map<String, String> _qualities = {
     '720p': '1280x720',
     '1080p': '1920x1080',
@@ -619,6 +629,7 @@ class _HomePageState extends State<HomePage> {
       final args = buildListenArgs(
         size: _qualities[_videoQuality] ?? '1280x720',
         kbps: _qualityKbps[_videoQuality] ?? 3000,
+        udp: _useUdp,
       );
       final proc = await Process.start(
         _daemonBin,
@@ -632,7 +643,7 @@ class _HomePageState extends State<HomePage> {
         if (_shareAudio) 'audio del sistema',
         if (_shareMic) 'micrófono',
       ];
-      _append('[ui] listener de red lanzado (0.0.0.0:21118 — vídeo $_videoQuality@15 vp9'
+      _append('[ui] listener de red lanzado (0.0.0.0:21118 — ${_useUdp ? 'tcp+udp (QUIC)' : 'tcp'} — vídeo $_videoQuality@15 h264'
           '${activos.isEmpty
               ? ' — sin control remoto ni audio (D-07)'
               : ' — acepta ${activos.join(' + ')}'}'
@@ -683,6 +694,10 @@ class _HomePageState extends State<HomePage> {
           : '[ui] desde otra máquina usa: ${ips.join("  |  ")}');
       _append('[ui] si falla la conexión, abre el puerto (admin): '
           'netsh advfirewall firewall add rule name="anyremote" dir=in action=allow protocol=TCP localport=21118');
+      if (_useUdp) {
+        _append('[ui] ...y para UDP (QUIC): '
+            'netsh advfirewall firewall add rule name="anyremote-udp" dir=in action=allow protocol=UDP localport=21118');
+      }
     } catch (e) {
       if (mounted) _append('[ui] no se pudieron listar las IPs: $e');
     }
@@ -920,6 +935,8 @@ class _HomePageState extends State<HomePage> {
         : ['connect', target, '--clipboard', 'win'];
     // RF audio: reproduce lo que el anfitrión comparte (si no comparte, no hay audio).
     args.addAll(['--audio', 'on']);
+    // C-15: udp = QUIC con fallback automático a TCP si el par no lo habla.
+    if (_useUdp) args.addAll(['--transport', 'udp']);
     _append('[ui] lanzando anyremoted ${asAlias ? 'connect --profile $target' : 'connect $target'}');
     try {
       final proc = await Process.start(
@@ -1189,6 +1206,31 @@ class _HomePageState extends State<HomePage> {
                                   }
                                 },
                           isDense: true,
+                        ),
+                        const SizedBox(width: 14),
+                        // C-15: transporte UDP/QUIC — el vídeo va por un stream
+                        // dedicado y no bloquea el control en enlaces malos.
+                        Tooltip(
+                          message: 'UDP (QUIC): el vídeo corre por un stream '
+                              'dedicado — un enlace malo degrada el vídeo, no '
+                              'el control. El anfitrión acepta TCP y UDP a la '
+                              'vez y el cliente cae a TCP si el par no lo habla',
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Checkbox(
+                                value: _useUdp,
+                                onChanged: _listener != null || running
+                                    ? null
+                                    : (v) => setState(() => _useUdp = v ?? false),
+                                visualDensity: VisualDensity.compact,
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              const Text('UDP (QUIC)',
+                                  style: TextStyle(fontSize: 12)),
+                            ],
+                          ),
                         ),
                       ],
                     ),
