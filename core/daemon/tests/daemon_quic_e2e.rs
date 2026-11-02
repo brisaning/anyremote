@@ -33,7 +33,8 @@ async fn free_port() -> u16 {
     use std::sync::atomic::{AtomicU16, Ordering};
     static NEXT: AtomicU16 = AtomicU16::new(0);
     let off = NEXT.fetch_add(4, Ordering::SeqCst);
-    let base = 41_000u16.wrapping_add((std::process::id() as u16).wrapping_mul(7) % 4_000)
+    let base = 41_000u16
+        .wrapping_add((std::process::id() as u16).wrapping_mul(7) % 4_000)
         .wrapping_add(off);
     for port in [base, base + 1, base + 2, base + 3] {
         let tcp = tokio::net::TcpListener::bind(("127.0.0.1", port)).await;
