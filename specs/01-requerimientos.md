@@ -25,7 +25,7 @@
 |RF-04 Perfiles|✅ (C6 + UI v0.4.0)|`c6-gate`, `ui-batch-gate`|
 |RF-05 Registro|✅ (C7)|`c7-gate`|
 |RF-06 Trazabilidad|✅ (fases 0–6 + evidencia versionada)|`evidence/`|
-|Pendientes globales|🟡 campo v0.9.0 (H.264) — reconexión **✅** · cursor **✅** · red/visor/ID con v0.8.3–0.8.7 · conexión por ID (resolutor) · UDP/QUIC (specs/02 §7) · resampler (único menor)|README § Pendientes|
+|Pendientes globales|🟡 revalidación audio/720p/Nativa — **H.264/red/visor/ID/dueño ✅ todos verificados en campo** · conexión por ID (resolutor) · **UDP/QUIC (specs/02 §7, siguiente)** · resampler (único menor)|README § Pendientes|
 
 ---
 
