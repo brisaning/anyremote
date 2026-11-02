@@ -49,10 +49,11 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-9 visor completo + ID visible v0.8.3 | ✅ gate verde (con control negativo de overflow) · 🟡 pendiente campo | `visor-id-v0.8.3` · `evidence/viewer-id-gate.md` |
 | C-10 modo visor (cliente) v0.8.4 | ✅ gate verde · 🟡 pendiente campo | `visor-mode-v0.8.4` · `evidence/viewer-mode-gate.md` |
 | C-11 cursor remoto visible (overlay) v0.8.5 | ✅ gate verde (change-detection + overlay) · ✅ **probado en campo** | `cursor-v0.8.5` · `evidence/cursor-gate.md` |
-| C-12 bug: dueño ausente v0.8.6 | ✅ gate verde (regresión de proceso + discriminador) · 🟡 pendiente campo | `owner-exit-v0.8.6` · `evidence/owner-gate.md` |
-| C-13 adaptación por red (RTT) v0.8.7 | ✅ gate verde (política + e2e con RTT forzado) · 🟡 pendiente campo | `net-adapt-v0.8.7` · `evidence/net-adapt-gate.md` |
-| C-14 aceleración por hardware: H.264/MF v0.9.0 (+ hotfix v0.9.1) | ✅ gate verde (stream validado con ffmpeg + e2e720p punta a punta) · 🟡 pendiente campo | `hwcodec-v0.9.0`, `hwcodec-v0.9.1` · `evidence/hwcodec-gate.md` |
-| **Pendientes** | 🟡 campo v0.9.0 (H.264 + dueño ausente + red) · reconexión ✅ · cursor ✅ · conexión por ID (resolutor) · UDP/QUIC (§7) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
+| C-12 bug: dueño ausente v0.8.6 | ✅ gate verde · ✅ **validada en campo** (auditoría con `dueño ausente (stdin cerrado)` al cerrar la app) | `owner-exit-v0.8.6` · `evidence/owner-gate.md` |
+| C-13 adaptación por red (RTT) v0.8.7 | ✅ gate verde · ✅ **validada en campo** (`red_bitrate` 3M→1.5M→750k con rtt 40–1402 ms en el informe del anfitrión) | `net-adapt-v0.8.7` · `evidence/net-adapt-gate.md` |
+| C-14 aceleración por hardware: H.264/MF v0.9.0 (+ hotfix v0.9.1) | ✅ gate verde (stream validado con ffmpeg + e2e720p punta a punta) · ✅ **validada en campo** (`mf_h264` sin fallback, sesión 112 frames/2,4 MB a720p) | `hwcodec-v0.9.0`, `hwcodec-v0.9.1` · `evidence/hwcodec-gate.md` |
+| C-15 transporte UDP/QUIC v0.10.0 | ✅ gate verde (4 unit QUIC + 3 e2e: sesión con vídeo por stream dedicado, fallback y compat TCP; diseño §8) · 🟡 pendiente campo | `quic-transport-v0.10.0` · `evidence/quic-gate.md` |
+| **Pendientes** | 🟡 revalidación audio/720p/Nativa · **campo v0.10.0 (UDP/QUIC)** · conexión por ID (resolutor) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
@@ -180,7 +181,7 @@ su coste o riesgo; la lista queda aquí como backlog de rendimiento/capacidad:
 |---|---|---|---|
 | ~~**Aceleración por hardware** (NVENC/AMF/QSV/Media Foundation)~~ | L | Alto | ✅ **hecho en v0.9.0 (C-14)** por vía **Media Foundation**: encoder H.264 sync (salida→entrada, CBR, perfil Base, `MF_LOW_LATENCY`) con **fallback VP9 visible** + decoder **Cisco OpenH264 (BSD)**. Limpieza legal: clean-room + tercero BSD — no se copió el fork AGPL `hwcodec`. Los MFT de GPU modernos (NVIDIA/AMD/DX12) son **V2 asíncronos** → GPU directa queda como futuro (protocolo async o SDKs). Stream validado con ffmpeg. `evidence/hwcodec-gate.md` |
 | ~~**Adaptación por red** (RTT/pérdida, no solo tiempo de codificación)~~ | M | Alto | ✅ **hecho en v0.8.7 (C-13)**: `NetHint` (campo 26, 1/s desde el que mide) → `watch` al hilo de vídeo → `observe_net` (200/100 ms, confirmación 3, recuperación 10, cooldown 20, `net_congested` bloquea la CPU) + fix del tope al restaurar escala. Ver `evidence/net-adapt-gate.md` |
-| **Transporte UDP (KCP) / QUIC** | L | Alto | Rediseño de seguridad: la autenticación se ancla hoy al binding sobre **TLS/TCP** → UDP exige DTLS/Noise + renegociación; NAT/firewall (mantener TCP como fallback, como RustDesk con `disable-udp`); pérdida → ARQ |
+| ~~**Transporte UDP (KCP) / QUIC**~~ | L | Alto | ✅ **hecho en v0.10.0 (C-15)**: QUIC (quinn) con **binding C2 sobre `export_keying_material`** (misma etiqueta que TCP — sin renegociación: QUIC ya es TLS 1.3), **2 streams** (control + vídeo dedicado con cola drop-new), listen-udp ata TCP+UDP y connect cae a TCP (`quic_fallback`); datagrams con mini-ARQ queda como futuro. `evidence/quic-gate.md` |
 | ~~**Cursor propio (overlay no embebido)**~~ | M | Alto | ✅ **hecho en v0.8.5 (C-11)**: `CursorState` (campo 25) con sondeo a 50 ms **solo cambios** + flecha dibujada en el visor (misma métrica 0..65535 que los clics). Ver `evidence/cursor-gate.md` |
 | VP8 como opción de CPU barata | M | Medio | `shiguredo_libvpx` ya lo soporta (`Vp8Config.static_threshold`) → exponer `--codec vp8` (proto + negociación) |
 | Captura/encode con buffers reutilizados | M | Medio | El vídeo ya corre en hilo propio (v0.7.2); queda eliminar las allocaciones por frame en `bgra_to_i420`/`scale_frame` |
@@ -189,5 +190,51 @@ su coste o riesgo; la lista queda aquí como backlog de rendimiento/capacidad:
 | Codificación por regiones sucias | L | Bajo | **Ni RustDesk lo implementa** (solo un comentario) → pospuesto |
 | Profundidad de color reducida (16/8 bits) | L | Bajo | VP9 ya submuestrea 4:2:0 → ahorro marginal |
 
-**Orden recomendado**: solo queda **UDP/QUIC** (adaptación por red ✅ v0.8.7 ·
-cursor propio ✅ v0.8.5 · aceleración por hardware ✅ v0.9.0).
+**Orden recomendado**: ~~solo queda **UDP/QUIC**~~ → **§7 SIN PENDIENTES** (adaptación
+por red ✅ v0.8.7 · cursor propio ✅ v0.8.5 · aceleración por hardware ✅ v0.9.0 ·
+**UDP/QUIC ✅ v0.10.0 (C-15)**). Quedan como futuros los renglones menores (VP8,
+libyuv, regiones sucias, WAN).
+
+---
+
+## 8. C-15: transporte UDP/QUIC — diseño (2026-11-01)
+
+**Disparador de campo** (v0.9.1, 2026-11-01): la sesión murió con
+`connection_gone` cuando el enlace degradó (`rtt_last=1402 ms` tras bajar dos
+veces el bitrate) — con **TCP** el vídeo bulk bloquea el stream único (HOL
+blocking): heartbeats, control y audio esperan detrás de los retransmitidos.
+Casos de libro para un transporte sin HOL por flujo.
+
+### Decisión: QUIC (quinn 0.11) con DOS streams fiables
+
+| Pieza | Diseño |
+|---|---|
+| Flag | `--transport tcp\|udp` (default `tcp` = comportamiento actual sin cambios). listen+connect. |
+| **listen `udp`** | ata **TCP y UDP en el mismo puerto** (21118): compat con versiones/peers viejos (solo TCP). |
+| **connect `udp`** | intenta QUIC con timeout (~3 s); si falla → evento `quic_fallback` → **TCP** (compat con listen viejo). |
+| Streams | el cliente abre **2 bi-streams** en orden: **#1 control** (todo el ARSP de hoy: auth, hello, permisos, input, audio, portapapeles, archivos, heartbeats, NetHint) y **#2 vídeo** (`VideoFrame` host→viewer). Orden determinista (IDs de stream QUIC crecientes); ambos lados siempre abren/aceptan 2. |
+| Vídeo | stream **dedicado fiable** (no datagrams en v1 — ver «por qué no datagrams» abajo). El envío vive en una **tarea propia con mpsc acotado (drop-new)**: el backpressure de vídeo jamás bloquea el bucle de sesión (ese es justamente el objetivo del stream dedicado); TCP queda idéntico a hoy. |
+| Canal | `Channel<T>` (framing ARSP por longitud, C1) se reusa **tal cual** sobre un adaptador `StreamPair{send,recv}` que implementa `AsyncRead+AsyncWrite` (los streams de quinn ya los implementan para tokio). |
+| Binding C2 | `Connection::export_keying_material(buf, BINDING_LABEL, None)` (RFC 5705 vía quinn) → **misma etiqueta `anyremote-auth-v1`** que hoy: la prueba ed25519 del peer se valida contra el binding local igual que en TCP. |
+| ALPN | `anyremote-v1` en ambos lados (QUIC exige/permite ALPN; deja puerta a versiones). |
+| Seguridad | El TLS de QUIC es **acuerdo de claves** (1.3 obligatorio); la autenticación sigue siendo **C2** (firma ed25519 + comparación de binding) — un intermediario que termine TLS a cada lado produce bindings distintos y C2 lo rechaza. Cliente: pin de `cert_store::load_trusted` si existe (rechazo temprano, como TCP) o **acepta-anything** si no (no hay bootstrap en claro en UDP) y tras C2 OK **persiste el cert del peer (TOFU)**. |
+| Transport config | idle 30 s · ventana de stream 16 MiB (= `MAX_FRAME_BYTES`, un frame completo en vuelo) · ventana de conexión 32 MiB · hasta 8 bi-streams · sin 0-RTT (replays). Congestión: controlador por defecto de quinn. |
+| App | toggle «UDP (QUIC)» en la fila principal (misma banda que los perfiles): se añade `--transport udp` a listen **y** connect; el hint de `netsh` menciona la regla UDP cuando está activo. |
+| Eventos | `listening` lleva `transport`; nuevo `quic_fallback {reason}` en connect; el resto de eventos/auditoría sin cambios. |
+
+### Por qué **no** datagrams de vídeo en v1 (decisión documentada)
+
+Un datagrama perdido = **frame H.264 roto hasta el próximo IDR** (los
+P-frame dependen del anterior; GOP ≈ 1–2 s): artefactos de segundos sin
+retransmisión. Para corregirlo haría falta mini-ARQ (retransmitir con
+deadline corto) o recuperación por keyframe — complejidad nueva con riesgo
+de regresión. El **stream dedicado** da ya el win de QUIC frente a TCP (pérdida
+de vídeo no bloquea control/audio/heartbeats) con frames en orden y sin
+framing nuevo. **Futuro**: vídeo por datagrams con mini-ARQ + salto de frames
+atrasados (el `mpsc` drop-new del v1 ya limita la antigüedad a ~2 frames).
+
+### Límites de alcance (C-15)
+
+- Sin NAT traversal/STUN/relay (LAN primero; WAN queda en §7).
+- Sin renegociación de transporte en caliente (reconectar con el flag).
+- `netsh` hint para UDP en la app (firewall de Windows también filtra UDP).

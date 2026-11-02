@@ -165,6 +165,14 @@ async fn main() {
             if let Some(v) = flag_value(&args, "--max-sessions") {
                 cfg.max_sessions = v.parse().unwrap_or(1);
             }
+            // C-15: transporte — udp = QUIC (listen ata TCP+UDP; el default
+            // tcp es el comportamiento histórico sin cambios).
+            if let Some(t) = flag_value(&args, "--transport") {
+                cfg.transport = anyremote_daemon::Transport::parse(&t).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                });
+            }
             // Hito M2: flags de vídeo (solo tiene efecto en listen).
             if let Some(v) = flag_value(&args, "--video") {
                 cfg.video = VideoMode::parse(&v).unwrap_or_else(|e| {
@@ -263,6 +271,13 @@ async fn main() {
             if let Some(v) = flag_value(&args, "--max-secs") {
                 cfg.max_secs = v.parse().unwrap_or(600);
             }
+            // C-15: udp = QUIC con fallback automático a TCP si el par no lo habla.
+            if let Some(t) = flag_value(&args, "--transport") {
+                cfg.transport = anyremote_daemon::Transport::parse(&t).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                });
+            }
             cfg.on_event = Some(Box::new(|line: String| {
                 println!("{line}");
                 use std::io::Write;
@@ -290,8 +305,8 @@ async fn main() {
             eprintln!(
                 "anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio"
             );
-            eprintln!("  anyremoted listen   [--bind a:p] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
-            eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
+            eprintln!("  anyremoted listen   [--bind a:p] [--transport tcp|udp] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
+            eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--transport tcp|udp] [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             eprintln!("  anyremoted id                                       (ID estable de este equipo, D-03)");
             std::process::exit(2);

@@ -62,7 +62,15 @@ void main() {
     expect(find.text('Control remoto'), findsOneWidget);
     expect(find.text('Audio del sistema'), findsOneWidget);
     expect(find.text('Micrófono'), findsOneWidget);
-    expect(find.byType(Checkbox), findsNWidgets(3));
+    // 4 checkboxes: los 3 de permisos (C-2) + el de transporte UDP (C-15,
+    // va DESPUÉS en el árbol → los índices 0..2 siguen siendo los permisos).
+    expect(find.byType(Checkbox), findsNWidgets(4));
+    expect(find.text('UDP (QUIC)'), findsOneWidget);
+    expect(
+      tester.widget<Checkbox>(find.byType(Checkbox).at(3)).value,
+      isFalse,
+      reason: 'C-15: TCP por defecto (historico)',
+    );
     for (var i = 0; i < 3; i++) {
       expect(
         tester.widget<Checkbox>(find.byType(Checkbox).at(i)).value,
@@ -138,6 +146,13 @@ void main() {
     expect(args[args.indexOf('--codec') + 1], 'h264');
     expect(args[args.indexOf('--video-size') + 1], '1280x720');
     expect(args[args.indexOf('--max-bitrate') + 1], '3000');
+    // C-15: sin el toggle, el transporte por defecto es TCP (sin flag).
+    expect(args.contains('--transport'), isFalse);
+
+    // Con el toggle UDP (QUIC) activo: listen pide `--transport udp` (y el
+    // daemon ata además el socket TCP para peers viejos).
+    final udp = buildListenArgs(size: '1280x720', kbps: 3000, udp: true);
+    expect(udp[udp.indexOf('--transport') + 1], 'udp');
   });
 
   testWidgets('C-9: el visor remoto cabe en la ventana (sin desbordes)',
@@ -198,7 +213,8 @@ void main() {
     expect(find.text('Conexión'), findsOneWidget);
     expect(find.text('Registro'), findsOneWidget);
     expect(find.widgetWithText(OutlinedButton, 'Detener'), findsOneWidget);
-    expect(find.byType(Checkbox), findsNWidgets(3));
+    // 3 de permisos (C-2) + transporte UDP (C-15).
+    expect(find.byType(Checkbox), findsNWidgets(4));
 
     // Con visor visible (frame inyectado = sesión con vídeo en marcha).
     final rec = ui.PictureRecorder();

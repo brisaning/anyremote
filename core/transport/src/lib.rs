@@ -9,6 +9,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub mod arsp;
 pub mod auth;
+pub mod quic;
 
 /// Máximo de un frame ARSP (16 MiB) — cota de recurso del protocolo.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -139,6 +140,19 @@ pub mod cert_store {
         let mut h = Sha256::new();
         h.update(cert.as_ref());
         data_encoding::HEXLOWER.encode(&h.finalize())
+    }
+
+    /// DER → PEM estándar (bloques de 64) — para persistir el pin TOFU del
+    /// cliente QUIC (no hay bootstrap en claro en UDP, C-15).
+    pub fn der_to_pem(cert: &CertificateDer<'static>) -> String {
+        let b64 = data_encoding::BASE64.encode(cert.as_ref());
+        let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
+        for chunk in b64.as_bytes().chunks(64) {
+            out.push_str(std::str::from_utf8(chunk).expect("base64 es ASCII"));
+            out.push('\n');
+        }
+        out.push_str("-----END CERTIFICATE-----\n");
+        out
     }
 
     /// Guarda el PEM recibido como raíz local (pin) — solo tras auth mutua exitosa.

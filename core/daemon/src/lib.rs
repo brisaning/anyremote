@@ -110,6 +110,8 @@ pub struct DaemonConfig {
     pub bind: String,
     /// connect: objetivo "host:puerto" (resuelto por main, p.ej. desde perfil).
     pub target: Option<String>,
+    /// C-15: transporte — `Tcp` (default) o `Udp` (QUIC; listen-udp ata TCP+UDP).
+    pub transport: Transport,
     /// listen: permisos a SOLICITAR · connect: permisos a CONCEDER (intersección).
     pub grant: Vec<String>,
     pub clipboard: ClipboardMode,
@@ -164,6 +166,7 @@ impl DaemonConfig {
         Self {
             bind: "127.0.0.1:21118".into(),
             target: None,
+            transport: Transport::Tcp,
             grant: vec!["keyboard".into(), "mouse".into()],
             clipboard: ClipboardMode::Win,
             clipboard_seed: None,
@@ -185,6 +188,33 @@ impl DaemonConfig {
             video_max_bps: None,
             audio_sources: vec![AudioSource::System],
             bye_source: None,
+        }
+    }
+}
+
+/// Transporte de sesión (C-15, specs/02 §8): TCP+TLS (por defecto — el
+/// comportamiento histórico sin cambios) o UDP/QUIC con streams dedicados
+/// (vídeo aislado de control/audio/heartbeats).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Transport {
+    #[default]
+    Tcp,
+    Udp,
+}
+
+impl Transport {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "tcp" => Ok(Self::Tcp),
+            "udp" | "quic" => Ok(Self::Udp),
+            other => Err(format!("--transport espera tcp|udp (recibido {other})")),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
         }
     }
 }
@@ -635,7 +665,9 @@ fn transition(state: SessionState, ev: SessionEvent) -> Result<SessionState, Dae
 fn conn_gone(e: &anyremote_transport::TransportError) -> bool {
     let s = format!("{e:?}").to_lowercase();
     [
-        "10053", "10054", "1006", "eof", "anulada", "reset", "closed",
+        // TCP: códigos Winsock + EOF. QUIC (C-15): "connection lost",
+        // "timed out" (idle timeout) y "closed by peer" de quinn.
+        "10053", "10054", "1006", "eof", "anulada", "reset", "closed", "lost", "timed",
     ]
     .iter()
     .any(|k| s.contains(k))
@@ -643,12 +675,14 @@ fn conn_gone(e: &anyremote_transport::TransportError) -> bool {
 
 /// Resultado del establecimiento con un cliente.
 #[allow(clippy::large_enum_variant)] // `Channel` domina en tamaño; boxear solo añadiría indirección.
-enum Established {
+enum Established<T> {
     /// Sesión autenticada y con permisos → `active_controlled` con la
-    /// **concesión efectiva** (`granted`, D-07) para validar cada evento de entrada.
+    /// **concesión efectiva** (`granted`, D-07) y, en QUIC (C-15), el par de
+    /// streams del **vídeo dedicado** (`None` en TCP: el vídeo va por aquí).
     Active(
-        arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>,
+        arsp::Channel<T>,
         Vec<String>,
+        Option<anyremote_transport::quic::StreamPair>,
     ),
     /// Permiso denegado: cliente descartado; el listener sigue vivo.
     Denied,
@@ -666,8 +700,18 @@ struct StdinCtl {
 }
 
 /// Resultado de la espera idle del listener (aceptar / stdin / señal / tiempo).
+#[allow(clippy::large_enum_variant)] // `Incoming` domina en tamaño; boxear solo añadiría indirección.
+enum Accepted {
+    Tcp(TcpStream, std::net::SocketAddr),
+    /// QUIC (C-15): entrante del endpoint — handshake aún por completar.
+    Quic(anyremote_transport::quic::Incoming),
+}
+
+#[allow(clippy::large_enum_variant)] // igual que `Accepted`: sin boxear (unicast de un solo uso).
 enum Idle {
-    Accept(TcpStream, std::net::SocketAddr),
+    AcceptTcp(TcpStream, std::net::SocketAddr),
+    /// QUIC (C-15): entrante del endpoint — el handshake aún no completó.
+    AcceptQuic(anyremote_transport::quic::Incoming),
     /// `{"perm"...}` encolado para la próxima sesión.
     Queue(String),
     /// Línea de stdin (bye) → detener la escucha.
@@ -682,30 +726,20 @@ enum Idle {
     SignalDead,
 }
 
-/// Handshake con UN cliente ya aceptado: bootstrap → TLS → auth (C2) → permisos (C1).
+/// Handshake de sesión sobre un canal YA establecido (TLS+bootstrap en TCP,
+/// QUIC en C-15): auth C2 con binding de canal + hello/welcome + permisos (C1).
 /// Todo fallo aquí es del cliente (el caller continúa aceptando).
 #[allow(clippy::too_many_arguments)] // capas de sesión: cada parámetro tiene dueño claro.
-async fn establish_controlled(
-    mut tcp: TcpStream,
+async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    mut ch: arsp::Channel<T>,
+    binding: Vec<u8>,
     peer: std::net::SocketAddr,
-    acceptor: &TlsAcceptor,
     identity: &Identity,
     session_id: &str,
     cfg: &DaemonConfig,
     log: &mut SessionLog,
     emit: &mut Emit,
-) -> Result<Established, DaemonError> {
-    // Bootstrap de raíz (PEM público) antes del TLS → confianza cross-machine.
-    if let Some(pem) = anyremote_transport::cert_store::read_pem(&cfg.config_dir)? {
-        anyremote_transport::cert_store::write_bootstrap(&mut tcp, &pem).await?;
-    }
-    let tls = acceptor
-        .accept(tcp)
-        .await
-        .map_err(|e| DaemonError::Io(format!("tls del cliente {peer}: {e}")))?;
-    let binding = auth::binding_of_server(&tls)?;
-    let mut ch = arsp::Channel::new(tls);
-
+) -> Result<Established<T>, DaemonError> {
     // C2: autenticación mutua con channel binding (trust store vacío = desconocido).
     let mut gate = auth::AuthGate::new();
     let trust = TrustStore::load(&cfg.config_dir);
@@ -768,7 +802,125 @@ async fn establish_controlled(
         session_id,
         serde_json::json!({"perms": granted.permissions}),
     )?;
-    Ok(Established::Active(ch, granted.permissions))
+    // El stream de vídeo dedicado (QUIC) lo adjunta el caller de este
+    // establecimiento; en TCP el vídeo va por este mismo canal.
+    Ok(Established::Active(ch, granted.permissions, None))
+}
+
+/// Resultado del manejo de UN intento de sesión del listener (C-15).
+enum SessionFlow {
+    /// Sigue escuchando (sesión cerrada bien o cliente descartado).
+    Continue,
+    /// El listener termina con este outcome (max-sessions / bye / señal).
+    Done(RunOutcome),
+}
+
+/// Establecimiento ya intentado (con su timeout de 15 s) → sesión completa
+/// (`active_controlled`) o descarte auditable. **Genérico en el canal**: los
+/// caminos TCP+TLS y QUIC (C-15) comparten toda la lógica de sesión; solo
+/// difieren en cómo se construye el canal y su binding.
+#[allow(clippy::too_many_arguments)]
+async fn handle_attempt<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    attempt: Result<Result<Established<T>, DaemonError>, tokio::time::error::Elapsed>,
+    peer: std::net::SocketAddr,
+    session_id: &str,
+    cfg: &DaemonConfig,
+    log: &mut SessionLog,
+    emit: &mut Emit,
+    ctl: &mut StdinCtl,
+    sessions_done: &mut usize,
+    last: &mut Option<RunOutcome>,
+) -> Result<SessionFlow, DaemonError> {
+    match attempt {
+        Ok(Ok(Established::Active(mut ch, granted, video))) => {
+            // Errores de sesión en curso → cierre limpio auditable (no matan
+            // el listener como proceso con pánico). Informe POR sesión
+            // (v0.8.2): el listener repetidor acumula varias sesiones.
+            let mut video_ch = video.map(arsp::Channel::new);
+            let mut report = SessionReport::new(session_id);
+            let outcome = match active_controlled(
+                &mut ch,
+                &mut video_ch,
+                log,
+                &mut report,
+                emit,
+                cfg,
+                session_id,
+                &granted,
+                ctl,
+            )
+            .await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    log.record(
+                        AuditEventKind::Error,
+                        session_id,
+                        serde_json::json!({"session_error": e.to_string()}),
+                    )?;
+                    emit.emit(ev(
+                        "closed",
+                        serde_json::json!({"reason": format!("session_error: {e}")}),
+                    ));
+                    report.finish();
+                    log.record(
+                        AuditEventKind::Disconnected,
+                        session_id,
+                        report.disconnect_event(),
+                    )?;
+                    RunOutcome {
+                        report,
+                        events: Vec::new(),
+                        clipboard_final: None,
+                    }
+                }
+            };
+            *sessions_done += 1;
+            // ¿Sigue escuchando? Solo si NO se pidió detener (bye/señal
+            // desde stdin) y quedan sesiones (`0` = ilimitadas). El `bye`
+            // que llega por la RED (el invitado cierra) NO detiene: ése es
+            // el fix del reporte de campo.
+            if !ctl.stop && (cfg.max_sessions == 0 || *sessions_done < cfg.max_sessions) {
+                *last = Some(outcome);
+                Ok(SessionFlow::Continue)
+            } else {
+                Ok(SessionFlow::Done(RunOutcome {
+                    report: outcome.report,
+                    events: std::mem::take(&mut emit.events),
+                    clipboard_final: outcome.clipboard_final,
+                }))
+            }
+        }
+        Ok(Ok(Established::Denied)) => {
+            // Cliente descartado tras auditoría → sigue escuchando.
+            Ok(SessionFlow::Continue)
+        }
+        Ok(Err(e)) => {
+            // Cliente falló (TLS/auth/secuencia): audita y NO mata el listener.
+            log.record(
+                AuditEventKind::Error,
+                session_id,
+                serde_json::json!({"client": peer.to_string(), "error": e.to_string()}),
+            )?;
+            emit.emit(ev(
+                "client_failed",
+                serde_json::json!({"peer": peer.to_string(), "detail": e.to_string()}),
+            ));
+            Ok(SessionFlow::Continue)
+        }
+        Err(_elapsed) => {
+            log.record(
+                AuditEventKind::Error,
+                session_id,
+                serde_json::json!({"client": peer.to_string(), "error": "handshake_timeout_15s"}),
+            )?;
+            emit.emit(ev(
+                "client_failed",
+                serde_json::json!({"peer": peer.to_string(), "detail": "handshake_timeout (15s)"}),
+            ));
+            Ok(SessionFlow::Continue)
+        }
+    }
 }
 
 /// Lado controlado: acepta sesiones (`anyremoted listen`).
@@ -797,7 +949,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
     };
 
     let (cert, key) = anyremote_transport::cert_store::ensure(&cfg.config_dir)?;
-    let srv_cfg = anyremote_transport::server_config_from(cert, key)?;
+    let srv_cfg = anyremote_transport::server_config_from(cert.clone(), key.clone_key())?;
     let listener = TcpListener::bind(&cfg.bind)
         .await
         .map_err(|e| DaemonError::Io(e.to_string()))?;
@@ -805,9 +957,25 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         .local_addr()
         .map(|a| a.to_string())
         .unwrap_or_default();
+    // C-15: `--transport udp` ata AMBOS sockets en el mismo puerto (los peers
+    // viejos siguen entrando por TCP; los nuevos prueban QUIC primero).
+    let udp_on = cfg.transport == Transport::Udp;
+    let quic_ep = if udp_on {
+        let addr: std::net::SocketAddr = cfg
+            .bind
+            .parse()
+            .map_err(|e| DaemonError::Config(format!("bind QUIC ({}): {e}", cfg.bind)))?;
+        Some(anyremote_transport::quic::bind_server(
+            addr,
+            cert,
+            key.clone_key(),
+        )?)
+    } else {
+        None
+    };
     emit.emit(ev(
         "listening",
-        serde_json::json!({ "bind": bind_addr, "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION }),
+        serde_json::json!({ "bind": bind_addr, "transport": cfg.transport.as_str(), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION }),
     ));
 
     let acceptor = TlsAcceptor::from(Arc::new(srv_cfg));
@@ -843,8 +1011,20 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         // para detener la escucha también sin sesión) y la señal de consola.
         let idle = tokio::select! {
             r = tokio::time::timeout(remaining, listener.accept()) => match r {
-                Ok(Ok((tcp, peer))) => Idle::Accept(tcp, peer),
+                Ok(Ok((tcp, peer))) => Idle::AcceptTcp(tcp, peer),
                 Ok(Err(e)) => return Err(DaemonError::Io(e.to_string())), // fallo del socket local
+                Err(_elapsed) => Idle::Timeout,
+            },
+            r = tokio::time::timeout(remaining, async {
+                quic_ep
+                    .as_ref()
+                    .expect("udp_on implica endpoint QUIC")
+                    .accept()
+                    .await
+            }), if udp_on => match r {
+                Ok(Some(inc)) => Idle::AcceptQuic(inc),
+                // Endpoint cerrado inesperadamente (solo `close` lo hace).
+                Ok(None) => return Err(DaemonError::Io("endpoint QUIC cerrado".into())),
                 Err(_elapsed) => Idle::Timeout,
             },
             line = ctl.rx.recv(), if !idle_bye_done => match line {
@@ -857,7 +1037,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                 Err(_) => Idle::SignalDead, // sin consola: no debe cortar la escucha
             },
         };
-        let (tcp, peer) = match idle {
+        let accepted = match idle {
             Idle::Queue(line) => {
                 // `{"perm"...}` sin sesión → se aplica al abrirla (C-2).
                 ctl.pending.push(line);
@@ -901,110 +1081,104 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                 ));
                 break;
             }
-            Idle::Accept(tcp, peer) => (tcp, peer),
+            Idle::AcceptTcp(tcp, peer) => Accepted::Tcp(tcp, peer),
+            Idle::AcceptQuic(inc) => Accepted::Quic(inc),
         };
 
-        let attempt = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            establish_controlled(
-                tcp,
-                peer,
-                &acceptor,
-                &identity,
-                &session_id,
-                &cfg,
-                &mut log,
-                &mut emit,
-            ),
-        )
-        .await;
-
-        match attempt {
-            Ok(Ok(Established::Active(mut ch, granted))) => {
-                // Errores de sesión en curso → cierre limpio auditable (no matan
-                // el listener como proceso con pánico). Informe POR sesión
-                // (v0.8.2): el listener repetidor acumula varias sesiones.
-                let mut report = SessionReport::new(&session_id);
-                let outcome = match active_controlled(
-                    &mut ch,
-                    &mut log,
-                    &mut report,
-                    &mut emit,
-                    &cfg,
-                    &session_id,
-                    &granted,
-                    &mut ctl,
-                )
-                .await
-                {
-                    Ok(o) => o,
-                    Err(e) => {
-                        log.record(
-                            AuditEventKind::Error,
-                            &session_id,
-                            serde_json::json!({"session_error": e.to_string()}),
-                        )?;
-                        emit.emit(ev(
-                            "closed",
-                            serde_json::json!({"reason": format!("session_error: {e}")}),
-                        ));
-                        report.finish();
-                        log.record(
-                            AuditEventKind::Disconnected,
-                            &session_id,
-                            report.disconnect_event(),
-                        )?;
-                        RunOutcome {
-                            report,
-                            events: Vec::new(),
-                            clipboard_final: None,
-                        }
+        // C-15: el establecimiento (bootstrap+TLS vs handshake QUIC + streams)
+        // difiere por transporte; la sesión completa es única y genérica.
+        let flow = match accepted {
+            Accepted::Tcp(mut tcp, peer) => {
+                let fut = async {
+                    // Bootstrap de raíz (PEM público) antes del TLS → confianza cross-machine.
+                    if let Some(pem) = anyremote_transport::cert_store::read_pem(&cfg.config_dir)? {
+                        anyremote_transport::cert_store::write_bootstrap(&mut tcp, &pem).await?;
                     }
+                    let tls = acceptor
+                        .accept(tcp)
+                        .await
+                        .map_err(|e| DaemonError::Io(format!("tls del cliente {peer}: {e}")))?;
+                    let binding = auth::binding_of_server(&tls)?;
+                    establish_common(
+                        arsp::Channel::new(tls),
+                        binding,
+                        peer,
+                        &identity,
+                        &session_id,
+                        &cfg,
+                        &mut log,
+                        &mut emit,
+                    )
+                    .await
                 };
-                sessions_done += 1;
-                // ¿Sigue escuchando? Solo si NO se pidió detener (bye/señal
-                // desde stdin) y quedan sesiones (`0` = ilimitadas). El `bye`
-                // que llega por la RED (el invitado cierra) NO detiene: ése es
-                // el fix del reporte de campo.
-                if !ctl.stop && (cfg.max_sessions == 0 || sessions_done < cfg.max_sessions) {
-                    last = Some(outcome);
-                    continue;
-                }
-                return Ok(RunOutcome {
-                    report: outcome.report,
-                    events: emit.events,
-                    clipboard_final: outcome.clipboard_final,
-                });
-            }
-            Ok(Ok(Established::Denied)) => {
-                // Cliente descartado tras auditoría → sigue escuchando.
-                continue;
-            }
-            Ok(Err(e)) => {
-                // Cliente falló (TLS/auth/secuencia): audita y NO mata el listener.
-                log.record(
-                    AuditEventKind::Error,
+                let attempt = tokio::time::timeout(std::time::Duration::from_secs(15), fut).await;
+                handle_attempt(
+                    attempt,
+                    peer,
                     &session_id,
-                    serde_json::json!({"client": peer.to_string(), "error": e.to_string()}),
-                )?;
-                emit.emit(ev(
-                    "client_failed",
-                    serde_json::json!({"peer": peer.to_string(), "detail": e.to_string()}),
-                ));
-                continue;
+                    &cfg,
+                    &mut log,
+                    &mut emit,
+                    &mut ctl,
+                    &mut sessions_done,
+                    &mut last,
+                )
+                .await?
             }
-            Err(_elapsed) => {
-                log.record(
-                    AuditEventKind::Error,
+            Accepted::Quic(inc) => {
+                use anyremote_transport::quic;
+                let peer = inc.remote_address();
+                let fut = async {
+                    let conn = inc
+                        .await
+                        .map_err(|e| DaemonError::Io(format!("quic handshake de {peer}: {e}")))?;
+                    // Dos streams (control + vídeo) con prologo — specs/02 §8.
+                    let (cs, mut cr) = conn
+                        .accept_bi()
+                        .await
+                        .map_err(|e| DaemonError::Io(format!("quic stream control: {e}")))?;
+                    let (vs, mut vr) = conn
+                        .accept_bi()
+                        .await
+                        .map_err(|e| DaemonError::Io(format!("quic stream vídeo: {e}")))?;
+                    quic::read_prologue(&mut cr).await?;
+                    quic::read_prologue(&mut vr).await?;
+                    let binding = quic::binding_of(&conn)?;
+                    let video = quic::StreamPair::new(vs, vr);
+                    let est = establish_common(
+                        arsp::Channel::new(quic::StreamPair::new(cs, cr)),
+                        binding,
+                        peer,
+                        &identity,
+                        &session_id,
+                        &cfg,
+                        &mut log,
+                        &mut emit,
+                    )
+                    .await?;
+                    Ok(match est {
+                        Established::Active(ch, g, _) => Established::Active(ch, g, Some(video)),
+                        Established::Denied => Established::Denied,
+                    })
+                };
+                let attempt = tokio::time::timeout(std::time::Duration::from_secs(15), fut).await;
+                handle_attempt(
+                    attempt,
+                    peer,
                     &session_id,
-                    serde_json::json!({"client": peer.to_string(), "error": "handshake_timeout_15s"}),
-                )?;
-                emit.emit(ev(
-                    "client_failed",
-                    serde_json::json!({"peer": peer.to_string(), "detail": "handshake_timeout (15s)"}),
-                ));
-                continue;
+                    &cfg,
+                    &mut log,
+                    &mut emit,
+                    &mut ctl,
+                    &mut sessions_done,
+                    &mut last,
+                )
+                .await?
             }
+        };
+        match flow {
+            SessionFlow::Continue => continue,
+            SessionFlow::Done(o) => return Ok(o),
         }
     }
 
@@ -1067,8 +1241,10 @@ async fn receive_file_offer<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Un
 }
 
 #[allow(clippy::too_many_arguments)] // capas de sesión con dueño claro por parámetro.
-async fn active_controlled(
-    ch: &mut arsp::Channel<tokio_rustls::server::TlsStream<TcpStream>>,
+async fn active_controlled<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ch: &mut arsp::Channel<T>,
+    // C-15: stream de vídeo dedicado (QUIC) — `None` en TCP (va por `ch`).
+    video: &mut Option<arsp::Channel<anyremote_transport::quic::StreamPair>>,
     log: &mut SessionLog,
     report: &mut SessionReport,
     emit: &mut Emit,
@@ -1147,6 +1323,26 @@ async fn active_controlled(
 
     // Hito M2: vídeo hacia el canal + preview local de la propia pantalla (solo listen).
     let (video_tx, mut video_rx) = mpsc::channel::<VideoMsg>(3);
+    // C-15 (QUIC): el stream de vídeo dedicado se envía desde SU PROPIA tarea
+    // con un mpsc acotado (profundidad 2, drop-new): el backpressure del
+    // stream jamás bloquea este bucle — control/audio/heartbeats quedan
+    // libres (el sentido del stream dedicado; specs/02 §8). En TCP queda
+    // `None` y el envío va por el canal principal, como siempre.
+    let video_task_tx = video.take().map(|mut vch| {
+        let (tx, mut rx) = mpsc::channel::<anyremote_codec::EncodedFrame>(2);
+        tokio::spawn(async move {
+            while let Some(item) = rx.recv().await {
+                let payload =
+                    proto::envelope::Payload::VideoFrame(arsp::video_frame_to_wire(&item));
+                if vch.send(payload).await.is_err() {
+                    // Stream/conexión cerrada: el canal de control registrará
+                    // `connection_gone` — esta tarea solo se retira.
+                    break;
+                }
+            }
+        });
+        tx
+    });
     let stop = Arc::new(AtomicBool::new(false));
     let _stop_guard = StopGuard(stop.clone());
     let mut video_done = false;
@@ -1439,17 +1635,38 @@ async fn active_controlled(
                 match msg {
                     VideoMsg::Event(v) => emit.emit(v),
                     VideoMsg::Frame(item) => {
-                        match ch.send(proto::envelope::Payload::VideoFrame(
-                            arsp::video_frame_to_wire(&item),
-                        )).await {
-                            Ok(()) => report.record_frame_sent(item.data.len()),
-                            Err(e) if conn_gone(&e) => {
-                                log.record(AuditEventKind::Disconnected, session_id,
-                                    serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
-                                emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
-                                break;
+                        let len = item.data.len();
+                        match video_task_tx.as_ref() {
+                            // C-15: con stream QUIC dedicado solo se ENCOLA a la
+                            // tarea (cola drop-new): si está llena (enlace
+                            // saturado) se descarta el frame nuevo — el vídeo
+                            // cede al control y el bucle jamás se bloquea.
+                            Some(tx) => match tx.try_send(item) {
+                                Ok(()) => report.record_frame_sent(len),
+                                Err(mpsc::error::TrySendError::Full(_)) => {
+                                    report.record_frame_dropped();
+                                }
+                                // Tarea cerrada (stream ya caído): el canal de
+                                // control registrará `connection_gone`.
+                                Err(mpsc::error::TrySendError::Closed(_)) => {
+                                    report.record_frame_dropped();
+                                }
+                            },
+                            None => {
+                                // TCP (histórico): vídeo por el canal principal.
+                                match ch.send(proto::envelope::Payload::VideoFrame(
+                                    arsp::video_frame_to_wire(&item),
+                                )).await {
+                                    Ok(()) => report.record_frame_sent(len),
+                                    Err(e) if conn_gone(&e) => {
+                                        log.record(AuditEventKind::Disconnected, session_id,
+                                            serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
+                                        emit.emit(ev("closed", serde_json::json!({"reason": "connection_gone"})));
+                                        break;
+                                    }
+                                    Err(e) => return Err(e.into()),
+                                }
                             }
-                            Err(e) => return Err(e.into()),
                         }
                     }
                 }
@@ -1616,68 +1833,106 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
         &session_id,
         serde_json::json!({"target": target.clone()}),
     )?;
-    emit.emit(ev("connecting", serde_json::json!({ "target": target.clone(), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION })));
+    emit.emit(ev("connecting", serde_json::json!({ "target": target.clone(), "transport": cfg.transport.as_str(), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION })));
 
-    // Raíz de confianza: pin local si existe; si no, la recibe por bootstrap del
-    // par y se persiste SOLO tras completar la autenticación mutua (C2).
-    let mut tcp = TcpStream::connect(&target)
-        .await
-        .map_err(|e| DaemonError::Io(e.to_string()))?;
-    let incoming = anyremote_transport::cert_store::read_bootstrap(&mut tcp).await?;
-    let pin_pem = anyremote_transport::cert_store::load_trusted(&cfg.config_dir, &target)?;
-    let (root, pending_pin) = match (pin_pem, incoming) {
-        (Some(pem), inc) => {
-            let root = anyremote_transport::cert_store::cert_from_pem(&pem)?;
-            if let Some((_, inc_cert)) = inc {
-                let fp_local = anyremote_transport::cert_store::cert_fingerprint(&root);
-                let fp_inc = anyremote_transport::cert_store::cert_fingerprint(&inc_cert);
-                if fp_inc != fp_local {
-                    return Err(DaemonError::Config(format!(
-                        "el cert del servidor ({fp_inc}…) no coincide con tu pin de {target} ({fp_local}…) \
-                         — posible intermediario. Si el servidor cambió legítimamente, borra {} \
-                         y reconecta",
-                        anyremote_transport::cert_store::trusted_path(&cfg.config_dir, &target).display()
-                    )));
-                }
+    // C-15: transporte — UDP/QUIC intenta primero y cae a TCP si el par no
+    // lo habla (compat con peers/versiones anteriores; evento `quic_fallback`).
+    let outcome = match cfg.transport {
+        Transport::Tcp => {
+            tcp_controller_session(
+                &target,
+                &cfg,
+                &identity,
+                &session_id,
+                &mut log,
+                &mut report,
+                &mut emit,
+                bye_rx,
+            )
+            .await?
+        }
+        Transport::Udp => match quic_attempt(&target, &cfg).await? {
+            QuicAttempt::Ready {
+                endpoint,
+                control,
+                video,
+                binding,
+                pending_pin,
+            } => {
+                // El Endpoint DEBE vivir con la conexión (quinn la cierra si cae).
+                let _quic_ep = endpoint;
+                controller_session(
+                    control,
+                    Some(video),
+                    binding,
+                    &identity,
+                    &session_id,
+                    &cfg,
+                    &target,
+                    pending_pin,
+                    &mut log,
+                    &mut report,
+                    &mut emit,
+                    bye_rx,
+                )
+                .await?
             }
-            (root, None)
-        }
-        (None, Some((pem, cert))) => (cert, Some(pem)),
-        (None, None) => {
-            return Err(DaemonError::Config(
-                "sin pin para este destino y el par no envió cert bootstrap — ¿está escuchando un anyremoted?".into(),
-            ))
-        }
+            QuicAttempt::Fallback(reason) => {
+                emit.emit(ev(
+                    "quic_fallback",
+                    serde_json::json!({ "target": target.clone(), "reason": reason }),
+                ));
+                tcp_controller_session(
+                    &target,
+                    &cfg,
+                    &identity,
+                    &session_id,
+                    &mut log,
+                    &mut report,
+                    &mut emit,
+                    bye_rx,
+                )
+                .await?
+            }
+        },
     };
-    let cli_cfg = anyremote_transport::client_config(&root)?;
+    Ok(outcome)
+}
 
-    let sni = rustls::pki_types::ServerName::try_from("localhost")
-        .map_err(|e| DaemonError::Config(format!("SNI: {e}")))?;
-    let tls = TlsConnector::from(Arc::new(cli_cfg))
-        .connect(sni, tcp)
-        .await
-        .map_err(|e| DaemonError::Io(e.to_string()))?;
-    let binding = auth::binding_of_client(&tls)?;
-    let mut ch = arsp::Channel::new(tls);
-
+/// C2 + C1 del lado controlador sobre el canal YA establecido: autenticación
+/// mutua (con pin TOFU si procede), hello/welcome, solicitud y respuesta de
+/// permisos. `None` = permisos denegados (auditado aquí). Compartido por
+/// TCP+TLS y QUIC (C-15): solo cambia el canal del que llega el binding.
+#[allow(clippy::too_many_arguments)]
+async fn establish_controller<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ch: &mut arsp::Channel<T>,
+    binding: &[u8],
+    identity: &Identity,
+    session_id: &str,
+    cfg: &DaemonConfig,
+    target: &str,
+    pending_pin: Option<String>,
+    log: &mut SessionLog,
+    emit: &mut Emit,
+) -> Result<Option<auth::PeerIdentity>, DaemonError> {
     // C2: autenticación mutua.
-    auth::send_auth(&mut ch, &identity, &binding).await?;
+    auth::send_auth(ch, identity, binding).await?;
     let mut gate = auth::AuthGate::new();
     let trust = TrustStore::load(&cfg.config_dir);
-    let peer_id = auth::recv_validate_auth(&mut ch, &mut gate, &trust, &binding).await?;
+    let peer_id = auth::recv_validate_auth(ch, &mut gate, &trust, binding).await?;
     // D-03 (TOFU): recuerda el anfitrión autenticado (además del pin de cert).
     TrustStore::remember(&cfg.config_dir, &peer_id.node_id, &peer_id.pubkey);
     if let Some(pem) = pending_pin {
         // Auth OK: el pin recibido es legítimo para esta identidad → persistir (por destino).
-        anyremote_transport::cert_store::save_trusted(&cfg.config_dir, &target, &pem)?;
+        anyremote_transport::cert_store::save_trusted(&cfg.config_dir, target, &pem)?;
         emit.emit(ev(
             "cert_pinned",
-            serde_json::json!({"target": target.clone()}),
+            serde_json::json!({"target": target.to_string()}),
         ));
     }
     log.record(
         AuditEventKind::SessionEstablished,
-        &session_id,
+        session_id,
         serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted}),
     )?;
     emit.emit(ev(
@@ -1686,7 +1941,7 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     ));
 
     // C1: hello → welcome → solicitud → concesión (intersección con --grant).
-    ch.send(arsp::hello(&identity.node_id().to_string(), &session_id))
+    ch.send(arsp::hello(&identity.node_id().to_string(), session_id))
         .await?;
     let welcome = ch.recv().await?;
     arsp::check_version(&welcome).map_err(DaemonError::Config)?;
@@ -1714,28 +1969,23 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     if !grant_ok {
         log.record(
             AuditEventKind::PermissionDenied,
-            &session_id,
+            session_id,
             serde_json::json!({"reason": "interseccion_vacia"}),
         )?;
         emit.emit(ev(
             "closed",
             serde_json::json!({"reason": "permission_denied"}),
         ));
-        report.finish();
-        return Ok(RunOutcome {
-            report,
-            events: emit.events,
-            clipboard_final: None,
-        });
+        return Ok(None);
     }
     log.record(
         AuditEventKind::PermissionGranted,
-        &session_id,
+        session_id,
         serde_json::json!({"perms": allowed}),
     )?;
     // RF audio (C-2): el reproductor queda PREPARADO aunque el anfitrión no
     // comparta al inicio — si lo activa en caliente durante la sesión, sonará.
-    // El `audio_denied` inicial es informativo (no llegan frames hasta que comparte).
+    // El `audio_denied` inicial es informativo (no llegan frames hasta que comparta).
     if cfg.audio != AudioMode::Off && !allowed.iter().any(|p| p == "audio") {
         emit.emit(ev(
             "audio_denied",
@@ -1745,14 +1995,60 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
             }),
         ));
     }
+    Ok(Some(peer_id))
+}
 
+/// Establecimiento C2 + sesión del controlador sobre un canal YA conectado
+/// (TCP+TLS o QUIC/C-15): auth mutua + pin TOFU + `active_controller`.
+/// `video` = stream dedicado de vídeo (QUIC; `None` en TCP).
+#[allow(clippy::too_many_arguments)]
+async fn controller_session<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    mut ch: arsp::Channel<T>,
+    video: Option<arsp::Channel<anyremote_transport::quic::StreamPair>>,
+    binding: Vec<u8>,
+    identity: &Identity,
+    session_id: &str,
+    cfg: &DaemonConfig,
+    target: &str,
+    pending_pin: Option<String>,
+    log: &mut SessionLog,
+    report: &mut SessionReport,
+    emit: &mut Emit,
+    bye_rx: tokio::sync::mpsc::Receiver<String>,
+) -> Result<RunOutcome, DaemonError> {
+    let peer_id = match establish_controller(
+        &mut ch,
+        &binding,
+        identity,
+        session_id,
+        cfg,
+        target,
+        pending_pin,
+        log,
+        emit,
+    )
+    .await?
+    {
+        Some(p) => p,
+        None => {
+            // Permiso denegado (auditado en establish_controller) → outcome.
+            report.finish();
+            return Ok(RunOutcome {
+                report: std::mem::replace(report, SessionReport::new(session_id)),
+                events: std::mem::take(&mut emit.events),
+                clipboard_final: None,
+            });
+        }
+    };
+    let mut video_ch = video;
     match active_controller(
         &mut ch,
-        &mut log,
-        &mut report,
-        &mut emit,
-        &cfg,
-        &session_id,
+        &mut video_ch,
+        log,
+        report,
+        emit,
+        cfg,
+        session_id,
         &peer_id.node_id.to_string(),
         bye_rx,
     )
@@ -1763,7 +2059,7 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
             // Errores de sesión en curso → cierre limpio auditable.
             log.record(
                 AuditEventKind::Error,
-                &session_id,
+                session_id,
                 serde_json::json!({"session_error": e.to_string()}),
             )?;
             emit.emit(ev(
@@ -1773,21 +2069,250 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
             report.finish();
             log.record(
                 AuditEventKind::Disconnected,
-                &session_id,
+                session_id,
                 report.disconnect_event(),
             )?;
             Ok(RunOutcome {
-                report,
-                events: emit.events,
+                report: std::mem::replace(report, SessionReport::new(session_id)),
+                events: std::mem::take(&mut emit.events),
                 clipboard_final: None,
             })
         }
     }
 }
 
+/// Lado controlador por TCP+TLS (histórico): connect → bootstrap/pin → TLS →
+/// binding C2 → `controller_session`. El camino QUIC (C-15) vive en
+/// `quic_attempt` + el mismo `controller_session`.
+#[allow(clippy::too_many_arguments)] // capas de sesión: cada parámetro tiene dueño claro.
+async fn tcp_controller_session(
+    target: &str,
+    cfg: &DaemonConfig,
+    identity: &Identity,
+    session_id: &str,
+    log: &mut SessionLog,
+    report: &mut SessionReport,
+    emit: &mut Emit,
+    bye_rx: tokio::sync::mpsc::Receiver<String>,
+) -> Result<RunOutcome, DaemonError> {
+    // Raíz de confianza: pin local si existe; si no, la recibe por bootstrap del
+    // par y se persiste SOLO tras completar la autenticación mutua (C2).
+    let mut tcp = TcpStream::connect(target)
+        .await
+        .map_err(|e| DaemonError::Io(e.to_string()))?;
+    let incoming = anyremote_transport::cert_store::read_bootstrap(&mut tcp).await?;
+    let pin_pem = anyremote_transport::cert_store::load_trusted(&cfg.config_dir, target)?;
+    let (root, pending_pin) = match (pin_pem, incoming) {
+        (Some(pem), inc) => {
+            let root = anyremote_transport::cert_store::cert_from_pem(&pem)?;
+            if let Some((_, inc_cert)) = inc {
+                let fp_local = anyremote_transport::cert_store::cert_fingerprint(&root);
+                let fp_inc = anyremote_transport::cert_store::cert_fingerprint(&inc_cert);
+                if fp_inc != fp_local {
+                    return Err(DaemonError::Config(format!(
+                        "el cert del servidor ({fp_inc}…) no coincide con tu pin de {target} ({fp_local}…)                          — posible intermediario. Si el servidor cambió legítimamente, borra {}                          y reconecta",
+                        anyremote_transport::cert_store::trusted_path(&cfg.config_dir, target).display()
+                    )));
+                }
+            }
+            (root, None)
+        }
+        (None, Some((pem, cert))) => (cert, Some(pem)),
+        (None, None) => {
+            return Err(DaemonError::Config(
+                "sin pin para este destino y el par no envió cert bootstrap — ¿está escuchando un anyremoted?".into(),
+            ))
+        }
+    };
+    let cli_cfg = anyremote_transport::client_config(&root)?;
+
+    let sni = rustls::pki_types::ServerName::try_from("localhost")
+        .map_err(|e| DaemonError::Config(format!("SNI: {e}")))?;
+    let tls = TlsConnector::from(Arc::new(cli_cfg))
+        .connect(sni, tcp)
+        .await
+        .map_err(|e| DaemonError::Io(format!("tls: {e}")))?;
+    let binding = auth::binding_of_client(&tls)?;
+    let ch = arsp::Channel::new(tls);
+    controller_session(
+        ch,
+        None,
+        binding,
+        identity,
+        session_id,
+        cfg,
+        target,
+        pending_pin,
+        log,
+        report,
+        emit,
+        bye_rx,
+    )
+    .await
+}
+
+/// Resultado del intento QUIC del lado controlador (C-15).
+#[allow(clippy::large_enum_variant)] // `Endpoint`+canales dominan; boxear solo añadiría indirección.
+enum QuicAttempt {
+    Ready {
+        /// Endpoint QUIC: DEBE vivir mientras viva la conexión (quinn la
+        /// cierra al dropear su Endpoint).
+        endpoint: anyremote_transport::quic::Endpoint,
+        control: arsp::Channel<anyremote_transport::quic::StreamPair>,
+        video: arsp::Channel<anyremote_transport::quic::StreamPair>,
+        binding: Vec<u8>,
+        /// PEM del cert del servidor para el pin TOFU (solo si aún no hay pin).
+        pending_pin: Option<String>,
+    },
+    /// El par no habla QUIC (o no responde): el caller debe probar TCP.
+    Fallback(String),
+}
+
+/// Conexión QUIC del controlador: resolve → pin → endpoint → handshake con
+/// timeout de fallback → 2 streams con prologo → binding C2 + pin TOFU.
+async fn quic_attempt(target: &str, cfg: &DaemonConfig) -> Result<QuicAttempt, DaemonError> {
+    use anyremote_transport::quic;
+
+    let addr = resolve_target(target).await?;
+    let pin_pem = anyremote_transport::cert_store::load_trusted(&cfg.config_dir, target)?;
+    let root = match pin_pem {
+        Some(pem) => Some(anyremote_transport::cert_store::cert_from_pem(&pem)?),
+        None => None,
+    };
+    let mut ep = quic::bind_client(addr)?;
+    ep.set_default_client_config(quic::client_config(root.as_ref())?);
+    let conn =
+        match tokio::time::timeout(std::time::Duration::from_secs(3), quic::connect(&ep, addr))
+            .await
+        {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => return Ok(QuicAttempt::Fallback(e.to_string())),
+            Err(_elapsed) => {
+                return Ok(QuicAttempt::Fallback(format!(
+                    "sin respuesta QUIC en 3 s a {target}"
+                )))
+            }
+        };
+    // Pin existente: el cert del par debe coincidir (mismo aviso de
+    // intermediario que el bootstrap de TCP).
+    if let Some(root) = &root {
+        if let Some(pc) = quic::peer_cert(&conn) {
+            let fp_local = anyremote_transport::cert_store::cert_fingerprint(root);
+            let fp_peer = anyremote_transport::cert_store::cert_fingerprint(&pc);
+            if fp_peer != fp_local {
+                return Err(DaemonError::Config(format!(
+                    "el cert del servidor ({fp_peer}…) no coincide con tu pin de {target} ({fp_local}…)                      — posible intermediario. Si el servidor cambió legítimamente, borra {}                      y reconecta",
+                    anyremote_transport::cert_store::trusted_path(&cfg.config_dir, target).display()
+                )));
+            }
+        }
+    }
+    // Dos streams (control + vídeo) con prologo — specs/02 §8. El prologo
+    // además visibiliza cada stream al peer (QUIC solo envía el ID del stream
+    // al llegar bytes) — sin él el `accept_bi` del servidor se colgaría si el
+    // stream de vídeo nunca escribe (`--video off`).
+    let (mut cs, cr) = conn
+        .open_bi()
+        .await
+        .map_err(|e| DaemonError::Io(format!("quic stream control: {e}")))?;
+    let (mut vs, vr) = conn
+        .open_bi()
+        .await
+        .map_err(|e| DaemonError::Io(format!("quic stream video: {e}")))?;
+    quic::write_prologue(&mut cs).await?;
+    quic::write_prologue(&mut vs).await?;
+    let binding = quic::binding_of(&conn)?;
+    let pending_pin = if root.is_none() {
+        // TOFU: persistir el cert del servidor como pin para la próxima vez
+        // (como el bootstrap de TCP, pero tras C2 — no hay bootstrap en claro).
+        quic::peer_cert(&conn).map(|c| anyremote_transport::cert_store::der_to_pem(&c))
+    } else {
+        None
+    };
+    Ok(QuicAttempt::Ready {
+        endpoint: ep,
+        control: arsp::Channel::new(quic::StreamPair::new(cs, cr)),
+        video: arsp::Channel::new(quic::StreamPair::new(vs, vr)),
+        binding,
+        pending_pin,
+    })
+}
+
+/// Resuelve `host:puerto` → SocketAddr (IP directa o DNS), como haría
+/// `TcpStream::connect` en el camino TCP.
+async fn resolve_target(target: &str) -> Result<std::net::SocketAddr, DaemonError> {
+    if let Ok(a) = target.parse::<std::net::SocketAddr>() {
+        return Ok(a);
+    }
+    tokio::net::lookup_host(target)
+        .await
+        .map_err(|e| DaemonError::Io(format!("resolver {target}: {e}")))?
+        .next()
+        .ok_or_else(|| DaemonError::Config(format!("no resolvible: {target}")))
+}
+
+/// Decodifica un `VideoFrame` del wire y alimenta el preview local (Hito M2).
+/// Compartido por el canal principal (TCP) y el stream dedicado de vídeo
+/// (QUIC, C-15): los errores NO matan la sesión.
+#[allow(clippy::too_many_arguments)]
+fn handle_video_wire(
+    vf: proto::VideoFrame,
+    decoder: &mut Option<anyremote_codec::NativeDecoder>,
+    preview: &Arc<preview::PreviewServer>,
+    video_seq: &mut u32,
+    video_frames: &mut u64,
+    report: &mut SessionReport,
+    emit: &mut Emit,
+    log: &mut SessionLog,
+    session_id: &str,
+) -> Result<(), DaemonError> {
+    match arsp::video_frame_from_wire(vf) {
+        Ok(enc) if !enc.data.is_empty() => {
+            let dec = decoder.get_or_insert_with(anyremote_codec::NativeDecoder::new);
+            match dec.decode(&enc) {
+                Ok(img) => {
+                    preview.push(img.width, img.height, *video_seq, &img.data);
+                    *video_seq = video_seq.wrapping_add(1);
+                    *video_frames += 1;
+                    report.record_bytes_recv(enc.data.len());
+                    if *video_frames % 60 == 1 {
+                        emit.emit(ev(
+                            "video_stats",
+                            serde_json::json!({
+                                "frames": *video_frames, "w": img.width, "h": img.height
+                            }),
+                        ));
+                    }
+                }
+                Err(e) => {
+                    log.record(
+                        AuditEventKind::Error,
+                        session_id,
+                        serde_json::json!({"video": format!("{e:?}")}),
+                    )?;
+                    emit.emit(ev(
+                        "video_error",
+                        serde_json::json!({"detail": format!("{e:?}")}),
+                    ));
+                }
+            }
+        }
+        Ok(_) => {} // frame omitido por el codificador
+        Err(e) => {
+            emit.emit(ev(
+                "video_error",
+                serde_json::json!({"detail": e.to_string()}),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)] // capas de sesión con dueño claro por parámetro.
-async fn active_controller(
-    ch: &mut arsp::Channel<tokio_rustls::client::TlsStream<TcpStream>>,
+async fn active_controller<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ch: &mut arsp::Channel<T>,
+    // C-15: stream de vídeo dedicado (QUIC) — `None` en TCP (va por `ch`).
+    video: &mut Option<arsp::Channel<anyremote_transport::quic::StreamPair>>,
     log: &mut SessionLog,
     report: &mut SessionReport,
     emit: &mut Emit,
@@ -1856,6 +2381,9 @@ async fn active_controller(
     let mut decoder: Option<anyremote_codec::NativeDecoder> = None;
     let mut video_frames: u64 = 0;
     let mut video_seq: u32 = 0;
+    // C-15: stream de vídeo dedicado cerrado (bye del anfitrión) → este arm
+    // se desactiva; el cierre de la sesión lo decide el canal de control.
+    let mut video_done = false;
 
     // C5: envío de archivo opcional tras activar (espera FileReady: offset de reanudación).
     let mut pending_file: Option<(u64, String, String)> = None;
@@ -2022,34 +2550,10 @@ async fn active_controller(
                         }
                     }
                     Some(proto::envelope::Payload::VideoFrame(vf)) => {
-                        // Hito M2: decodifica y alimenta el preview local (errores no matan la sesión).
-                        match arsp::video_frame_from_wire(vf) {
-                            Ok(enc) if !enc.data.is_empty() => {
-                                let dec = decoder.get_or_insert_with(anyremote_codec::NativeDecoder::new);
-                                match dec.decode(&enc) {
-                                    Ok(img) => {
-                                        preview.push(img.width, img.height, video_seq, &img.data);
-                                        video_seq = video_seq.wrapping_add(1);
-                                        video_frames += 1;
-                                        report.record_bytes_recv(enc.data.len());
-                                        if video_frames % 60 == 1 {
-                                            emit.emit(ev("video_stats", serde_json::json!({
-                                                "frames": video_frames, "w": img.width, "h": img.height
-                                            })));
-                                        }
-                                    }
-                                    Err(e) => {
-                                        log.record(AuditEventKind::Error, session_id,
-                                            serde_json::json!({"video": format!("{e:?}")}))?;
-                                        emit.emit(ev("video_error", serde_json::json!({"detail": format!("{e:?}")})));
-                                    }
-                                }
-                            }
-                            Ok(_) => {} // frame omitido por el codificador
-                            Err(e) => {
-                                emit.emit(ev("video_error", serde_json::json!({"detail": e.to_string()})));
-                            }
-                        }
+                        // Hito M2 / C-15: decodifica y alimenta el preview —
+                        // mismo código que el stream dedicado de QUIC.
+                        handle_video_wire(vf, &mut decoder, &preview, &mut video_seq,
+                            &mut video_frames, report, emit, log, session_id)?;
                     }
                     Some(proto::envelope::Payload::CursorState(c)) => {
                         // C-11: overlay del cursor del anfitrión — solo
@@ -2115,6 +2619,26 @@ async fn active_controller(
                         break;
                     }
                     other => return Err(DaemonError::Config(format!("payload inesperado: {other:?}"))),
+                }
+            }
+            // C-15 (QUIC): frames de vídeo por el stream dedicado — mismo
+            // tratamiento que por el canal principal (TCP los trae el arm
+            // anterior). El stream cerrado solo desactiva este arm: el cierre
+            // lo decide el canal de control.
+            vmsg = async {
+                match video.as_mut() {
+                    Some(v) => v.recv().await,
+                    None => std::future::pending::<Result<proto::Envelope, anyremote_transport::TransportError>>().await,
+                }
+            }, if !video_done => {
+                match vmsg {
+                    Ok(env) => {
+                        if let Some(proto::envelope::Payload::VideoFrame(vf)) = env.payload {
+                            handle_video_wire(vf, &mut decoder, &preview, &mut video_seq,
+                                &mut video_frames, report, emit, log, session_id)?;
+                        }
+                    }
+                    Err(_) => video_done = true,
                 }
             }
             _ = audio_tick.tick(), if playback.is_some() => {
