@@ -1164,27 +1164,6 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 6),
-                    // C-17: servidor de encuentro (rendezvous + relay) para WAN.
-                    Row(
-                      children: [
-                        const Text('servidor de encuentro:',
-                            style: TextStyle(fontSize: 12)),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: TextField(
-                            controller: _rdv,
-                            enabled: !running,
-                            decoration: const InputDecoration(
-                              hintText:
-                                  'opcional: ip:puerto del anyremote-rdv (WAN)',
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
                     const SizedBox(height: 4),
                     // C-2: los tres toggles son DINÁMICOS — se aplican en
                     // caliente durante la sesión (el anfitrión manda sobre lo
@@ -1262,6 +1241,27 @@ class _HomePageState extends State<HomePage> {
                               const Text('UDP (QUIC)',
                                   style: TextStyle(fontSize: 12)),
                             ],
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        // C-17: servidor de encuentro (rendezvous + relay) —
+                        // en la fila HORIZONTAL del toggle UDP: no suma ALTURA
+                        // a la sección de conexión (evita el overflow
+                        // vertical que fallaba en CI con sus métricas).
+                        SizedBox(
+                          width: 160,
+                          child: TextField(
+                            controller: _rdv,
+                            enabled: !running,
+                            style: const TextStyle(fontSize: 12),
+                            decoration: const InputDecoration(
+                              hintText: 'servidor de encuentro (ip:puerto)',
+                              hintStyle: TextStyle(fontSize: 11),
+                              isDense: true,
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 6),
+                            ),
                           ),
                         ),
                       ],
