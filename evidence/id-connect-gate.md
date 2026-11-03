@@ -45,3 +45,40 @@ ajeno · caché save/load + archivo corrupto → `None`.
 - Conectar desde la app tecleando solo el **ID del anfitrión** (sin IP) con el
   firewall UDP 21119 abierto en el anfitrión (hint en la app) → sesión normal
   + `resolve_ok` en el registro del visor.
+
+
+---
+
+## Intento de campo 1 (2026-11-03 13:01) — falló por broadcast · fix **v0.11.1**
+
+**Síntoma**: la visora pasó el ID correctamente (`connect args: connect ONDH6IU4RU …
+--transport udp`, daemon 0.11.0) pero las4 tentativas de `resolve_id` terminaron
+con «sin respuesta de descubrimiento y sin caché». El anfitrión estaba bien:
+`anyremoted 0.11.0` escuchando (ambos modos), **sin** `discover_error` (la app
+registra eventos desconocidos → el `DiscoveryServer` había prendido).
+
+**Diagnóstico por sondas (desde la visora)**:
+
+| Sonda | Resultado |
+|---|---|
+| WHO unicast → `192.168.6.152:21119` | **`ANYREMOTE/1 HERE ONDH6IU4RU 21118` ✓** (el servidor respondía) |
+| WHO broadcast de subred → `192.168.6.255:21119` | **Respuesta ✓** |
+| WHO broadcast limitada → `255.255.255.255:21119` | **Nunca llega ✗** (la query actual usaba ÉSTA) |
+
+**Causa raíz**: la visora tiene **varios adaptadores** (múltiples puertas de
+enlace en `ipconfig`); la broadcast limitada `255.255.255.255` sale por la
+interfaz equivocada y no alcanza la LAN, mientras la broadcast **de subred**
+(`x.x.x.255`) sigue la ruta de la interfaz del LAN y sí llega.
+
+**Fix (v0.11.1)**: `discover::query_targets()` **abanica** la consulta a:
+el destino configurado + **la broadcast de cada subred local IPv4** (ip |
+!netmask, sin loopback/link-local, sin duplicados) — un envío por intento a
+TODOS los destinos (mejor esfuerzo: una interfaz rota no mata la consulta) y
+una sola espera de respuesta válida. Enumeración con `if-addrs` (nueva dep
+menor del transporte). Test nuevo `query_targets_fans_out_without_duplicates`.
+
+**Gates v0.11.1**: Rust **50/0** · clippy **0/0** · fmt **0** · Flutter
+analyze limpio · **9/9**.
+
+**Nota**: el firewall NO era el problema (el unicast respondía sin regla
+adicional); el hint `netsh` 21119 se mantiene por si acaso.
