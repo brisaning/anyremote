@@ -27,8 +27,11 @@ async fn free_port() -> u16 {
     use std::sync::atomic::{AtomicU16, Ordering};
     static NEXT: AtomicU16 = AtomicU16::new(0);
     let off = NEXT.fetch_add(4, Ordering::SeqCst);
-    let base = 47_000u16
-        .wrapping_add((std::process::id() as u16).wrapping_mul(7) % 4_000)
+    // Banda 46000..47511 garantizada: NUNCA alcanza el rango efímero de
+    // Windows (>=49152) — con `47_000 + %4_000` ciertos pids del runner caían
+    // en efímeros ocupados y los tests panicaban al empezar (CI de main).
+    let base = 46_000u16
+        .wrapping_add((std::process::id() as u16).wrapping_mul(7) % 1_500)
         .wrapping_add(off);
     for port in [base, base + 1, base + 2, base + 3] {
         let tcp = tokio::net::TcpListener::bind(("127.0.0.1", port)).await;
