@@ -1,0 +1,47 @@
+# Gate C-16 — conexión por ID (resolutor LAN, v0.11.0)
+
+**Fecha**: 2026-11-03 · **Rama**: `feature/id-resolve` · **Diseño**: `specs/02` §9
+
+## Qué se implementó
+
+| Pieza | Implementación |
+|---|---|
+| Protocolo | UDP **broadcast** puerto **21119**: controlador emite `ANYREMOTE/1 WHO <id>` (3 intentos × 900 ms) → anfitrión responde **unicast** `ANYREMOTE/1 HERE <id> <puerto>` **desde su socket** (la IP de origen de la respuesta = dirección correcta del anfitrión, multi-homing sin ambigüedad). Parse estricto: magia+versión+id validado con `NodeId::parse`+puerto; basura/versión desconocida/id ajeno → se ignora. |
+| Servidor | `discover::DiscoveryServer` (bind `0.0.0.0:21119`) durante `listen`: responde **solo** a consultas por NUESTRO id, con **throttling por origen** ≤1/500 ms (patrón H-RD-02). `Drop` → aborta la tarea al terminar la escucha. Puerto ocupado/flag inválido → evento `discover_error` y la escucha sigue. |
+| Caché | Tras una respuesta viva: `resolved/<ID>.txt` (`ip:port`). Si la broadcast no responde → caché; tampoco → error con el **`netsh` exacto** del puerto usado. Nunca se asume dirección (solo se escribe tras respuesta). |
+| **Seguridad** | La resolución **no autentica** (cualquiera puede responder): `connect` por ID exige tras **C2** que `peer_id.node_id == ID solicitado` **antes** de recordar TOFU o guardar pin → una caché envenenada/intermediario provoca «no es el ID solicitado» sin dejar residuos. El **pin por destino usa el ID** (`trusted/<ID>.pem`): estable entre cambios de DHCP. |
+| Flag | `--discover <ip:puerto|puerto>` en `listen` y `connect` (default `255.255.255.255:21119`). Evento `resolve_ok {id, addr, source: broadcast\|cache}`. |
+| App | eliminado el bloqueo «por ID aún no se puede»; `looksLikeAlias` («sin `:`») ya no se traga los IDs → el ID viaja en mayúsculas como target normal; hint `netsh` para UDP 21119. |
+
+## Tests
+
+**Transporte (`discover`, 5 unit)**: roundtrip query/reply · rechazo de
+basura/versión desconocida/id ajeno/puerto 0 o >u16 · `query` resuelve un
+`DiscoveryServer` en loopback → `127.0.0.1:21118` · `query` timeout con id
+ajeno · caché save/load + archivo corrupto → `None`.
+
+**Daemon e2e (`daemon_resolve_e2e.rs`, 3)**:
+1. `resolves_id_by_discovery_and_sessions` — listener con `--discover
+   127.0.0.1:P` + controlador conectando **por ID** → `resolve_ok` con
+   `source:"broadcast"` + `session_active` (sesión completa por ID).
+2. `unresolved_id_fails_with_netsh_hint` — sin anfitrión ni caché → error
+   «no se pudo resolver» **con el `netsh` del puerto** (`localport=<P>`).
+3. `cache_redirect_to_wrong_machine_is_rejected` — caché apuntando a una
+   máquina con OTRO id → rechazo «no es el ID solicitado» **y sin guardar**
+   `trusted/<ID>.pem` (la verificación va antes de TOFU/pin).
+
+## Gates (2026-11-03)
+
+| Gate | Resultado |
+|---|---|
+| `cargo test --no-fail-fast` | **50 suites / 0 fallos** (incluye los2 de escritorio: pantalla desbloqueada) |
+| `cargo clippy --workspace --all-targets` | **0 / 0** |
+| `cargo fmt --check` | **0** |
+| `flutter analyze` | limpio |
+| `flutter test` | **9/9** |
+
+## Pendiente de validación de campo
+
+- Conectar desde la app tecleando solo el **ID del anfitrión** (sin IP) con el
+  firewall UDP 21119 abierto en el anfitrión (hint en la app) → sesión normal
+  + `resolve_ok` en el registro del visor.

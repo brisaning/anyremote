@@ -16,16 +16,16 @@
 
 |RF|Estado|Trazabilidad|
 |---|---|---|
-|RF-01 Sesiones|✅ implementado (C1+C2) · **v0.8.2 listener repetidor** (cierre del invitado → la escucha se libera y acepta reconexiones; el proceso termina al detenerse) · **v0.8.6 dueño ausente** (cerrar la app → la escucha/sesión se detiene sola) · **v0.10.0 transporte UDP/QUIC** (stream de vídeo dedicado + fallback `quic_fallback`; mismo binding C2 que TCP) · **v0.10.1**: la auditoría `session_established` registra el `transport` real de cada sesión|`specs/04`, `evidence/listener-repeat-gate.md`, `evidence/owner-gate.md`|
+|RF-01 Sesiones|✅ implementado (C1+C2) · **v0.8.2 listener repetidor** (cierre del invitado → la escucha se libera y acepta reconexiones; el proceso termina al detenerse) · **v0.8.6 dueño ausente** (cerrar la app → la escucha/sesión se detiene sola) · **v0.10.0 transporte UDP/QUIC** (stream de vídeo dedicado + fallback `quic_fallback`; mismo binding C2 que TCP) · **v0.10.1**: la auditoría `session_established` registra el `transport` real de cada sesión · ✅ **validada en campo** (2026-11-03: sesión QUIC extremo a extremo, sin fallback, auditoría `transport:quic`)|`specs/04`, `evidence/listener-repeat-gate.md`, `evidence/owner-gate.md`|
 |RF-02a Pantalla/códec|✅ VP9 + visor (C3/C3-bis/M2) · **v0.8.3 visor sin desbordes** · **v0.8.4 modo visor** · **v0.8.5 cursor remoto visible** · **v0.8.7 adaptación por red** · **v0.9.0 H.264 por hardware/MF** (encoder MF + decoder OpenH264, fallback VP9 visible; stream validado con ffmpeg) · **hotfix v0.9.1** (buffer por `cbSize` + tasa por reconstrucción: sin `MF_E_BUFFERTOOSMALL` a 720p)|`evidence/c3*-gate`, `m2-video-gate`, `evidence/viewer-id-gate.md`, `evidence/viewer-mode-gate.md`, `evidence/cursor-gate.md`|
 |RF-02a Entrada (teclado/ratón)|✅ v0.5.0 cableado en la sesión (D-07 por defecto) · **validada en campo 2026-10-27** · v0.6.2 coordenadas normalizadas · v0.7.0 toggles dinámicos · **v0.8.1 acuse de inyección + F1..F12**|`evidence/input-session-gate.md`, `evidence/menores-gate.md`|
 |RF-02b Portapapeles|✅ (C4)|`c4-gate`|
 |RF-02c Archivos|✅ + reanudación (C5 + v0.3.0)|`c5-gate`, `v030-quality-batch-gate`|
-|RF-03 ID+auth|✅ (C2) · identidad **persistente** + trust **TOFU** (v0.8.0): mismo `NodeId` entre arranques, `peer_trusted=true` en la 2ª sesión · **v0.8.3 ID visible/copiable + CLI `anyremoted id`** (conexión por ID pendiente de resolutor)|`specs/04`, `evidence/identity-gate.md`, `evidence/viewer-id-gate.md`|
+|RF-03 ID+auth|✅ (C2) · identidad **persistente** + trust **TOFU** (v0.8.0): mismo `NodeId` entre arranques, `peer_trusted=true` en la 2ª sesión · **v0.8.3 ID visible/copiable + CLI `anyremoted id`** · **v0.11.0 conexión por ID** (descubrimiento LAN `WHO/HERE` + caché; la sesión exige que el par sea ese ID tras C2)|`specs/04`, `evidence/identity-gate.md`, `evidence/viewer-id-gate.md`|
 |RF-04 Perfiles|✅ (C6 + UI v0.4.0)|`c6-gate`, `ui-batch-gate`|
 |RF-05 Registro|✅ (C7)|`c7-gate`|
 |RF-06 Trazabilidad|✅ (fases 0–6 + evidencia versionada)|`evidence/`|
-|Pendientes globales|🟡 revalidación audio/720p/Nativa — **H.264/red/visor/ID/dueño ✅ verificados en campo** · **UDP/QUIC ✅ hecho (C-15, v0.10.0) — pendiente de campo** · conexión por ID (resolutor) · resampler (único menor)|README § Pendientes|
+|Pendientes globales|🟡 revalidación audio/720p/Nativa — **H.264/red/visor/ID/dueño ✅ verificados en campo** · **UDP/QUIC ✅ hecho y verificado en campo (C-15, v0.10.0–v0.10.1)** · **conexión por ID ✅ hecho (C-16, v0.11.0) — pendiente campo** · resampler (único menor)|README § Pendientes|
 
 ---
 

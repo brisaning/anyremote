@@ -17,7 +17,7 @@ use anyremote_audio::{AudioCapture, AudioMode, AudioPlayback, AudioSource, OpusC
 use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
 use anyremote_codec::VideoDecoder;
 use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender};
-use anyremote_identity::{Identity, TrustStore};
+use anyremote_identity::{Identity, NodeId, TrustStore};
 use anyremote_input::cursor::{CursorBackend, CursorPos};
 use anyremote_input::InputInjector;
 use anyremote_session::{LinkStats, SessionEvent, SessionState};
@@ -112,6 +112,9 @@ pub struct DaemonConfig {
     pub target: Option<String>,
     /// C-15: transporte — `Tcp` (default) o `Udp` (QUIC; listen-udp ata TCP+UDP).
     pub transport: Transport,
+    /// C-16: descubrimiento para conexión por ID — `ip:puerto` o solo `puerto`
+    /// (listen ata `0.0.0.0:<puerto>`; connect envía la consulta WHO).
+    pub discover: String,
     /// listen: permisos a SOLICITAR · connect: permisos a CONCEDER (intersección).
     pub grant: Vec<String>,
     pub clipboard: ClipboardMode,
@@ -167,6 +170,7 @@ impl DaemonConfig {
             bind: "127.0.0.1:21118".into(),
             target: None,
             transport: Transport::Tcp,
+            discover: anyremote_transport::discover::DEFAULT_DISCOVER.into(),
             grant: vec!["keyboard".into(), "mouse".into()],
             clipboard: ClipboardMode::Win,
             clipboard_seed: None,
@@ -976,9 +980,40 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
     } else {
         None
     };
+    // C-16: servidor de descubrimiento para conexión por ID (specs/02 §9).
+    // Si el puerto está ocupado o el flag es inválido → aviso y la escucha
+    // sigue: nada más depende de él. Se detiene con el Drop al salir.
+    let discover = match anyremote_transport::discover::parse_port(&cfg.discover) {
+        Some(port) => {
+            let listen_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+            match anyremote_transport::discover::DiscoveryServer::spawn(
+                port,
+                identity.node_id().to_string(),
+                listen_port,
+            )
+            .await
+            {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    emit.emit(ev(
+                        "discover_error",
+                        serde_json::json!({ "detail": e.to_string() }),
+                    ));
+                    None
+                }
+            }
+        }
+        None => {
+            emit.emit(ev(
+                "discover_error",
+                serde_json::json!({ "detail": format!("--discover inválido: {}", cfg.discover) }),
+            ));
+            None
+        }
+    };
     emit.emit(ev(
         "listening",
-        serde_json::json!({ "bind": bind_addr, "transport": cfg.transport.as_str(), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION }),
+        serde_json::json!({ "bind": bind_addr, "transport": cfg.transport.as_str(), "discover": discover.as_ref().map(|d| d.local_addr().to_string()), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION }),
     ));
 
     let acceptor = TlsAcceptor::from(Arc::new(srv_cfg));
@@ -1840,15 +1875,31 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     )?;
     emit.emit(ev("connecting", serde_json::json!({ "target": target.clone(), "transport": cfg.transport.as_str(), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION })));
 
+    // C-16: si el destino es un ID estable (10 chars Base32), resolverlo por
+    // descubrimiento LAN (consulta UDP + caché — specs/02 §9). `label` es lo
+    // que se usa para pins/eventos (para IDs: el ID → estable entre cambios
+    // de DHCP); `addr` es a donde se conecta de verdad. Tras C2 se exige que
+    // el par sea exactamente ese ID.
+    let expected_id = NodeId::parse(&target.to_ascii_uppercase()).ok();
+    let (addr, label) = match &expected_id {
+        Some(id) => (
+            resolve_id(id, &cfg, &mut emit).await?.to_string(),
+            target.clone(),
+        ),
+        None => (target.clone(), target.clone()),
+    };
+
     // C-15: transporte — UDP/QUIC intenta primero y cae a TCP si el par no
     // lo habla (compat con peers/versiones anteriores; evento `quic_fallback`).
     let outcome = match cfg.transport {
         Transport::Tcp => {
             tcp_controller_session(
-                &target,
+                &label,
+                &addr,
                 &cfg,
                 &identity,
                 &session_id,
+                expected_id,
                 &mut log,
                 &mut report,
                 &mut emit,
@@ -1856,7 +1907,7 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
             )
             .await?
         }
-        Transport::Udp => match quic_attempt(&target, &cfg).await? {
+        Transport::Udp => match quic_attempt(&label, &addr, &cfg).await? {
             QuicAttempt::Ready {
                 endpoint,
                 control,
@@ -1874,7 +1925,8 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
                     &identity,
                     &session_id,
                     &cfg,
-                    &target,
+                    &label,
+                    expected_id,
                     pending_pin,
                     &mut log,
                     &mut report,
@@ -1889,10 +1941,12 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
                     serde_json::json!({ "target": target.clone(), "reason": reason }),
                 ));
                 tcp_controller_session(
-                    &target,
+                    &label,
+                    &addr,
                     &cfg,
                     &identity,
                     &session_id,
+                    expected_id,
                     &mut log,
                     &mut report,
                     &mut emit,
@@ -1919,6 +1973,8 @@ async fn establish_controller<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + 
     session_id: &str,
     cfg: &DaemonConfig,
     target: &str,
+    // C-16: ID exigido si se conectó por ID (verificado ANTES de TOFU/pin).
+    expected_id: Option<NodeId>,
     pending_pin: Option<String>,
     log: &mut SessionLog,
     emit: &mut Emit,
@@ -1928,6 +1984,17 @@ async fn establish_controller<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + 
     let mut gate = auth::AuthGate::new();
     let trust = TrustStore::load(&cfg.config_dir);
     let peer_id = auth::recv_validate_auth(ch, &mut gate, &trust, binding).await?;
+    // C-16: si conectamos POR ID, el par debe ser exactamente ese ID — ANTES
+    // de recordar TOFU/guardar pin (un impostor que redirija la dirección no
+    // pasa aquí, aunque su C2 sea válido para SU identidad).
+    if let Some(want) = expected_id {
+        if peer_id.node_id != want {
+            return Err(DaemonError::Config(format!(
+                "el equipo que respondió ({}) no es el ID solicitado ({want}) — dirección incorrecta o intermediario",
+                peer_id.node_id
+            )));
+        }
+    }
     // D-03 (TOFU): recuerda el anfitrión autenticado (además del pin de cert).
     TrustStore::remember(&cfg.config_dir, &peer_id.node_id, &peer_id.pubkey);
     if let Some(pem) = pending_pin {
@@ -2020,6 +2087,8 @@ async fn controller_session<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Un
     session_id: &str,
     cfg: &DaemonConfig,
     target: &str,
+    // C-16: si conectamos por ID, este es el ID exigido (verificado tras C2).
+    expected_id: Option<NodeId>,
     pending_pin: Option<String>,
     log: &mut SessionLog,
     report: &mut SessionReport,
@@ -2034,6 +2103,7 @@ async fn controller_session<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Un
         session_id,
         cfg,
         target,
+        expected_id,
         pending_pin,
         log,
         emit,
@@ -2097,10 +2167,15 @@ async fn controller_session<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Un
 /// `quic_attempt` + el mismo `controller_session`.
 #[allow(clippy::too_many_arguments)] // capas de sesión: cada parámetro tiene dueño claro.
 async fn tcp_controller_session(
-    target: &str,
+    // C-16: `label` = nombre estable para pins/eventos (el ID si se conectó
+    // por ID); `addr` = a donde se conecta (resuelto por descubrimiento si el
+    // destino era un ID). `expected_id` = ID exigido tras C2 (si aplica).
+    label: &str,
+    addr: &str,
     cfg: &DaemonConfig,
     identity: &Identity,
     session_id: &str,
+    expected_id: Option<NodeId>,
     log: &mut SessionLog,
     report: &mut SessionReport,
     emit: &mut Emit,
@@ -2108,11 +2183,11 @@ async fn tcp_controller_session(
 ) -> Result<RunOutcome, DaemonError> {
     // Raíz de confianza: pin local si existe; si no, la recibe por bootstrap del
     // par y se persiste SOLO tras completar la autenticación mutua (C2).
-    let mut tcp = TcpStream::connect(target)
+    let mut tcp = TcpStream::connect(addr)
         .await
         .map_err(|e| DaemonError::Io(e.to_string()))?;
     let incoming = anyremote_transport::cert_store::read_bootstrap(&mut tcp).await?;
-    let pin_pem = anyremote_transport::cert_store::load_trusted(&cfg.config_dir, target)?;
+    let pin_pem = anyremote_transport::cert_store::load_trusted(&cfg.config_dir, label)?;
     let (root, pending_pin) = match (pin_pem, incoming) {
         (Some(pem), inc) => {
             let root = anyremote_transport::cert_store::cert_from_pem(&pem)?;
@@ -2121,8 +2196,8 @@ async fn tcp_controller_session(
                 let fp_inc = anyremote_transport::cert_store::cert_fingerprint(&inc_cert);
                 if fp_inc != fp_local {
                     return Err(DaemonError::Config(format!(
-                        "el cert del servidor ({fp_inc}…) no coincide con tu pin de {target} ({fp_local}…)                          — posible intermediario. Si el servidor cambió legítimamente, borra {}                          y reconecta",
-                        anyremote_transport::cert_store::trusted_path(&cfg.config_dir, target).display()
+                        "el cert del servidor ({fp_inc}…) no coincide con tu pin de {label} ({fp_local}…)                          — posible intermediario. Si el servidor cambió legítimamente, borra {}                          y reconecta",
+                        anyremote_transport::cert_store::trusted_path(&cfg.config_dir, label).display()
                     )));
                 }
             }
@@ -2153,7 +2228,8 @@ async fn tcp_controller_session(
         identity,
         session_id,
         cfg,
-        target,
+        label,
+        expected_id,
         pending_pin,
         log,
         report,
@@ -2182,11 +2258,15 @@ enum QuicAttempt {
 
 /// Conexión QUIC del controlador: resolve → pin → endpoint → handshake con
 /// timeout de fallback → 2 streams con prologo → binding C2 + pin TOFU.
-async fn quic_attempt(target: &str, cfg: &DaemonConfig) -> Result<QuicAttempt, DaemonError> {
+async fn quic_attempt(
+    label: &str,
+    target_addr: &str,
+    cfg: &DaemonConfig,
+) -> Result<QuicAttempt, DaemonError> {
     use anyremote_transport::quic;
 
-    let addr = resolve_target(target).await?;
-    let pin_pem = anyremote_transport::cert_store::load_trusted(&cfg.config_dir, target)?;
+    let addr = resolve_target(target_addr).await?;
+    let pin_pem = anyremote_transport::cert_store::load_trusted(&cfg.config_dir, label)?;
     let root = match pin_pem {
         Some(pem) => Some(anyremote_transport::cert_store::cert_from_pem(&pem)?),
         None => None,
@@ -2201,7 +2281,7 @@ async fn quic_attempt(target: &str, cfg: &DaemonConfig) -> Result<QuicAttempt, D
             Ok(Err(e)) => return Ok(QuicAttempt::Fallback(e.to_string())),
             Err(_elapsed) => {
                 return Ok(QuicAttempt::Fallback(format!(
-                    "sin respuesta QUIC en 3 s a {target}"
+                    "sin respuesta QUIC en 3 s a {target_addr}"
                 )))
             }
         };
@@ -2213,8 +2293,8 @@ async fn quic_attempt(target: &str, cfg: &DaemonConfig) -> Result<QuicAttempt, D
             let fp_peer = anyremote_transport::cert_store::cert_fingerprint(&pc);
             if fp_peer != fp_local {
                 return Err(DaemonError::Config(format!(
-                    "el cert del servidor ({fp_peer}…) no coincide con tu pin de {target} ({fp_local}…)                      — posible intermediario. Si el servidor cambió legítimamente, borra {}                      y reconecta",
-                    anyremote_transport::cert_store::trusted_path(&cfg.config_dir, target).display()
+                    "el cert del servidor ({fp_peer}…) no coincide con tu pin de {label} ({fp_local}…)                      — posible intermediario. Si el servidor cambió legítimamente, borra {}                      y reconecta",
+                    anyremote_transport::cert_store::trusted_path(&cfg.config_dir, label).display()
                 )));
             }
         }
@@ -2261,6 +2341,40 @@ async fn resolve_target(target: &str) -> Result<std::net::SocketAddr, DaemonErro
         .map_err(|e| DaemonError::Io(format!("resolver {target}: {e}")))?
         .next()
         .ok_or_else(|| DaemonError::Config(format!("no resolvible: {target}")))
+}
+
+/// C-16: resuelve un ID por descubrimiento LAN — consulta activa → caché
+/// (specs/02 §9). Emite `resolve_ok {id, addr, source}`; sin respuesta y sin
+/// caché → error con el `netsh` exacto del puerto de descubrimiento.
+async fn resolve_id(
+    id: &NodeId,
+    cfg: &DaemonConfig,
+    emit: &mut Emit,
+) -> Result<std::net::SocketAddr, DaemonError> {
+    use anyremote_transport::discover;
+
+    let target = discover::parse_target(&cfg.discover).map_err(DaemonError::Config)?;
+    if let Ok(addr) = discover::query(target, &id.to_string(), 3).await {
+        let _ = discover::save_resolved(&cfg.config_dir, &id.to_string(), addr);
+        emit.emit(ev(
+            "resolve_ok",
+            serde_json::json!({"id": id.to_string(), "addr": addr.to_string(), "source": "broadcast"}),
+        ));
+        return Ok(addr);
+    }
+    if let Some(addr) = discover::load_resolved(&cfg.config_dir, &id.to_string()) {
+        emit.emit(ev(
+            "resolve_ok",
+            serde_json::json!({"id": id.to_string(), "addr": addr.to_string(), "source": "cache"}),
+        ));
+        return Ok(addr);
+    }
+    Err(DaemonError::Config(format!(
+        "no se pudo resolver el ID {id}: sin respuesta de descubrimiento y sin caché. \
+         Comprueba que el anfitrión esté escuchando y abre el puerto de descubrimiento (admin): \
+         netsh advfirewall firewall add rule name=\"anyremote-discover\" dir=in action=allow protocol=UDP localport={}",
+        target.port()
+    )))
 }
 
 /// Decodifica un `VideoFrame` del wire y alimenta el preview local (Hito M2).

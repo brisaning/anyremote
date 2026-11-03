@@ -9,6 +9,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub mod arsp;
 pub mod auth;
+pub mod discover;
 pub mod quic;
 
 /// Máximo de un frame ARSP (16 MiB) — cota de recurso del protocolo.

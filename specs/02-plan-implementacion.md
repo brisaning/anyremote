@@ -52,8 +52,9 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-12 bug: dueño ausente v0.8.6 | ✅ gate verde · ✅ **validada en campo** (auditoría con `dueño ausente (stdin cerrado)` al cerrar la app) | `owner-exit-v0.8.6` · `evidence/owner-gate.md` |
 | C-13 adaptación por red (RTT) v0.8.7 | ✅ gate verde · ✅ **validada en campo** (`red_bitrate` 3M→1.5M→750k con rtt 40–1402 ms en el informe del anfitrión) | `net-adapt-v0.8.7` · `evidence/net-adapt-gate.md` |
 | C-14 aceleración por hardware: H.264/MF v0.9.0 (+ hotfix v0.9.1) | ✅ gate verde (stream validado con ffmpeg + e2e720p punta a punta) · ✅ **validada en campo** (`mf_h264` sin fallback, sesión 112 frames/2,4 MB a720p) | `hwcodec-v0.9.0`, `hwcodec-v0.9.1` · `evidence/hwcodec-gate.md` |
-| C-15 transporte UDP/QUIC v0.10.0 (+ v0.10.1 auditoría `transport`) | ✅ gate verde (4 unit QUIC + 3 e2e con aserción del `transport` real en auditoría; diseño §8) · 🟡 campo parcial 2026-11-03 (compat TCP→listener dual ✓; falta sesión QUIC con toggle en la visora) | `quic-transport-v0.10.0`, `quic-transport-v0.10.1` · `evidence/quic-gate.md` |
-| **Pendientes** | 🟡 revalidación audio/720p/Nativa · **campo: sesión QUIC (toggle en la visora)** · conexión por ID (resolutor) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
+| C-15 transporte UDP/QUIC v0.10.0 (+ v0.10.1 auditoría `transport`) | ✅ gate verde (4 unit QUIC + 3 e2e con aserción del `transport` real en auditoría; diseño §8) · ✅ **validada en campo** 2026-11-03 (dos sesiones `--transport udp` sin `quic_fallback`, auditoría `transport:quic`, vídeo+control+C-12 sobre QUIC; compat TCP→dual antes) | `quic-transport-v0.10.0`, `quic-transport-v0.10.1` · `evidence/quic-gate.md` |
+| C-16 conexión por ID (resolutor LAN) v0.11.0 | ✅ gate verde (5 unit de protocolo + 3 e2e daemon: resolución broadcast + hint netsh + rechazo de caché envenenada antes de TOFU/pin) · 🟡 pendiente campo | `id-resolve-v0.11.0` · `evidence/id-connect-gate.md` |
+| **Pendientes** | 🟡 campo C-16 (conectar tecleando el ID) · revalidación audio/720p/Nativa · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
@@ -238,3 +239,24 @@ atrasados (el `mpsc` drop-new del v1 ya limita la antigüedad a ~2 frames).
 - Sin NAT traversal/STUN/relay (LAN primero; WAN queda en §7).
 - Sin renegociación de transporte en caliente (reconectar con el flag).
 - `netsh` hint para UDP en la app (firewall de Windows también filtra UDP).
+
+
+---
+
+## 9. C-16: conexión por ID — resolutor LAN (2026-11-03)
+
+**Objetivo (RF-03)**: `anyremoted connect GLV5Q76BAQ` y el campo «ID remoto o
+dirección» de la app resuelven el **ID estable** a una dirección sin teclear la
+IP. D-04 preveía un servidor propio (Fase 4/WAN); para LAN se implementa
+**descubrimiento sin servidor**:
+
+| Pieza | Diseño |
+|---|---|
+| Protocolo | UDP **broadcast** (puerto **21119**): el controlador emite `ANYREMOTE/1 WHO <id>` (hasta 3 intentos, ~2,7 s) y el anfitrión responde **unicast** `ANYREMOTE/1 HERE <id> <puerto_listen>` a la IP de origen (la respuesta viaja desde la IP correcta del anfitrión — sin ambigüedad multi-homing). Parse estricto: magia+versión+id+puerto; basura o versión desconocida → se ignora. |
+| Quién responde | Tarea `DiscoveryServer` durante `listen` (bind `0.0.0.0:21119`, se aborta al terminar la escucha; si el puerto está ocupado → aviso y la escucha sigue). Responde **solo si el ID pedido es el nuestro** + **throttling por origen** (≤1 respuesta/500 ms — patrón H-RD-02). |
+| Caché | Tras una consulta exitosa se persiste `resolved/<ID>.txt` (`ip:port`). Si la broadcast no responde (firewall/subred), se usa la caché como respaldo. Sin caché y sin respuesta → error con el `netsh` exacto del puerto de descubrimiento. |
+| **Seguridad** | La resolución **NO autentica** (cualquiera puede responder): la identidad la verifica **C2** en el handshake. Además `connect` por ID **exige que el par sea ese ID** (`peer_id.node_id == esperado`) ANTES de recordar TOFU/guardar pin — un impostor que redirija la dirección provoca error «no es el ID solicitado». El **pin por destino usa el ID** (`trusted/<ID>.pem`): estable entre cambios de DHCP. |
+| Flag | `--discover <addr:port>` (default `255.255.255.255:21119`): listen ata `0.0.0.0:<puerto>`; connect envía a la dirección completa (en tests: `127.0.0.1:<puerto>`). |
+| App | se elimina el bloqueo «por ID aún no se puede»; un ID **no es alias** (`looksLikeAlias` = sin `:`, así que el ID debe excluirla explícitamente) y se envía en mayúsculas. Hint `netsh` para UDP 21119. |
+| Eventos | `resolve_ok {id, addr, source: broadcast\|cache}` en el controlador; errores con acción concreta (netsh / anfitrión escuchando). |
+| Límites | LAN (broadcast no cruza subredes) — servidor propio/Rendezvous D-04 y WAN quedan en §7. El caché solo se escribe tras una respuesta viva (nunca se asume dirección). |
