@@ -12,7 +12,7 @@ _Última actualización: 2026-10-26_
 
 | Campo | Valor |
 |---|---|
-| Versión actual | **v0.10.1** (`anyremote_app.exe` + `anyremoted.exe`) |
+| Versión actual | **v0.11.0** (`anyremote_app.exe` + `anyremoted.exe`) |
 | Ramas | `main` = `33bb127` (PRs #25–#27) · `develop` = `d80f2fb` (tags `hwcodec-v0.9.0`, `hwcodec-v0.9.1`, `quic-transport-v0.10.0`, `quic-transport-v0.10.1`) |
 | Gates actuales | **Rust 48 suites / 0 fallos** · **clippy 0 avisos** (`-D warnings`) · **fmt 0 diffs** · `flutter analyze` limpio · `flutter test` 9/9 · CI en `.github/workflows/ci.yml` |
 | Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · **control remoto teclado/ratón (v0.5.0)** · vídeo en pantalla estática fix v0.7.2 · sesión sana con `source=system` (107 frames + `bye`) · **✅ combo «control remoto + micrófono» verificada sin error con v0.7.3** (PR #13) · **✅ reconexión sin reiniciar la escucha tras cerrar desde el invitado (v0.8.2)** · 🟡 pendiente revalidación audio/720p/Nativa · visor/ID v0.8.3 · **modo visor v0.8.4** · **✅ cursor v0.8.5 (probado en campo)** · **✅ v0.9.1 en campo: `mf_h264` SIN fallback + adaptación por red actuando (3M→750k con rtt 40–1402 ms) + `dueño ausente` auto-detenido al cerrar la app** · **✅ QUIC en campo (2026-11-03, v0.10.1)**: dos sesiones con `--transport udp` en ambos lados, **cero `quic_fallback`**, auditoría `session_established.transport:"quic"` en ambas, vídeo `mf_h264` + control (499 inyecciones) + C-12 cerrando limpio sobre QUIC · **compatibilidad** (cliente TCP → listener dual) también probada en campo |
@@ -28,7 +28,7 @@ _Última actualización: 2026-10-26_
 | Audio en sesión (capacidad D-05/D-07) | ✅ (v0.6.1 → **v0.7.0**): **loopback (audio del sistema)** + **micrófono** como fuentes (mezclables con `--audio-source system,mic`), Opus 48 kHz; toggles **dinámicos en caliente** | `evidence/audio-gate.md`, `evidence/dynamic-perms-gate.md` |
 | RF-02b Portapapeles | ✅ | C4 (contención de formatos) |
 | RF-02c Archivos | ✅ | C5 + reanudación persistente (v0.3.0) |
-| RF-03 Conexión por ID/dirección + auth | ✅ · **identidad persistente + trust TOFU (v0.8.0)** → mismo `NodeId` entre arranques y `peer_trusted=true` en la 2ª sesión · **ID visible + copiable y CLI `anyremoted id` (v0.8.3)** (conectar por ID aún pendiente de resolutor) | C2 (ed25519 + binding) · `evidence/identity-gate.md`, `evidence/viewer-id-gate.md` |
+| RF-03 Conexión por ID/dirección + auth | ✅ · **identidad persistente + trust TOFU (v0.8.0)** → mismo `NodeId` entre arranques y `peer_trusted=true` en la 2ª sesión · **ID visible + copiable y CLI `anyremoted id` (v0.8.3)** · **conexión por ID (v0.11.0)**: descubrimiento LAN sin servidor (`WHO/HERE` por UDP 21119 + caché) — se teclea el ID y la sesión verifica tras C2 que el par sea ese ID | C2 (ed25519 + binding) · `evidence/identity-gate.md`, `evidence/viewer-id-gate.md`, `evidence/id-connect-gate.md` |
 | RF-04 Perfiles | ✅ | C6 + selector en UI (v0.4.0) |
 | RF-05 Registro + diagnóstico | ✅ | C7 (JSONL + SessionReport) |
 | RNF-01..06 | ✅ | C8 (secretos fail-closed, benchmark, auditabilidad) |
@@ -74,7 +74,7 @@ botón de copiar en la tarjeta Conexión). El ID **del anfitrión (remoto)**
 se ve en SU equipo en esa misma fila y, durante la sesión, en **«SESIÓN
 ACTIVA con …»** (con `✓ verificado` si ya se autenticó antes). Hoy el ID
 **identifica pero no resuelve**: la conexión sigue siendo `ip:puerto` o
-perfil (el conector por ID queda pendiente de un resolutor).
+perfil (la conexión por ID se resuelve por descubrimiento LAN desde v0.11.0).
 
 **Modo visor (v0.8.4)**: mientras el visor remoto está visible, las
 secciones **Conexión** y **Registro** quedan ocultas (el visor ocupa la

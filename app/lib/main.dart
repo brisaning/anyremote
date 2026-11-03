@@ -698,6 +698,8 @@ class _HomePageState extends State<HomePage> {
         _append('[ui] ...y para UDP (QUIC): '
             'netsh advfirewall firewall add rule name="anyremote-udp" dir=in action=allow protocol=UDP localport=21118');
       }
+      _append('[ui] ...y para conexión por ID (descubrimiento): '
+          'netsh advfirewall firewall add rule name="anyremote-discover" dir=in action=allow protocol=UDP localport=21119');
     } catch (e) {
       if (mounted) _append('[ui] no se pudieron listar las IPs: $e');
     }
@@ -912,14 +914,8 @@ class _HomePageState extends State<HomePage> {
       _append('[ui] indica un destino host:puerto o alias de perfil');
       return;
     }
-    // C-9: un ID (10 chars Base32) todavía NO resuelve a dirección — conectar
-    // por ID requiere un resolutor (pendiente en specs). Se explica en lugar
-    // de fallar como «perfil no encontrado».
-    if (RegExp(r'^[A-Z2-7]{10}$').hasMatch(target.toUpperCase())) {
-      _append('[ui] por ID aún no se puede conectar (resolutor pendiente): '
-          'usa la dirección del anfitrión (ip:puerto) — el ID identifica al equipo');
-      return;
-    }
+    // C-16: un ID (10 chars Base32) se resuelve por descubrimiento LAN en el
+    // daemon (consulta UDP + caché); NO es un alias de perfil (ver abajo).
     if (_daemon != null) {
       _append('[ui] ya hay una sesión en curso — pulsa Detener primero');
       return;
@@ -929,10 +925,15 @@ class _HomePageState extends State<HomePage> {
       _setStatus('Daemon no encontrado', Colors.orange);
       return;
     }
-    final asAlias = looksLikeAlias(target);
+    // C-16: `looksLikeAlias` es «sin dos puntos» — un ID también lo cumple,
+    // así que los IDs se excluyen explícitamente y viajan en mayúsculas
+    // (el daemon valida la forma con NodeId::parse).
+    final isId = RegExp(r'^[A-Z2-7]{10}$').hasMatch(target.toUpperCase());
+    final effective = isId ? target.toUpperCase() : target;
+    final asAlias = !isId && looksLikeAlias(target);
     final args = asAlias
         ? ['connect', '--profile', target, '--clipboard', 'win']
-        : ['connect', target, '--clipboard', 'win'];
+        : ['connect', effective, '--clipboard', 'win'];
     // RF audio: reproduce lo que el anfitrión comparte (si no comparte, no hay audio).
     args.addAll(['--audio', 'on']);
     // C-15: udp = QUIC con fallback automático a TCP si el par no lo habla.

@@ -21,11 +21,11 @@
 |RF-02a Entrada (teclado/ratón)|✅ v0.5.0 cableado en la sesión (D-07 por defecto) · **validada en campo 2026-10-27** · v0.6.2 coordenadas normalizadas · v0.7.0 toggles dinámicos · **v0.8.1 acuse de inyección + F1..F12**|`evidence/input-session-gate.md`, `evidence/menores-gate.md`|
 |RF-02b Portapapeles|✅ (C4)|`c4-gate`|
 |RF-02c Archivos|✅ + reanudación (C5 + v0.3.0)|`c5-gate`, `v030-quality-batch-gate`|
-|RF-03 ID+auth|✅ (C2) · identidad **persistente** + trust **TOFU** (v0.8.0): mismo `NodeId` entre arranques, `peer_trusted=true` en la 2ª sesión · **v0.8.3 ID visible/copiable + CLI `anyremoted id`** (conexión por ID pendiente de resolutor)|`specs/04`, `evidence/identity-gate.md`, `evidence/viewer-id-gate.md`|
+|RF-03 ID+auth|✅ (C2) · identidad **persistente** + trust **TOFU** (v0.8.0): mismo `NodeId` entre arranques, `peer_trusted=true` en la 2ª sesión · **v0.8.3 ID visible/copiable + CLI `anyremoted id`** · **v0.11.0 conexión por ID** (descubrimiento LAN `WHO/HERE` + caché; la sesión exige que el par sea ese ID tras C2)|`specs/04`, `evidence/identity-gate.md`, `evidence/viewer-id-gate.md`|
 |RF-04 Perfiles|✅ (C6 + UI v0.4.0)|`c6-gate`, `ui-batch-gate`|
 |RF-05 Registro|✅ (C7)|`c7-gate`|
 |RF-06 Trazabilidad|✅ (fases 0–6 + evidencia versionada)|`evidence/`|
-|Pendientes globales|🟡 revalidación audio/720p/Nativa — **H.264/red/visor/ID/dueño ✅ verificados en campo** · **UDP/QUIC ✅ hecho y verificado en campo (C-15, v0.10.0–v0.10.1)** · conexión por ID (resolutor) · resampler (único menor)|README § Pendientes|
+|Pendientes globales|🟡 revalidación audio/720p/Nativa — **H.264/red/visor/ID/dueño ✅ verificados en campo** · **UDP/QUIC ✅ hecho y verificado en campo (C-15, v0.10.0–v0.10.1)** · **conexión por ID ✅ hecho (C-16, v0.11.0) — pendiente campo** · resampler (único menor)|README § Pendientes|
 
 ---
 

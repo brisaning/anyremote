@@ -173,6 +173,11 @@ async fn main() {
                     std::process::exit(2);
                 });
             }
+            // C-16: descubrimiento para conexión por ID (default broadcast
+            // 21119): listen ata 0.0.0.0:<puerto> y responde a las consultas.
+            if let Some(d) = flag_value(&args, "--discover") {
+                cfg.discover = d;
+            }
             // Hito M2: flags de vídeo (solo tiene efecto en listen).
             if let Some(v) = flag_value(&args, "--video") {
                 cfg.video = VideoMode::parse(&v).unwrap_or_else(|e| {
@@ -278,6 +283,10 @@ async fn main() {
                     std::process::exit(2);
                 });
             }
+            // C-16: descubrimiento para conexión por ID (misma bandera).
+            if let Some(d) = flag_value(&args, "--discover") {
+                cfg.discover = d;
+            }
             cfg.on_event = Some(Box::new(|line: String| {
                 println!("{line}");
                 use std::io::Write;
@@ -305,8 +314,8 @@ async fn main() {
             eprintln!(
                 "anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio"
             );
-            eprintln!("  anyremoted listen   [--bind a:p] [--transport tcp|udp] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
-            eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--transport tcp|udp] [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
+            eprintln!("  anyremoted listen   [--bind a:p] [--transport tcp|udp] [--discover ip:puerto] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
+            eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--transport tcp|udp] [--discover ip:puerto] [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             eprintln!("  anyremoted id                                       (ID estable de este equipo, D-03)");
             std::process::exit(2);
