@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "anyremote-daemon"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "anyremote-audio",
  "anyremote-capture",
@@ -91,6 +91,7 @@ dependencies = [
  "anyremote-identity",
  "anyremote-input",
  "anyremote-profiles",
+ "anyremote-rendezvous",
  "anyremote-session",
  "anyremote-telemetry",
  "anyremote-transport",
@@ -132,6 +133,18 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "toml",
+]
+
+[[package]]
+name = "anyremote-rendezvous"
+version = "0.1.0"
+dependencies = [
+ "anyremote-identity",
+ "data-encoding",
+ "getrandom 0.2.17",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

@@ -126,6 +126,7 @@ List<String> buildListenArgs({
   required String size,
   required int kbps,
   bool udp = false,
+  String rdv = '',
 }) =>
     [
       'listen',
@@ -133,6 +134,8 @@ List<String> buildListenArgs({
       // C-15: udp = QUIC con stream de vídeo dedicado; el listener acepta
       // TCP y UDP a la vez, así que los peers viejos siguen conectando.
       if (udp) ...['--transport', 'udp'],
+      // C-17: servidor de encuentro (rendezvous + relay) para WAN.
+      if (rdv.isNotEmpty) ...['--rdv', rdv],
       '--clipboard', 'win',
       // M2: el escuchador comparte SU pantalla por defecto (sino no hay qué ver).
       '--video', 'on',
@@ -214,6 +217,9 @@ class _HomePageState extends State<HomePage> {
   String _videoQuality = '720p';
   /// C-15: transporte UDP/QUIC para listen y connect (default TCP = histórico).
   bool _useUdp = false;
+  /// C-17: servidor de encuentro (rendezvous + relay) para WAN — vacío =
+  /// LAN, o el fichero `rdv` del directorio de configuración del daemon.
+  final TextEditingController _rdv = TextEditingController(text: '');
   static const Map<String, String> _qualities = {
     '720p': '1280x720',
     '1080p': '1920x1080',
@@ -630,6 +636,7 @@ class _HomePageState extends State<HomePage> {
         size: _qualities[_videoQuality] ?? '1280x720',
         kbps: _qualityKbps[_videoQuality] ?? 3000,
         udp: _useUdp,
+        rdv: _rdv.text.trim(),
       );
       final proc = await Process.start(
         _daemonBin,
@@ -938,6 +945,8 @@ class _HomePageState extends State<HomePage> {
     args.addAll(['--audio', 'on']);
     // C-15: udp = QUIC con fallback automático a TCP si el par no lo habla.
     if (_useUdp) args.addAll(['--transport', 'udp']);
+    // C-17: servidor de encuentro (resolución WAN + relay de respaldo).
+    if (_rdv.text.trim().isNotEmpty) args.addAll(['--rdv', _rdv.text.trim()]);
     _append('[ui] lanzando anyremoted ${asAlias ? 'connect --profile $target' : 'connect $target'}');
     try {
       final proc = await Process.start(
@@ -1011,6 +1020,7 @@ class _HomePageState extends State<HomePage> {
     _lastImage?.dispose();
     _inputFocus.dispose();
     _target.dispose();
+    _rdv.dispose();
     super.dispose();
   }
 
@@ -1150,6 +1160,27 @@ class _HomePageState extends State<HomePage> {
                             style:
                                 TextStyle(fontSize: 11, color: Colors.grey),
                             overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    // C-17: servidor de encuentro (rendezvous + relay) para WAN.
+                    Row(
+                      children: [
+                        const Text('servidor de encuentro:',
+                            style: TextStyle(fontSize: 12)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: TextField(
+                            controller: _rdv,
+                            enabled: !running,
+                            decoration: const InputDecoration(
+                              hintText:
+                                  'opcional: ip:puerto del anyremote-rdv (WAN)',
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
                           ),
                         ),
                       ],

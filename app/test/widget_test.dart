@@ -11,7 +11,8 @@ void main() {
 
     expect(find.text('anyremote'), findsOneWidget);
     expect(find.text('v$kVersion'), findsOneWidget);
-    expect(find.byType(TextField), findsOneWidget);
+    // Dos campos: destino (C-9) + servidor de encuentro (C-17, vacío por defecto).
+    expect(find.byType(TextField), findsNWidgets(2));
     expect(find.widgetWithText(FilledButton, 'Conectar'), findsOneWidget);
     expect(find.widgetWithText(OutlinedButton, 'Detener'), findsOneWidget);
     expect(find.textContaining('ciclos S0..C8 completos'), findsOneWidget);
@@ -34,7 +35,7 @@ void main() {
 
     // Con destino: en el entorno de test no hay anyremoted.exe junto al
     // binario → la app degrada con traza explícita (sin daemon real).
-    await tester.enterText(find.byType(TextField), '127.0.0.1,21118');
+    await tester.enterText(find.byType(TextField).first, '127.0.0.1,21118');
     await tester.tap(find.widgetWithText(FilledButton, 'Conectar'));
     await tester.pump();
     expect(find.textContaining('anyremoted.exe no encontrado'), findsWidgets);
@@ -153,6 +154,13 @@ void main() {
     // daemon ata además el socket TCP para peers viejos).
     final udp = buildListenArgs(size: '1280x720', kbps: 3000, udp: true);
     expect(udp[udp.indexOf('--transport') + 1], 'udp');
+
+    // C-17: `--rdv` solo cuando hay servidor de encuentro configurado
+    // (vacío = LAN, o el fichero <config>/rdv del daemon).
+    expect(args.contains('--rdv'), isFalse);
+    final rdv =
+        buildListenArgs(size: '1280x720', kbps: 3000, rdv: '1.2.3.4:21120');
+    expect(rdv[rdv.indexOf('--rdv') + 1], '1.2.3.4:21120');
   });
 
   testWidgets('C-9: el visor remoto cabe en la ventana (sin desbordes)',

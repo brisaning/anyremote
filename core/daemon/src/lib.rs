@@ -115,6 +115,14 @@ pub struct DaemonConfig {
     /// C-16: descubrimiento para conexión por ID — `ip:puerto` o solo `puerto`
     /// (listen ata `0.0.0.0:<puerto>`; connect envía la consulta WHO).
     pub discover: String,
+    /// C-17: servidor de encuentro `host:puerto` (flag `--rdv`; si falta,
+    /// el fichero `<config>/rdv`). listen: registra su endpoint y recibe
+    /// `invite` (tuberías de relay); connect: resolución WAN + relay de
+    /// respaldo cuando lo directo falla (specs/02 §10).
+    pub rdv: Option<String>,
+    /// Solo tests: puerto que se REGISTRA en el rendezvous (por defecto el
+    /// real del listener) — permite forzar el camino relay en loopback.
+    pub rdv_port: Option<u16>,
     /// listen: permisos a SOLICITAR · connect: permisos a CONCEDER (intersección).
     pub grant: Vec<String>,
     pub clipboard: ClipboardMode,
@@ -171,6 +179,8 @@ impl DaemonConfig {
             target: None,
             transport: Transport::Tcp,
             discover: anyremote_transport::discover::DEFAULT_DISCOVER.into(),
+            rdv: None,
+            rdv_port: None,
             grant: vec!["keyboard".into(), "mouse".into()],
             clipboard: ClipboardMode::Win,
             clipboard_seed: None,
@@ -815,6 +825,16 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
 }
 
 /// Resultado del manejo de UN intento de sesión del listener (C-15).
+/// Aborta la tarea subyacente al caer (la escucha termina → el cliente de
+/// rendezvous también; `JoinHandle` solo desacopla, no cancela).
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 enum SessionFlow {
     /// Sigue escuchando (sesión cerrada bien o cliente descartado).
     Continue,
@@ -939,8 +959,12 @@ async fn handle_attempt<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>
 /// sesión**, v0.8.2), con `bye`/señal por stdin o al agotar `--max-secs`.
 pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError> {
     // D-03 (v0.8.0): identidad persistida → el NodeId es estable por equipo.
-    let identity = Identity::load_or_generate(&cfg.config_dir)
-        .map_err(|e| DaemonError::Config(format!("identidad: {e:?}")))?;
+    // C-17: en Arc porque el cliente de rendezvous (tarea persistente de la
+    // escucha) comparte la identidad para firmar los registros.
+    let identity = std::sync::Arc::new(
+        Identity::load_or_generate(&cfg.config_dir)
+            .map_err(|e| DaemonError::Config(format!("identidad: {e:?}")))?,
+    );
     let session_id = session_id_of(&identity);
     let mut emit = Emit {
         events: Vec::new(),
@@ -1016,6 +1040,39 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         serde_json::json!({ "bind": bind_addr, "transport": cfg.transport.as_str(), "discover": discover.as_ref().map(|d| d.local_addr().to_string()), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION }),
     ));
 
+    // C-17: cliente persistente de encuentro (si está configurado): registra
+    // este endpoint (IP observada + puerto de escucha real) y, por cada
+    // `invite`, monta la tubería de relay que el bucle trata como una sesión
+    // TCP entrante (bootstrap → TLS → sesión E2E — el relay solo ve cifrado).
+    let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<anyremote_rendezvous::RelayPipe>(8);
+    let _relay_tx_keep = relay_tx.clone(); // evita que recv() cierre el canal
+    let rdv_task = match rdv_target_of(&cfg) {
+        Some(t) => match resolve_target(&t).await {
+            Ok(rdv_addr) => {
+                let reg_port = cfg
+                    .rdv_port
+                    .unwrap_or_else(|| listener.local_addr().map(|a| a.port()).unwrap_or(0));
+                emit.emit(ev(
+                    "rdv_bound",
+                    serde_json::json!({ "server": rdv_addr.to_string(), "port": reg_port }),
+                ));
+                let ident = identity.clone();
+                let tx = relay_tx.clone();
+                Some(AbortOnDrop(tokio::spawn(async move {
+                    anyremote_rendezvous::run_host_client(rdv_addr, ident, reg_port, tx).await
+                })))
+            }
+            Err(e) => {
+                emit.emit(ev(
+                    "rdv_error",
+                    serde_json::json!({ "target": t.clone(), "detail": format!("{e:?}") }),
+                ));
+                None
+            }
+        },
+        None => None,
+    };
+
     let acceptor = TlsAcceptor::from(Arc::new(srv_cfg));
     // Vida del listener: `--max-secs` (histórico) salvo `--max-sessions 0`
     // (v0.8.2, modo de la app): entonces solo lo detiene `bye`/señal.
@@ -1064,6 +1121,14 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                 // Endpoint cerrado inesperadamente (solo `close` lo hace).
                 Ok(None) => return Err(DaemonError::Io("endpoint QUIC cerrado".into())),
                 Err(_elapsed) => Idle::Timeout,
+            },
+            // C-17: tubería de relay emparejada (invite del rendezvous) →
+            // misma vía que una sesión TCP entrante (bootstrap + TLS + C2
+            // sobre la tubería: E2E, el relay solo transporta cifrado).
+            pipe = relay_rx.recv(), if rdv_task.is_some() => match pipe {
+                Some((stream, peer)) => Idle::AcceptTcp(stream, peer),
+                // Imposible: `_relay_tx_keep` conserva el Sender vivo.
+                None => continue,
             },
             line = ctl.rx.recv(), if !idle_bye_done => match line {
                 Some(l) if l.trim_start().starts_with('{') => Idle::Queue(l),
@@ -1875,86 +1940,111 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     )?;
     emit.emit(ev("connecting", serde_json::json!({ "target": target.clone(), "transport": cfg.transport.as_str(), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION })));
 
-    // C-16: si el destino es un ID estable (10 chars Base32), resolverlo por
-    // descubrimiento LAN (consulta UDP + caché — specs/02 §9). `label` es lo
-    // que se usa para pins/eventos (para IDs: el ID → estable entre cambios
-    // de DHCP); `addr` es a donde se conecta de verdad. Tras C2 se exige que
-    // el par sea exactamente ese ID.
+    // C-16/C-17: si el destino es un ID estable (10 chars Base32), resolverlo
+    // — LAN primero (broadcast), luego el servidor de encuentro y por último
+    // la caché. `label` = nombre estable para pins/eventos (el ID); `addr` =
+    // a donde se conecta; `relay` = (servidor, ticket) si el rdv lo dio:
+    // reserva WAN para si lo directo falla (specs/02 §10). Tras C2 se exige
+    // que el par sea exactamente ese ID.
     let expected_id = NodeId::parse(&target.to_ascii_uppercase()).ok();
-    let (addr, label) = match &expected_id {
-        Some(id) => (
-            resolve_id(id, &cfg, &mut emit).await?.to_string(),
-            target.clone(),
-        ),
-        None => (target.clone(), target.clone()),
+    let (addr, label, relay) = match &expected_id {
+        Some(id) => {
+            let res = resolve_id(id, &cfg, &mut emit).await?;
+            (res.addr.to_string(), target.clone(), res.relay)
+        }
+        None => (target.clone(), target.clone(), None),
     };
 
-    // C-15: transporte — UDP/QUIC intenta primero y cae a TCP si el par no
-    // lo habla (compat con peers/versiones anteriores; evento `quic_fallback`).
-    let outcome = match cfg.transport {
-        Transport::Tcp => {
-            tcp_controller_session(
-                &label,
-                &addr,
-                &cfg,
-                &identity,
-                &session_id,
-                expected_id,
-                &mut log,
-                &mut report,
-                &mut emit,
-                bye_rx,
-            )
-            .await?
-        }
-        Transport::Udp => match quic_attempt(&label, &addr, &cfg).await? {
+    // C-15/C-17 — FASE A: obtener el canal de TRANSPORTE (QUIC directo →
+    // TCP directo con tope 8 s → tubería de relay del rendezvous). La FASE B
+    // (la sesión: C2 + permisos + bucle) corre UNA sola vez sobre el canal
+    // ganador — `bye_rx` es de un solo uso.
+    let mut quic_ready: Option<QuicReady> = None;
+    if cfg.transport == Transport::Udp {
+        match quic_attempt(&label, &addr, &cfg).await? {
             QuicAttempt::Ready {
                 endpoint,
                 control,
                 video,
                 binding,
                 pending_pin,
-            } => {
-                // El Endpoint DEBE vivir con la conexión (quinn la cierra si cae).
-                let _quic_ep = endpoint;
-                controller_session(
-                    control,
-                    Some(video),
-                    binding,
-                    "quic",
-                    &identity,
-                    &session_id,
-                    &cfg,
-                    &label,
-                    expected_id,
-                    pending_pin,
-                    &mut log,
-                    &mut report,
-                    &mut emit,
-                    bye_rx,
-                )
-                .await?
-            }
-            QuicAttempt::Fallback(reason) => {
-                emit.emit(ev(
-                    "quic_fallback",
-                    serde_json::json!({ "target": target.clone(), "reason": reason }),
-                ));
-                tcp_controller_session(
-                    &label,
-                    &addr,
-                    &cfg,
-                    &identity,
-                    &session_id,
-                    expected_id,
-                    &mut log,
-                    &mut report,
-                    &mut emit,
-                    bye_rx,
-                )
-                .await?
-            }
-        },
+            } => quic_ready = Some((endpoint, control, video, binding, pending_pin)),
+            QuicAttempt::Fallback(reason) => emit.emit(ev(
+                "quic_fallback",
+                serde_json::json!({ "target": target.clone(), "reason": reason }),
+            )),
+        }
+    }
+    let tcp_ready = if quic_ready.is_some() {
+        None
+    } else {
+        match tcp_transport_stage(&label, &cfg, TcpSource::Direct(&addr)).await {
+            Ok(v) => Some(v),
+            Err(direct_err) => match &relay {
+                // C-17: lo directo falló y el rendezvous dio ticket → RELAY
+                // (WAN sin reenvío de puertos). El TLS de la sesión se monta
+                // sobre la tubería: E2E, el relay solo transporta cifrado.
+                Some((rdv_addr, ticket)) => {
+                    emit.emit(ev(
+                        "relay_fallback",
+                        serde_json::json!({
+                            "addr": addr.clone(),
+                            "direct": format!("{direct_err:?}"),
+                        }),
+                    ));
+                    match tcp_transport_stage(&label, &cfg, TcpSource::Relay(rdv_addr, ticket))
+                        .await
+                    {
+                        Ok(v) => Some(v),
+                        Err(e) => return Err(e),
+                    }
+                }
+                None => return Err(direct_err),
+            },
+        }
+    };
+
+    // FASE B — sesión única sobre el canal ganador.
+    let outcome = if let Some((endpoint, control, video, binding, pending_pin)) = quic_ready {
+        // El Endpoint DEBE vivir con la conexión (quinn la cierra si cae).
+        let _quic_ep = endpoint;
+        controller_session(
+            control,
+            Some(video),
+            binding,
+            "quic",
+            &identity,
+            &session_id,
+            &cfg,
+            &label,
+            expected_id,
+            pending_pin,
+            &mut log,
+            &mut report,
+            &mut emit,
+            bye_rx,
+        )
+        .await?
+    } else {
+        let (ch, binding, pending_pin) =
+            tcp_ready.expect("sin QUIC listo hay etapa TCP (o se devolvio error antes)");
+        controller_session(
+            ch,
+            None,
+            binding,
+            "tcp",
+            &identity,
+            &session_id,
+            &cfg,
+            &label,
+            expected_id,
+            pending_pin,
+            &mut log,
+            &mut report,
+            &mut emit,
+            bye_rx,
+        )
+        .await?
     };
     Ok(outcome)
 }
@@ -2162,30 +2252,45 @@ async fn controller_session<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Un
     }
 }
 
-/// Lado controlador por TCP+TLS (histórico): connect → bootstrap/pin → TLS →
-/// binding C2 → `controller_session`. El camino QUIC (C-15) vive en
-/// `quic_attempt` + el mismo `controller_session`.
-#[allow(clippy::too_many_arguments)] // capas de sesión: cada parámetro tiene dueño claro.
-async fn tcp_controller_session(
-    // C-16: `label` = nombre estable para pins/eventos (el ID si se conectó
-    // por ID); `addr` = a donde se conecta (resuelto por descubrimiento si el
-    // destino era un ID). `expected_id` = ID exigido tras C2 (si aplica).
+/// Origen del stream TCP de la sesión controlador (C-17).
+enum TcpSource<'a> {
+    /// Conexión directa a `host:puerto` con **tope de 8 s** (sin él, un SYN a
+    /// un puerto no reenviado se colgaría 20-40 s).
+    Direct(&'a str),
+    /// Tubería de relay del rendezvous: ticket ya resuelto; el TLS de la
+    /// sesión se monta ENCIMA (E2E — el relay solo transporta cifrado).
+    Relay(&'a std::net::SocketAddr, &'a str),
+}
+
+/// FASE A TCP: obtiene el canal TLS listo para C2 — obtener el stream (directo
+/// con tope o tubería de relay), bootstrap del cert, pin TOFU por `label`,
+/// TLS cliente y binding C2. Devuelve `(canal, binding, pin_pendiente)` para
+/// que la FASE B (`controller_session`) corra UNA sola vez sobre el ganador.
+async fn tcp_transport_stage(
     label: &str,
-    addr: &str,
     cfg: &DaemonConfig,
-    identity: &Identity,
-    session_id: &str,
-    expected_id: Option<NodeId>,
-    log: &mut SessionLog,
-    report: &mut SessionReport,
-    emit: &mut Emit,
-    bye_rx: tokio::sync::mpsc::Receiver<String>,
-) -> Result<RunOutcome, DaemonError> {
+    source: TcpSource<'_>,
+) -> Result<
+    (
+        arsp::Channel<tokio_rustls::client::TlsStream<TcpStream>>,
+        Vec<u8>,
+        Option<String>,
+    ),
+    DaemonError,
+> {
+    let mut tcp = match source {
+        TcpSource::Direct(addr) => {
+            tokio::time::timeout(std::time::Duration::from_secs(8), TcpStream::connect(addr))
+                .await
+                .map_err(|_| DaemonError::Io(format!("conexion directa a {addr}: timeout (8 s)")))?
+                .map_err(|e| DaemonError::Io(format!("conexion directa a {addr}: {e}")))?
+        }
+        TcpSource::Relay(rdv, ticket) => anyremote_rendezvous::establish_relay(*rdv, ticket)
+            .await
+            .map_err(|e| DaemonError::Io(format!("relay {rdv}: {e}")))?,
+    };
     // Raíz de confianza: pin local si existe; si no, la recibe por bootstrap del
     // par y se persiste SOLO tras completar la autenticación mutua (C2).
-    let mut tcp = TcpStream::connect(addr)
-        .await
-        .map_err(|e| DaemonError::Io(e.to_string()))?;
     let incoming = anyremote_transport::cert_store::read_bootstrap(&mut tcp).await?;
     let pin_pem = anyremote_transport::cert_store::load_trusted(&cfg.config_dir, label)?;
     let (root, pending_pin) = match (pin_pem, incoming) {
@@ -2220,24 +2325,18 @@ async fn tcp_controller_session(
         .map_err(|e| DaemonError::Io(format!("tls: {e}")))?;
     let binding = auth::binding_of_client(&tls)?;
     let ch = arsp::Channel::new(tls);
-    controller_session(
-        ch,
-        None,
-        binding,
-        "tcp",
-        identity,
-        session_id,
-        cfg,
-        label,
-        expected_id,
-        pending_pin,
-        log,
-        report,
-        emit,
-        bye_rx,
-    )
-    .await
+    Ok((ch, binding, pending_pin))
 }
+
+/// FASE A QUIC lista para la FASE B: (endpoint, canal de control, canal de
+/// vídeo, binding C2, pin pendiente).
+type QuicReady = (
+    anyremote_transport::quic::Endpoint,
+    arsp::Channel<anyremote_transport::quic::StreamPair>,
+    arsp::Channel<anyremote_transport::quic::StreamPair>,
+    Vec<u8>,
+    Option<String>,
+);
 
 /// Resultado del intento QUIC del lado controlador (C-15).
 #[allow(clippy::large_enum_variant)] // `Endpoint`+canales dominan; boxear solo añadiría indirección.
@@ -2343,14 +2442,45 @@ async fn resolve_target(target: &str) -> Result<std::net::SocketAddr, DaemonErro
         .ok_or_else(|| DaemonError::Config(format!("no resolvible: {target}")))
 }
 
-/// C-16: resuelve un ID por descubrimiento LAN — consulta activa → caché
-/// (specs/02 §9). Emite `resolve_ok {id, addr, source}`; sin respuesta y sin
-/// caché → error con el `netsh` exacto del puerto de descubrimiento.
+/// Resultado de resolver un ID (C-16 + C-17).
+struct Resolution {
+    addr: std::net::SocketAddr,
+    /// `(servidor, ticket)` del rendezvous → reserva de relay de respaldo si
+    /// lo directo falla (WAN sin reenvío; specs/02 §10).
+    relay: Option<(std::net::SocketAddr, String)>,
+}
+
+/// `--rdv host:puerto` (flag) o, si falta, la primera línea del fichero
+/// `<config>/rdv` — así el servidor se configura una vez por equipo sin UI.
+fn rdv_target_of(cfg: &DaemonConfig) -> Option<String> {
+    if let Some(t) = &cfg.rdv {
+        return Some(t.clone());
+    }
+    let txt = std::fs::read_to_string(cfg.config_dir.join("rdv")).ok()?;
+    let t = txt.lines().next().unwrap_or("").trim().to_string();
+    (!t.is_empty()).then_some(t)
+}
+
+/// Consulta al servidor de encuentro: `(dirección del servidor, respuesta)`.
+async fn rendezvous_resolve(
+    target: &str,
+    id: &NodeId,
+) -> Result<(std::net::SocketAddr, anyremote_rendezvous::Answer), String> {
+    let addr = resolve_target(target).await.map_err(|e| format!("{e:?}"))?;
+    let ans = anyremote_rendezvous::resolve(addr, &id.to_string()).await?;
+    Ok((addr, ans))
+}
+
+/// C-16/C-17: resuelve un ID — **LAN primero** (broadcast), luego el
+/// **servidor de encuentro** (si está configurado) y por último la caché (va
+/// DESPUÉS del rdv para que una caché vieja nunca tape una respuesta fresca
+/// del servidor). El fallo de la query viaja en el mensaje final (en campo
+/// v0.11.1 un mensaje fijo ocultó un fallo instantáneo de recv).
 async fn resolve_id(
     id: &NodeId,
     cfg: &DaemonConfig,
     emit: &mut Emit,
-) -> Result<std::net::SocketAddr, DaemonError> {
+) -> Result<Resolution, DaemonError> {
     use anyremote_transport::discover;
 
     let target = discover::parse_target(&cfg.discover).map_err(DaemonError::Config)?;
@@ -2361,17 +2491,41 @@ async fn resolve_id(
             "resolve_ok",
             serde_json::json!({"id": id.to_string(), "addr": addr.to_string(), "source": "broadcast"}),
         ));
-        return Ok(*addr);
+        return Ok(Resolution {
+            addr: *addr,
+            relay: None,
+        });
     }
+
+    // C-17: servidor de encuentro (WAN) — antes que la caché, y con su
+    // ticket de relay como reserva si lo directo no llega.
+    if let Some(rdv) = rdv_target_of(cfg) {
+        match rendezvous_resolve(&rdv, id).await {
+            Ok((rdv_addr, ans)) => {
+                let _ = discover::save_resolved(&cfg.config_dir, &id.to_string(), ans.addr);
+                emit.emit(ev(
+                    "resolve_ok",
+                    serde_json::json!({"id": id.to_string(), "addr": ans.addr.to_string(), "source": "rdv"}),
+                ));
+                return Ok(Resolution {
+                    addr: ans.addr,
+                    relay: Some((rdv_addr, ans.ticket)),
+                });
+            }
+            Err(e) => emit.emit(ev(
+                "rdv_error",
+                serde_json::json!({ "target": rdv.clone(), "detail": e }),
+            )),
+        }
+    }
+
     if let Some(addr) = discover::load_resolved(&cfg.config_dir, &id.to_string()) {
         emit.emit(ev(
             "resolve_ok",
             serde_json::json!({"id": id.to_string(), "addr": addr.to_string(), "source": "cache"}),
         ));
-        return Ok(addr);
+        return Ok(Resolution { addr, relay: None });
     }
-    // La causa real del fallo de la query viaja en el mensaje (en campo
-    // v0.11.1 el mensaje fijo ocultó un fallo instantáneo de recv).
     let detail = match query_result {
         Err(e) => e,
         Ok(_) => unreachable!("el Ok ya se devolvió arriba"),

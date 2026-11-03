@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "transport", "identity", "session", "capture", "codec", "daemon",
     "input", "clipboard", "filexfer", "profiles", "telemetry", "audio",
+    "rendezvous",
 ]
 
 [workspace.package]
@@ -23,3 +24,4 @@ anyremote-filexfer = { path = "filexfer" }
 anyremote-profiles = { path = "profiles" }
 anyremote-telemetry = { path = "telemetry" }
 anyremote-audio = { path = "audio" }
+anyremote-rendezvous = { path = "rendezvous" }
