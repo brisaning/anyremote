@@ -118,3 +118,24 @@ mensaje fijo («sin respuesta…» no incluía la causa real de la query).
 
 **Gates v0.11.2**: Rust **50/0** · clippy **0/0** · fmt **0** · Flutter
 analyze limpio · **9/9** (descubrimiento:8 unit).
+
+
+---
+
+## Validación de campo COMPLETA (2026-11-03 14:37–14:39, v0.11.2) — C-16 cerrado
+
+**Setup**: visora con `Release/` v0.11.2 (el anfitrión, v0.11.2 también);
+dos sesiones tecleando **solo el ID** `ONDH6IU4RU`.
+
+| | Sesión A (14:37:23, `--transport udp`) | Sesión B (14:39:14, TCP) |
+|---|---|---|
+| Resolución | **`resolve_ok` en 343 ms** (broadcast — no existía caché: el fan-out de v0.11.1 funcionó en la red real) | **`resolve_ok` en 37 ms** (caché) |
+| Auditoría anfitrión | `session_established` → **`transport:"quic"`** ✓ | `session_established` → **`transport:"tcp"`** ✓ |
+| Sesión | 69 frames / 1,36 MB · 28 heartbeats (rtt 4–7 ms) · `frames_dropped: 0` · `bye` limpio | 73 frames / 1,41 MB · 42 heartbeats (rtt 62–131 ms) · `frames_dropped: 0` · `bye` limpio |
+| Extras | **`certificado del servidor pineado para ONDH6IU4RU`** — el **pin por ID** (estable entre DHCP) funcionando · sin `quic_fallback` | C-13 actuando (`red_bitrate → 1382400`) · `mf_h264` sin fallback |
+
+**Conclusión**: **C-16 validado en campo** en sus tres capas — resolución por
+ID (broadcast la primera vez, caché la segunda), sesión establecida por ID con
+el transporte real auditado (`quic` y `tcp`), y el pin TOFU guardado contra el
+ID. Los dos hotfixes (v0.11.1 fan-out de subredes, v0.11.2 anti-ICMP-poison)
+quedan probados en la red real del usuario. RF-03 «conectar por ID» **cerrado**.

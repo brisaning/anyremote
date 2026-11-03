@@ -53,8 +53,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-13 adaptación por red (RTT) v0.8.7 | ✅ gate verde · ✅ **validada en campo** (`red_bitrate` 3M→1.5M→750k con rtt 40–1402 ms en el informe del anfitrión) | `net-adapt-v0.8.7` · `evidence/net-adapt-gate.md` |
 | C-14 aceleración por hardware: H.264/MF v0.9.0 (+ hotfix v0.9.1) | ✅ gate verde (stream validado con ffmpeg + e2e720p punta a punta) · ✅ **validada en campo** (`mf_h264` sin fallback, sesión 112 frames/2,4 MB a720p) | `hwcodec-v0.9.0`, `hwcodec-v0.9.1` · `evidence/hwcodec-gate.md` |
 | C-15 transporte UDP/QUIC v0.10.0 (+ v0.10.1 auditoría `transport`) | ✅ gate verde (4 unit QUIC + 3 e2e con aserción del `transport` real en auditoría; diseño §8) · ✅ **validada en campo** 2026-11-03 (dos sesiones `--transport udp` sin `quic_fallback`, auditoría `transport:quic`, vídeo+control+C-12 sobre QUIC; compat TCP→dual antes) | `quic-transport-v0.10.0`, `quic-transport-v0.10.1` · `evidence/quic-gate.md` |
-| C-16 conexión por ID (resolutor LAN) v0.11.0 (+ hotfixes v0.11.1–v0.11.2) | ✅ gate verde (8 unit + 3 e2e) · 🟡 campo: intento1 = broadcast por adaptador equivocado → v0.11.1 (fan-out de subredes) · intento2 = pozo ICMP del /32 WARP abortaba en30 ms → **v0.11.2** (sin /31//32 en destinos + recv no fatal + mensaje con causa); reintentar | `id-resolve-v0.11.0`…`v0.11.2` · `evidence/id-connect-gate.md` |
-| **Pendientes** | 🟡 campo C-16 (conectar tecleando el ID) · revalidación audio/720p/Nativa · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
+| C-16 conexión por ID (resolutor LAN) v0.11.0 (+ hotfixes v0.11.1–v0.11.2) | ✅ gate verde (8 unit + 3 e2e) · ✅ **validada en campo** (2026-11-03: `resolve_ok` broadcast 343 ms + caché 37 ms, auditoría `transport:quic` y `transport:tcp`, pin por ID, sin fallback — tras los2 hotfixes de campo: fan-out de subredes y anti-ICMP-poison del /32 WARP) | `id-resolve-v0.11.0`…`v0.11.2` · `evidence/id-connect-gate.md` |
+| **Pendientes** | 🟡 revalidación audio/720p/Nativa · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
