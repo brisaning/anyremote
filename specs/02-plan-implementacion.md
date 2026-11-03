@@ -52,8 +52,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-12 bug: dueño ausente v0.8.6 | ✅ gate verde · ✅ **validada en campo** (auditoría con `dueño ausente (stdin cerrado)` al cerrar la app) | `owner-exit-v0.8.6` · `evidence/owner-gate.md` |
 | C-13 adaptación por red (RTT) v0.8.7 | ✅ gate verde · ✅ **validada en campo** (`red_bitrate` 3M→1.5M→750k con rtt 40–1402 ms en el informe del anfitrión) | `net-adapt-v0.8.7` · `evidence/net-adapt-gate.md` |
 | C-14 aceleración por hardware: H.264/MF v0.9.0 (+ hotfix v0.9.1) | ✅ gate verde (stream validado con ffmpeg + e2e720p punta a punta) · ✅ **validada en campo** (`mf_h264` sin fallback, sesión 112 frames/2,4 MB a720p) | `hwcodec-v0.9.0`, `hwcodec-v0.9.1` · `evidence/hwcodec-gate.md` |
-| C-15 transporte UDP/QUIC v0.10.0 | ✅ gate verde (4 unit QUIC + 3 e2e: sesión con vídeo por stream dedicado, fallback y compat TCP; diseño §8) · 🟡 pendiente campo | `quic-transport-v0.10.0` · `evidence/quic-gate.md` |
-| **Pendientes** | 🟡 revalidación audio/720p/Nativa · **campo v0.10.0 (UDP/QUIC)** · conexión por ID (resolutor) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
+| C-15 transporte UDP/QUIC v0.10.0 (+ v0.10.1 auditoría `transport`) | ✅ gate verde (4 unit QUIC + 3 e2e con aserción del `transport` real en auditoría; diseño §8) · 🟡 campo parcial 2026-11-03 (compat TCP→listener dual ✓; falta sesión QUIC con toggle en la visora) | `quic-transport-v0.10.0`, `quic-transport-v0.10.1` · `evidence/quic-gate.md` |
+| **Pendientes** | 🟡 revalidación audio/720p/Nativa · **campo: sesión QUIC (toggle en la visora)** · conexión por ID (resolutor) · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
