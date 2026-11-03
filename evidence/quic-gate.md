@@ -122,3 +122,26 @@ compatibilidad + salud de sesión: `tcp+udp (QUIC)` en el listener · `mf_h264`
 sin fallback · 131 frames / 1,58 MB · 48 heartbeats (rtt 44→119 ms) · C-13
 actuando (`red_bitrate → 1382400`) · `frames_dropped: 0` en el informe · cierre
 limpio `bye`. **Pendiente**: sesión QUIC real (toggle en la visora).
+
+
+---
+
+## Validación de campo COMPLETA (2026-11-03, v0.10.1) — QUIC extremo a extremo
+
+**Setup**: ambos equipos con `Release/` **v0.10.1** y el toggle «UDP (QUIC)»
+activo en listen **y** connect.
+
+| Evidencia | Resultado |
+|---|---|
+| Host (`E:\audiany\anyremote\ui.log`) | `anyremoted 0.10.1` + `listen args: … --transport udp …` (listener `tcp+udp (QUIC)`) |
+| Controlador (`%APPDATA%\anyremote\ui.log`) | **dos** `connect args: … --transport udp` (11:08:59 y 11:09:45) y **CERO `quic_fallback`** → QUIC real, sin caer a TCP · sesión activa ~150 ms tras el args (handshake QUIC incluido) |
+| **Auditoría del anfitrión (v0.10.1)** | **ambos** `session_established` con **`"transport":"quic"`** ✓ — el campo nuevo distinguiendo el transporte real |
+| Sesión 1 (11:08:59–11:09:28) | `mf_h264` sin fallback · **92 frames / 2,27 MB** · 30 heartbeats (rtt 4–20 ms) · **`frames_dropped: 0`** · cierre **`dueño ausente (stdin cerrado)`** → **C-12 funcionó sobre QUIC** (el anfitrión se cerró a mitad y todo se detuvo limpio) |
+| Sesión 2 (11:09:45–11:10:04) | **39 frames / 926 KB** · 20 heartbeats (rtt 4–6 ms) · **`frames_dropped: 0`** · cierre limpio `bye` · audio del sistema compartido |
+| Control real | **499 inyecciones** de entrada auditadas entre ambas sesiones (teclado/ratón sobre QUIC) · permisos `keyboard+mouse+audio` · portapapeles sincronizado |
+
+**Conclusión**: **C-15 validado en campo** — sesión QUIC extremo a extremo con
+vídeo por stream dedicado, control/audio corriendo, heartbeats sanos, cierres
+limpios (incluido C-12 sobre QUIC) y la auditoría declarando el transporte real.
+La sesión de compatibilidad anterior (10:03, cliente TCP contra listener dual)
+completa el cuadro: ambos caminos probados en la vida real.
