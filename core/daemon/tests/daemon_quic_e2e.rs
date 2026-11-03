@@ -95,6 +95,41 @@ fn connect_cfg(
     c
 }
 
+/// Transportes registrados en `session_established` de la auditoría de `dir`
+/// (una entrada por rol que abrió un `SessionLog` en esa carpeta). C-15: el
+/// campo `transport` prueba QUÉ transporte usó la sesión de verdad — un
+/// listener `udp` acepta también por TCP y eso debe distinguirse.
+fn established_transports(dir: &std::path::Path) -> Vec<String> {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir.join("audit"))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
+        .collect();
+    files.sort();
+    let mut out = Vec::new();
+    for f in files {
+        let Ok(txt) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        for line in txt.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("kind").and_then(|k| k.as_str()) == Some("session_established") {
+                if let Some(t) = v
+                    .get("detail")
+                    .and_then(|d| d.get("transport"))
+                    .and_then(|t| t.as_str())
+                {
+                    out.push(t.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Escenario 1: sesión QUIC completa con vídeo por el stream dedicado.
 #[tokio::test]
 async fn quic_session_carries_video_and_control() {
@@ -206,6 +241,14 @@ async fn quic_session_carries_video_and_control() {
     assert_eq!((w, h), (320, 200), "dimensiones del preview");
     assert_eq!(len, 320 * 200 * 4, "payload BGRA completo");
 
+    // Auditoría: el campo `transport` registra el transporte REAL — QUIC.
+    let ts = established_transports(&cfg_dir);
+    assert!(!ts.is_empty(), "hay session_established con transporte");
+    assert!(
+        ts.iter().all(|t| t == "quic"),
+        "ambos roles registran la sesión QUIC: {ts:?}"
+    );
+
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }
 
@@ -253,6 +296,14 @@ async fn udp_client_falls_back_to_tcp_when_peer_is_tcp_only() {
         "vídeo fluyó tras el fallback:\n{ctl_text}"
     );
     assert!(ctl.report.bytes_recv > 0, "bytes de vídeo por TCP");
+
+    // Auditoría: tras el `quic_fallback` la sesión es TCP en ambos roles.
+    let ts = established_transports(&cfg_dir);
+    assert!(!ts.is_empty(), "hay session_established con transporte");
+    assert!(
+        ts.iter().all(|t| t == "tcp"),
+        "fallback registrado como tcp (no quic): {ts:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }
@@ -307,6 +358,15 @@ async fn tcp_client_connects_to_dual_listener() {
         "sesión aceptada por el socket TCP del listener dual:\n{srv_text}"
     );
     assert!(ctl.report.bytes_recv > 0, "bytes de vídeo recibidos");
+
+    // Auditoría: el cliente TCP (peer viejo) contra el listener dual queda
+    // registrado como "tcp" — el listener udp NO cambió la naturaleza real.
+    let ts = established_transports(&cfg_dir);
+    assert!(!ts.is_empty(), "hay session_established con transporte");
+    assert!(
+        ts.iter().all(|t| t == "tcp"),
+        "sesión compat registrada como tcp: {ts:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }

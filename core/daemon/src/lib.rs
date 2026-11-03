@@ -734,6 +734,9 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     mut ch: arsp::Channel<T>,
     binding: Vec<u8>,
     peer: std::net::SocketAddr,
+    // Transporte REAL de la sesión ("tcp" | "quic") — no el configurado:
+    // un listener `udp` acepta también por TCP y eso debe verse en la auditoría.
+    transport: &'static str,
     identity: &Identity,
     session_id: &str,
     cfg: &DaemonConfig,
@@ -751,7 +754,7 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     log.record(
         AuditEventKind::SessionEstablished,
         session_id,
-        serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted, "peer_addr": peer.to_string()}),
+        serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted, "peer_addr": peer.to_string(), "transport": transport}),
     )?;
     emit.emit(ev(
         "session_active",
@@ -1103,6 +1106,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                         arsp::Channel::new(tls),
                         binding,
                         peer,
+                        "tcp",
                         &identity,
                         &session_id,
                         &cfg,
@@ -1149,6 +1153,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                         arsp::Channel::new(quic::StreamPair::new(cs, cr)),
                         binding,
                         peer,
+                        "quic",
                         &identity,
                         &session_id,
                         &cfg,
@@ -1865,6 +1870,7 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
                     control,
                     Some(video),
                     binding,
+                    "quic",
                     &identity,
                     &session_id,
                     &cfg,
@@ -1907,6 +1913,8 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
 async fn establish_controller<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     ch: &mut arsp::Channel<T>,
     binding: &[u8],
+    // Transporte REAL de la sesión ("tcp" | "quic") — ver establish_common.
+    transport: &'static str,
     identity: &Identity,
     session_id: &str,
     cfg: &DaemonConfig,
@@ -1933,7 +1941,7 @@ async fn establish_controller<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + 
     log.record(
         AuditEventKind::SessionEstablished,
         session_id,
-        serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted}),
+        serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted, "transport": transport}),
     )?;
     emit.emit(ev(
         "session_active",
@@ -2006,6 +2014,8 @@ async fn controller_session<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Un
     mut ch: arsp::Channel<T>,
     video: Option<arsp::Channel<anyremote_transport::quic::StreamPair>>,
     binding: Vec<u8>,
+    // Transporte REAL de la sesión ("tcp" | "quic").
+    transport: &'static str,
     identity: &Identity,
     session_id: &str,
     cfg: &DaemonConfig,
@@ -2019,6 +2029,7 @@ async fn controller_session<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Un
     let peer_id = match establish_controller(
         &mut ch,
         &binding,
+        transport,
         identity,
         session_id,
         cfg,
@@ -2138,6 +2149,7 @@ async fn tcp_controller_session(
         ch,
         None,
         binding,
+        "tcp",
         identity,
         session_id,
         cfg,

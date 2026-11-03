@@ -89,3 +89,36 @@ interactivo) los cubre como en los ciclos anteriores.
   el vídeo debe degradarse sin matar la sesión — el caso que motivó C-15).
 - Ver en el log del anfitrión `listening … "transport":"udp"` y en el visor la
   ausencia de `quic_fallback` cuando ambos van por QUIC.
+
+
+---
+
+## v0.10.1 — `transport` en la auditoría de sesión (soporte de validación de campo C-15)
+
+**Motivo**: la primera prueba de campo (2026-11-03, 10:03) corrió con el toggle
+UDP activo SOLO en el anfitrión → el controlador conectó **sin** `--transport udp`
+(línea `connect args: ... --clipboard win --audio on` en su `ui.log`) y la sesión
+fue **TCP contra el listener dual**. Eso validó en la vida real el escenario de
+compatibilidad (peer sin el flag entra al listener `udp` por su socket TCP ✓),
+pero desde el anfitrión no había forma inequívoca de saber qué transporte usó
+la sesión de verdad.
+
+**Cambio**: `session_established` de la auditoría (AMBOS roles) incluye ahora
+`"transport": "tcp" | "quic"` — el transporte **real** de la sesión, no el
+configurado (un listener `udp` acepta también por TCP; el brazo de aceptación
+que completó el handshake es el que lo declara).
+
+**Tests** (`daemon_quic_e2e`, aserciones nuevas sobre la auditoría):
+- sesión QUIC → **ambos** roles registran `"transport":"quic"`;
+- cliente UDP contra listener solo-TCP (fallback) → `"transport":"tcp"` (no quic);
+- cliente TCP contra listener dual → `"transport":"tcp"`.
+
+**Gates (2026-11-03)**: Rust **49 suites / 0 fallos** (los2 tests de escritorio
+también pasaron: la pantalla estaba desbloqueada en esta corrida) · **clippy 0/0**
+· **fmt 0** · `flutter analyze` limpio · **9/9**.
+
+**Sesión de campo 2026-11-03 10:03 (v0.10.0, host `ONDH6IU4RU`)** — valida
+compatibilidad + salud de sesión: `tcp+udp (QUIC)` en el listener · `mf_h264`
+sin fallback · 131 frames / 1,58 MB · 48 heartbeats (rtt 44→119 ms) · C-13
+actuando (`red_bitrate → 1382400`) · `frames_dropped: 0` en el informe · cierre
+limpio `bye`. **Pendiente**: sesión QUIC real (toggle en la visora).
