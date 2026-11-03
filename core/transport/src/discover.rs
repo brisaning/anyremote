@@ -46,11 +46,31 @@ pub fn parse_port(s: &str) -> Option<u16> {
     parse_target(s).ok().map(|a| a.port())
 }
 
+/// Broadcast de la subred de `ip`/`netmask`, o `None` si no existe una
+/// dirección de broadcast real: **/31 y /32 no tienen broadcast** (para /32
+/// el «cálculo» da la propia IP → un unicast sin listener que, en Windows,
+/// provoca ICMP y **revienta el `recv_from` del query con 10054 al instante** —
+/// observado en campo v0.11.1 con el adaptador `/32` de Cloudflare WARP).
+pub fn subnet_broadcast(
+    ip: std::net::Ipv4Addr,
+    netmask: std::net::Ipv4Addr,
+) -> Option<std::net::Ipv4Addr> {
+    if u32::from(netmask).count_ones() >= 31 {
+        return None; // /31 (P2P) y /32 (host): sin broadcast
+    }
+    let bcast = std::net::Ipv4Addr::from(u32::from(ip) | !u32::from(netmask));
+    if bcast == ip {
+        return None;
+    }
+    Some(bcast)
+}
+
 /// Candidatas de consulta: el destino configurado + la **broadcast de cada
 /// subred local** IPv4. En equipos con varios adaptadores la broadcast
 /// limitada `255.255.255.255` sale por la interfaz equivocada (observado en
 /// campo v0.11.0: `192.168.6.255` respondía al instante y `255.255.255.255`
-/// nunca llegaba) — por eso se abanica a todas las subredes locales.
+/// nunca llegaba) — por eso se abanica a todas las subredes locales, sin
+/// incluir las que no tienen broadcast real (ver `subnet_broadcast`).
 pub fn query_targets(configured: SocketAddr) -> Vec<SocketAddr> {
     let mut out = vec![configured];
     if let Ok(ifaces) = if_addrs::get_if_addrs() {
@@ -59,10 +79,11 @@ pub fn query_targets(configured: SocketAddr) -> Vec<SocketAddr> {
                 if v4.ip.is_loopback() || v4.ip.is_link_local() {
                     continue;
                 }
-                let bcast = std::net::Ipv4Addr::from(u32::from(v4.ip) | !u32::from(v4.netmask));
-                let addr = SocketAddr::from((bcast, configured.port()));
-                if !out.contains(&addr) {
-                    out.push(addr);
+                if let Some(bcast) = subnet_broadcast(v4.ip, v4.netmask) {
+                    let addr = SocketAddr::from((bcast, configured.port()));
+                    if !out.contains(&addr) {
+                        out.push(addr);
+                    }
                 }
             }
         }
@@ -171,10 +192,26 @@ impl Drop for DiscoveryServer {
     }
 }
 
-/// Consulta activa: emite WHO a `target` (hasta `tries` veces) y espera HERE
-/// del `id` → `ip_del_anfitrión:puerto`. La IP sale del **origen** de la
-/// respuesta. Timeout por intento: 900 ms (~2,7 s en total).
+/// Consulta `ANYREMOTE/1 WHO <id>` (reintentos) sobre el destino configurado
+/// abanicado a sus subredes — ver [`query_targets`].
 pub async fn query(target: SocketAddr, id: &str, tries: u8) -> Result<SocketAddr, String> {
+    query_with_targets(&query_targets(target), id, tries).await
+}
+
+/// Núcleo de la consulta contra destinos ya calculados (exposed para tests).
+///
+/// Por intento: envío a TODOS los destinos (mejor esfuerzo) y espera de una
+/// respuesta válida hasta el deadline (900 ms). **Los errores de recepción no
+/// abortan**: en Windows un envío a un unicast sin listener (p. ej. la
+/// «broadcast» de un adaptador /32) provoca ICMP y el `recv_from` devuelve
+/// 10054 al instante — observado en campo v0.11.1: tratarlo como fatal mataba
+/// la query en 30 ms sin esperar nunca la respuesta buena. Se consume el reset
+/// y se sigue esperando hasta el deadline del intento.
+pub async fn query_with_targets(
+    targets: &[SocketAddr],
+    id: &str,
+    tries: u8,
+) -> Result<SocketAddr, String> {
     let sock = UdpSocket::bind("0.0.0.0:0")
         .await
         .map_err(|e| format!("bind udp: {e}"))?;
@@ -182,23 +219,28 @@ pub async fn query(target: SocketAddr, id: &str, tries: u8) -> Result<SocketAddr
     sock.set_broadcast(true)
         .map_err(|e| format!("broadcast: {e}"))?;
     let who = query_bytes(id);
-    let targets = query_targets(target);
     let mut buf = [0u8; 512];
     for _ in 0..tries.max(1) {
-        // Abanico: se envía a TODAS las candidatas (mejor esfuerzo — una
-        // interfaz rota no mata la consulta) y se espera UNA respuesta válida.
-        for t in &targets {
+        for t in targets {
             let _ = sock.send_to(&who, *t).await;
         }
-        match tokio::time::timeout(Duration::from_millis(900), sock.recv_from(&mut buf)).await {
-            Ok(Ok((n, src))) => {
-                if let Some(port) = parse_reply(&buf[..n], id) {
-                    return Ok(SocketAddr::new(src.ip(), port));
-                }
-                // Respuesta ajena/basura: se ignora y se reintenta.
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(900);
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                break; // intento agotado → nuevo envío
             }
-            Ok(Err(e)) => return Err(format!("recibir respuesta: {e}")),
-            Err(_elapsed) => {} // sin respuesta → nuevo intento
+            match tokio::time::timeout(left, sock.recv_from(&mut buf)).await {
+                Ok(Ok((n, src))) => {
+                    if let Some(port) = parse_reply(&buf[..n], id) {
+                        return Ok(SocketAddr::new(src.ip(), port));
+                    }
+                    // Respuesta ajena/basura: se ignora y se sigue esperando.
+                }
+                // ICMP (p. ej. adaptador /32): consumido — se sigue esperando.
+                Ok(Err(_)) => {}
+                Err(_elapsed) => break, // fin del intento
+            }
         }
     }
     Err(format!(
@@ -244,6 +286,65 @@ mod tests {
         assert_eq!(parse_reply(&here_bytes(ID, 0), ID), None); // puerto 0
         assert_eq!(parse_reply(b"ANYREMOTE/1 HERE GLV5Q76BAQ 99999", ID), None);
         // >u16
+    }
+
+    #[test]
+    fn subnet_broadcast_skips_hosts_and_p2p() {
+        // LAN /24 normal → broadcast de subred.
+        assert_eq!(
+            subnet_broadcast(
+                "192.168.6.229".parse().unwrap(),
+                "255.255.255.0".parse().unwrap()
+            ),
+            Some("192.168.6.255".parse().unwrap())
+        );
+        // /32 (caso Cloudflare WARP de campo v0.11.1): SIN broadcast — el
+        // «cálculo» daría la propia IP → unicast sin listener → ICMP que
+        // mataba la query al instante.
+        assert_eq!(
+            subnet_broadcast(
+                "172.16.0.2".parse().unwrap(),
+                "255.255.255.255".parse().unwrap()
+            ),
+            None
+        );
+        // /31 P2P: tampoco tiene broadcast.
+        assert_eq!(
+            subnet_broadcast(
+                "10.0.0.0".parse().unwrap(),
+                "255.255.255.254".parse().unwrap()
+            ),
+            None
+        );
+        // /16 grande.
+        assert_eq!(
+            subnet_broadcast(
+                "172.27.80.1".parse().unwrap(),
+                "255.255.0.0".parse().unwrap()
+            ),
+            Some("172.27.255.255".parse().unwrap())
+        );
+    }
+
+    /// Regresión de campo v0.11.1: UN unicast sin listener en los destinos
+    /// (la «broadcast» del /32 de WARP) generaba ICMP y el `recv_from`
+    /// fallaba AL INSTANTE — el código lo trataba como fatal y la query
+    /// abortaba en 30 ms sin esperar la respuesta buena. Ahora el reset se
+    /// consume y se espera el deadline completo del intento.
+    #[tokio::test]
+    async fn recv_errors_do_not_abort_the_query() {
+        // Nadie escucha en 127.0.0.2:59998 → ICMP instantáneo al enviar.
+        let poison: SocketAddr = "127.0.0.2:59998".parse().unwrap();
+        let started = std::time::Instant::now();
+        let err = query_with_targets(&[poison], "GLV5Q76BAQ", 1)
+            .await
+            .expect_err("sin servidor");
+        let elapsed = started.elapsed();
+        assert!(err.contains("sin respuesta"), "{err}");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(800),
+            "debe esperar el deadline del intento, no abortar con el ICMP (fue {elapsed:?})"
+        );
     }
 
     #[test]

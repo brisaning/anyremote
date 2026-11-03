@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "anyremote-daemon"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "anyremote-audio",
  "anyremote-capture",
