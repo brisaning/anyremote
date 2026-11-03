@@ -82,3 +82,39 @@ analyze limpio · **9/9**.
 
 **Nota**: el firewall NO era el problema (el unicast respondía sin regla
 adicional); el hint `netsh` 21119 se mantiene por si acaso.
+
+
+---
+
+## Intento de campo 2 (2026-11-03 13:41, v0.11.1) — fallo instantáneo · fix **v0.11.2**
+
+**Síntoma**: con el fan-out de v0.11.1 el error llegaba en **~30 ms** (la
+query debería tardar ≥2,7 s) — señal de fallo **instantáneo** oculto por el
+mensaje fijo («sin respuesta…» no incluía la causa real de la query).
+
+**Diagnóstico**:
+1. `ipconfig`/`Get-NetIPAddress` de la visora: `172.16.0.2/32 **CloudflareWARP**`.
+2. Para un /32, `subnet_broadcast` calculaba `ip | !mask` = **la propia IP** →
+   un **unicast sin listener** en la propia máquina.
+3. En Windows, enviar UDP a un unicast cerrado genera ICMP y el **siguiente
+   `recv_from` del mismo socket devuelve 10054 al instante** (reproducido con
+   una sonda: `ConnectionResetError [WinError 10054]`).
+4. El código trataba `Ok(Err(e))` como fatal → la query abortaba en 30 ms
+   **sin esperar jamás la respuesta buena** (la que mi sonda manual sí
+   recibía: `HERE ONDH6IU4RU 21118` por unicast y por `192.168.6.255`).
+
+**Fix (v0.11.2, dos capas + diagnóstico)**:
+1. **`subnet_broadcast(ip, netmask)`**: `None` para **/31 y /32** (no tienen
+   dirección de broadcast real) y si la calculada coincide con la propia IP —
+   el pozo de ICMP ni siquiera se crea. Test `subnet_broadcast_skips_hosts_and_p2p`
+   (incluye el caso WARP `172.16.0.2/32` → `None`).
+2. **`query_with_targets`**: los errores de recepción **no abortan** — el
+   reset se consume y se sigue esperando hasta el **deadline del intento**
+   (900 ms); un pozo de ICMP de cualquier origen solo cuesta lo que reste del
+   intento. Test regresión `recv_errors_do_not_abort_the_query` (poison
+   `127.0.0.2:59998` → espera ≥800 ms en vez de abortar).
+3. **Mensaje con la causa real**: `resolve_id` incluye el error de la query
+   (`{detail}`) — el fallo de campo ya no puede quedar oculto.
+
+**Gates v0.11.2**: Rust **50/0** · clippy **0/0** · fmt **0** · Flutter
+analyze limpio · **9/9** (descubrimiento:8 unit).

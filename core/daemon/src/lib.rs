@@ -2354,13 +2354,14 @@ async fn resolve_id(
     use anyremote_transport::discover;
 
     let target = discover::parse_target(&cfg.discover).map_err(DaemonError::Config)?;
-    if let Ok(addr) = discover::query(target, &id.to_string(), 3).await {
-        let _ = discover::save_resolved(&cfg.config_dir, &id.to_string(), addr);
+    let query_result = discover::query(target, &id.to_string(), 3).await;
+    if let Ok(addr) = &query_result {
+        let _ = discover::save_resolved(&cfg.config_dir, &id.to_string(), *addr);
         emit.emit(ev(
             "resolve_ok",
             serde_json::json!({"id": id.to_string(), "addr": addr.to_string(), "source": "broadcast"}),
         ));
-        return Ok(addr);
+        return Ok(*addr);
     }
     if let Some(addr) = discover::load_resolved(&cfg.config_dir, &id.to_string()) {
         emit.emit(ev(
@@ -2369,10 +2370,16 @@ async fn resolve_id(
         ));
         return Ok(addr);
     }
+    // La causa real del fallo de la query viaja en el mensaje (en campo
+    // v0.11.1 el mensaje fijo ocultó un fallo instantáneo de recv).
+    let detail = match query_result {
+        Err(e) => e,
+        Ok(_) => unreachable!("el Ok ya se devolvió arriba"),
+    };
     Err(DaemonError::Config(format!(
-        "no se pudo resolver el ID {id}: sin respuesta de descubrimiento y sin caché. \
-         Comprueba que el anfitrión esté escuchando y abre el puerto de descubrimiento (admin): \
-         netsh advfirewall firewall add rule name=\"anyremote-discover\" dir=in action=allow protocol=UDP localport={}",
+        "no se pudo resolver el ID {id}: {detail} (sin caché). Comprueba que el anfitrión \
+         esté escuchando y abre el puerto de descubrimiento (admin): netsh advfirewall \
+         firewall add rule name=\"anyremote-discover\" dir=in action=allow protocol=UDP localport={}",
         target.port()
     )))
 }
