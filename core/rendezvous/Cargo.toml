@@ -1,0 +1,19 @@
+[package]
+name = "anyremote-rendezvous"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Servidor de encuentro (rendezvous) y relay de anyremote — C-17 / D-04"
+
+[dependencies]
+anyremote-identity = { workspace = true }
+tokio = { version = "1", features = ["net", "io-util", "macros", "rt-multi-thread", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+data-encoding = "2"
+getrandom = "0.2"
+
+[[bin]]
+name = "anyremote-rdv"
+path = "src/main.rs"

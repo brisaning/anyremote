@@ -53,8 +53,9 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-13 adaptación por red (RTT) v0.8.7 | ✅ gate verde · ✅ **validada en campo** (`red_bitrate` 3M→1.5M→750k con rtt 40–1402 ms en el informe del anfitrión) | `net-adapt-v0.8.7` · `evidence/net-adapt-gate.md` |
 | C-14 aceleración por hardware: H.264/MF v0.9.0 (+ hotfix v0.9.1) | ✅ gate verde (stream validado con ffmpeg + e2e720p punta a punta) · ✅ **validada en campo** (`mf_h264` sin fallback, sesión 112 frames/2,4 MB a720p) | `hwcodec-v0.9.0`, `hwcodec-v0.9.1` · `evidence/hwcodec-gate.md` |
 | C-15 transporte UDP/QUIC v0.10.0 (+ v0.10.1 auditoría `transport`) | ✅ gate verde (4 unit QUIC + 3 e2e con aserción del `transport` real en auditoría; diseño §8) · ✅ **validada en campo** 2026-11-03 (dos sesiones `--transport udp` sin `quic_fallback`, auditoría `transport:quic`, vídeo+control+C-12 sobre QUIC; compat TCP→dual antes) | `quic-transport-v0.10.0`, `quic-transport-v0.10.1` · `evidence/quic-gate.md` |
-| C-16 conexión por ID (resolutor LAN) v0.11.0 (+ hotfixes v0.11.1–v0.11.2) | ✅ gate verde (8 unit + 3 e2e) · 🟡 campo: intento1 = broadcast por adaptador equivocado → v0.11.1 (fan-out de subredes) · intento2 = pozo ICMP del /32 WARP abortaba en30 ms → **v0.11.2** (sin /31//32 en destinos + recv no fatal + mensaje con causa); reintentar | `id-resolve-v0.11.0`…`v0.11.2` · `evidence/id-connect-gate.md` |
-| **Pendientes** | 🟡 campo C-16 (conectar tecleando el ID) · revalidación audio/720p/Nativa · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
+| C-16 conexión por ID (resolutor LAN) v0.11.0 (+ hotfixes v0.11.1–v0.11.2) | ✅ gate verde (8 unit + 3 e2e) · ✅ **validada en campo** (2026-11-03: `resolve_ok` broadcast 343 ms + caché 37 ms, auditoría `transport:quic` y `transport:tcp`, pin por ID, sin fallback — tras los2 hotfixes de campo: fan-out de subredes y anti-ICMP-poison del /32 WARP) | `id-resolve-v0.11.0`…`v0.11.2` · `evidence/id-connect-gate.md` |
+| C-17 WAN: rendezvous + relay (D-04) v0.12.0 | ✅ gate verde (5 unit protocolo + 3 e2e daemon: resolve+directo, puerto cerrado→relay E2E, fichero `rdv`+offline; guía de despliegue VPS en la evidencia + job CI `rdv-linux`) · 🟡 pendiente campo (VPS desplegado) | `rdv-relay-v0.12.0` · `evidence/rdv-relay-gate.md` |
+| **Pendientes** | 🟡 revalidación audio/720p/Nativa · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
@@ -260,3 +261,62 @@ IP. D-04 preveía un servidor propio (Fase 4/WAN); para LAN se implementa
 | App | se elimina el bloqueo «por ID aún no se puede»; un ID **no es alias** (`looksLikeAlias` = sin `:`, así que el ID debe excluirla explícitamente) y se envía en mayúsculas. Hint `netsh` para UDP 21119. |
 | Eventos | `resolve_ok {id, addr, source: broadcast\|cache}` en el controlador; errores con acción concreta (netsh / anfitrión escuchando). |
 | Límites | LAN (broadcast no cruza subredes) — servidor propio/Rendezvous D-04 y WAN quedan en §7. El caché solo se escribe tras una respuesta viva (nunca se asume dirección). |
+
+
+---
+
+## 10. C-17: WAN — rendezvous + relay propio (D-04, 2026-11-03)
+
+**Contexto de campo**: el router del usuario **no tiene UPnP/IGD** (recon:
+SSDP sin respuesta, puertos IGD cerrados) → «abrir puertos solo» no es
+posible; decisión del usuario: **servidor propio D-04 en su VPS**.
+
+### Protocolo `anyremote-rdv` v1 (TCP único, JSON-Línea, por defecto `:21120`)
+
+| Mensaje | Sentido | Notas |
+|---|---|---|
+| `{"t":"register","id","pk","port","ts","sig"}` | host → servidor | `sig = Identity::sign_auth(binding)` con `binding = "anyremote-rdv-v1 register {id} {pk} {port} {ts}"` — el **id DERIVADO del pk** hace imposible reclamar un id ajeno (H-RD-02); `ts` con ventana ±300 s y `(id,ts)` no repetible (anti-replay). `port` = puerto de escucha; el servidor combina con la **IP observada** del socket → endpoint directo público. |
+| `{"t":"registered","relay"}` | servidor → host | El host mantiene la conexión con `hb` cada30 s; **`{"t":"invite","from","ticket","relay"}`** en cualquier momento. |
+| `{"t":"resolve","id","ts"}` | controlador → servidor | Sin firma (directorio = dato semipúblico) + **throttling por IP** (H-RD-04). |
+| `{"t":"answer","addr","relay","ticket"}` / `{"t":"error","code"}` | servidor → controlador | `addr` = ip observada + puerto registrado. El servidor crea el **ticket** (vida60 s, uso único) y envía el `invite` al host. |
+| `{"t":"relay","ticket"}` → `{"t":"piped"}` | ambos → servidor | Admisión al **relay**: el servidor empareja los2 portadores del ticket y pasa a **tubería de bytes** (`copy_bidirectional`). |
+
+### Cliente (`--rdv host:port` o fichero `config_dir/rdv`)
+
+- **listen**: tarea persistente → `register` + `hb` (reconexión con backoff si
+  el servidor cae; re-registro cada30 s = auto-sanación tras reinicios del
+  servidor — el almacén es **en memoria**, v1). Un `invite` → se marca el
+  stream para el bucle de escucha: dial al relay + `ticket` + **el mismo flujo
+  que una sesión TCP entrante** (bootstrap → TLS accept → `establish_common`) —
+  la tubería es un `TcpStream` normal, así que el TLS termina en los PARES
+  (**E2E**: el relay es ciego; el relay se queda en TCP — QUIC solo en rutas
+  directas).
+- **connect** (tras `resolve_id`): orden **LAN primero** (broadcast → **rdv** →
+  caché; la caché va DESPUÉS del rdv para que una caché vieja nunca tape una
+  respuesta fresca del servidor). Intento **directo** al `addr` (QUIC/TCP según
+  `--transport`, con **timeout de connect 8 s** — sin él, un SYN a un puerto no
+  reenviado se colgaría20-40 s); si falla **y hay ticket** → **relay**:
+  dial al servidor + `ticket` + `piped` + `tcp_controller_session` sobre la
+  tubería (solo cambia de dónde sale el `TcpStream`).
+
+### Seguridad y límites (decisión documentada)
+
+- **Control en claro firmado** (igual que el broadcast de C-16): el registro
+  está firmado con la clave del id (imposible suplantar id), la resolución solo
+  da direcciones (un MITM puede negar/no equivocar → **C2 ancla la sesión**:
+  la identidad se verifica igual al establecerla) y las sesiones son **E2E
+  (TLS/QUIC entre pares)** — el relay transporta solo cifrado.
+- Límites (D-08): tickets con60 s y uso único · throttle register/resolve por
+  IP · parejas relay con idle-timeout60 s y cupo total · sin persistencia en v1.
+- **Ancho de banda del relay**: el VPS vuelve y pasa todo el tráfico de la
+  sesión (720p ≈2-6 Mbps) — coste a vigilar en el plan del servidor.
+- Directo requiere **reenvío manual** en el router del anfitrión (TCP+UDP
+  21118); sin reenvío → relay (funciona igual). UPnP queda descartado en esta
+  red (recon) — se mantiene en §7 como no viable aquí.
+
+### Despliegue (VPS)
+
+`anyremote-rdv --bind 0.0.0.0:21120` · unidad systemd de ejemplo en la
+evidencia/guía · firewall: solo TCP21120 (control+relay en el mismo puerto).
+Los clientes: `--rdv <ip-vps>:21120` o fichero `rdv` en el directorio de
+configuración.
