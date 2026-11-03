@@ -13,6 +13,7 @@ anyremote-transport = { workspace = true }
 anyremote-session = { workspace = true }
 anyremote-identity = { workspace = true }
 anyremote-rendezvous = { workspace = true }
+data-encoding = "2"
 anyremote-clipboard = { workspace = true }
 anyremote-filexfer = { workspace = true }
 anyremote-profiles = { workspace = true }

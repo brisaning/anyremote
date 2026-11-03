@@ -43,7 +43,7 @@ _Última actualización: 2026-10-26_
 
 ## Qué es
 
-- **`core/`** (workspace Rust): `transport` (TLS 1.3 + ARSP + **QUIC** vía quinn), `identity` (ed25519/IDs), `session`, `capture` (DXGI), `codec` (VP9/Deflate/Raw), `input` (SendInput), `audio` (WASAPI + Opus 48 kHz), `clipboard`, `filexfer` (SHA-256 + reanudación), `profiles` (TOML), `telemetry` (JSONL), **`rendezvous`** (`anyremote-rdv`: servidor de encuentro + relay, portable/Linux) y **`daemon`** (`anyremoted`: listen/connect/profiles + vídeo + audio + auditoría).
+- **`core/`** (workspace Rust): `transport` (TLS 1.3 + ARSP + **QUIC** vía quinn), `identity` (ed25519/IDs), `session`, `capture` (DXGI), `codec` (VP9/Deflate/Raw), `input` (SendInput), `audio` (WASAPI + Opus 48 kHz), `clipboard`, `filexfer` (SHA-256 + reanudación), `profiles` (TOML), `telemetry` (JSONL), **`rendezvous`** (dep. git → repo **[serveremote](https://github.com/brisaning/serveremote)**: rendezvous + relay con Docker) y **`daemon`** (`anyremoted`: listen/connect/profiles + vídeo + audio + auditoría).
 - **`app/`** (Flutter desktop Windows): conexión con perfiles, visor remoto en vivo (fps de render) con ratón/teclado, registro JSONL, *Escuchar (red)* autocontenido (control remoto y audio opt-in).
 
 ## Puesta en marcha

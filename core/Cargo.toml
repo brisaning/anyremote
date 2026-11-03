@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "transport", "identity", "session", "capture", "codec", "daemon",
     "input", "clipboard", "filexfer", "profiles", "telemetry", "audio",
-    "rendezvous",
 ]
 
 [workspace.package]
@@ -24,4 +23,8 @@ anyremote-filexfer = { path = "filexfer" }
 anyremote-profiles = { path = "profiles" }
 anyremote-telemetry = { path = "telemetry" }
 anyremote-audio = { path = "audio" }
-anyremote-rendezvous = { path = "rendezvous" }
+# C-17 (reubicado): el protocolo vive en su propio repo público
+# (https://github.com/brisaning/serveremote). El alias conserva el nombre de
+# crate → el código del daemon `anyremote_rendezvous::…` no cambia; el
+# Cargo.lock fija el commit.
+anyremote-rendezvous = { package = "serveremote", git = "https://github.com/brisaning/serveremote.git", branch = "main" }
