@@ -54,7 +54,7 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-14 aceleración por hardware: H.264/MF v0.9.0 (+ hotfix v0.9.1) | ✅ gate verde (stream validado con ffmpeg + e2e720p punta a punta) · ✅ **validada en campo** (`mf_h264` sin fallback, sesión 112 frames/2,4 MB a720p) | `hwcodec-v0.9.0`, `hwcodec-v0.9.1` · `evidence/hwcodec-gate.md` |
 | C-15 transporte UDP/QUIC v0.10.0 (+ v0.10.1 auditoría `transport`) | ✅ gate verde (4 unit QUIC + 3 e2e con aserción del `transport` real en auditoría; diseño §8) · ✅ **validada en campo** 2026-11-03 (dos sesiones `--transport udp` sin `quic_fallback`, auditoría `transport:quic`, vídeo+control+C-12 sobre QUIC; compat TCP→dual antes) | `quic-transport-v0.10.0`, `quic-transport-v0.10.1` · `evidence/quic-gate.md` |
 | C-16 conexión por ID (resolutor LAN) v0.11.0 (+ hotfixes v0.11.1–v0.11.2) | ✅ gate verde (8 unit + 3 e2e) · ✅ **validada en campo** (2026-11-03: `resolve_ok` broadcast 343 ms + caché 37 ms, auditoría `transport:quic` y `transport:tcp`, pin por ID, sin fallback — tras los2 hotfixes de campo: fan-out de subredes y anti-ICMP-poison del /32 WARP) | `id-resolve-v0.11.0`…`v0.11.2` · `evidence/id-connect-gate.md` |
-| C-17 WAN: rendezvous + relay (D-04) v0.12.0 | ✅ gate verde (5 unit protocolo + 3 e2e daemon: resolve+directo, puerto cerrado→relay E2E, fichero `rdv`+offline; guía de despliegue VPS en la evidencia + job CI `rdv-linux`) · 🟡 pendiente campo (VPS desplegado) | `rdv-relay-v0.12.0` · `evidence/rdv-relay-gate.md` |
+| C-17 WAN: rendezvous + relay (D-04) v0.12.0 | ✅ gate verde (5 unit protocolo + 3 e2e daemon: resolve+directo, puerto cerrado→relay E2E, fichero `rdv`+offline) · ✅ **servidor reubicado en el repo [serveremote](https://github.com/brisaning/serveremote) con Dockerfile** (consumido por git-alias; su CI valida la imagen) · 🟡 pendiente campo (VPS desplegado) | `rdv-relay-v0.12.0` · `evidence/rdv-relay-gate.md` · repo `serveremote` |
 | **Pendientes** | 🟡 revalidación audio/720p/Nativa · resampler (único menor) | [README § Pendientes](../README.md#pendientes) |
 
 ---
@@ -314,9 +314,21 @@ posible; decisión del usuario: **servidor propio D-04 en su VPS**.
   21118); sin reenvío → relay (funciona igual). UPnP queda descartado en esta
   red (recon) — se mantiene en §7 como no viable aquí.
 
+### Reubicación (post-C-17): repo propio `serveremote`
+
+El servidor + protocolo viven ahora en **https://github.com/brisaning/serveremote**
+(paquete `serveremote`, binario `serveremote`, Dockerfile multi-etapa; repo
+**público** porque anyremote lo consume como dependencia git:
+`anyremote-rendezvous = { package = "serveremote", git = …, branch = "main" }`
+— el Cargo.lock fija el commit y el código del daemon no cambió).
+`src/identity.rs` allí es copia verbatim de `core/identity` (transcript
+byte-idéntico); el `Identity` del cliente **no cruza la frontera**: el daemon
+lo envuelve en `RdvSigner` (implementación del trait `RegisterSigner`).
+
 ### Despliegue (VPS)
 
-`anyremote-rdv --bind 0.0.0.0:21120` · unidad systemd de ejemplo en la
-evidencia/guía · firewall: solo TCP21120 (control+relay en el mismo puerto).
-Los clientes: `--rdv <ip-vps>:21120` o fichero `rdv` en el directorio de
-configuración.
+**Docker (recomendado)**: `docker build -t serveremote .` + `docker run -d -p
+21120:21120/tcp --restart unless-stopped serveremote` desde el repo
+`serveremote` (guía completa en `evidence/rdv-relay-gate.md`) · firewall: solo
+TCP21120 (control+relay en el mismo puerto). Los clientes: campo «servidor de
+encuentro» de la app, `--rdv <ip-vps>:21120` o fichero `rdv`.

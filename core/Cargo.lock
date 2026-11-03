@@ -91,12 +91,13 @@ dependencies = [
  "anyremote-identity",
  "anyremote-input",
  "anyremote-profiles",
- "anyremote-rendezvous",
  "anyremote-session",
  "anyremote-telemetry",
  "anyremote-transport",
+ "data-encoding",
  "rustls",
  "serde_json",
+ "serveremote",
  "tokio",
  "tokio-rustls",
 ]
@@ -133,18 +134,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "toml",
-]
-
-[[package]]
-name = "anyremote-rendezvous"
-version = "0.1.0"
-dependencies = [
- "anyremote-identity",
- "data-encoding",
- "getrandom 0.2.17",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -1573,6 +1562,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "serveremote"
+version = "0.12.0"
+source = "git+https://github.com/brisaning/serveremote.git?branch=main#1825137e9ac4df4e6030da15e963e1c792bf54c2"
+dependencies = [
+ "data-encoding",
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
 ]
 
 [[package]]

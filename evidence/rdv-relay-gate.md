@@ -6,7 +6,7 @@
 
 | Pieza | Implementación |
 |---|---|
-| **Servidor** `anyremote-rdv` | Crate nuevo `anyremote-rendezvous` (portable: tokio/serde/identity — sin deps Windows). Un **único puerto TCP** (default `:21120`) para las tres funciones del protocolo `anyremote-rdv-v1`: `register` (host persistente con `hb` cada30 s e `invite`), `resolve` (controlador) y `relay` (admisión por ticket → tubería ciega). |
+| **Servidor** | **REUBICADO en el repo propio [brisaning/serveremote](https://github.com/brisaning/serveremote)** (paquete `serveremote`, binario `serveremote`, Dockerfile; público porque anyremote lo consume como **dependencia git con alias**: `anyremote-rendezvous = { package = "serveremote", git = … }`, commit fijado en el lock y **el código del daemon no cambió**). Allí viven el protocolo completo y el cliente (`RegisterSigner`: el `Identity` del cliente no cruza la frontera; `src/identity.rs` = copia verbatim de `core/identity` para verificar). Un **único puerto TCP** (default `:21120`): `register` (host persistente con `hb` cada30 s e `invite`), `resolve` y `relay` (admisión por ticket → tubería ciega). |
 | Registro firmado (H-RD-02) | `sign_auth("anyremote-rdv-v1 register {id} {pk} {port} {ts}")` con la clave del propio id + **id derivado de la pk** (imposible reclamar un id ajeno) + ventana `ts` ±300 s + anti-replay `(id,ts)` + throttle por IP (H-RD-04:30 reg/min,60 res/min). El servidor combina la **IP observada** del socket con el puerto registrado → endpoint directo público. |
 | Relay por ticket | `resolve` crea ticket aleatorio (24 B, `getrandom`) con60 s de vida y uso único → `invite` al host; ambos lados se admiten con `{"t":"relay","ticket"}` → `piped` → `copy_bidirectional` con tope de parejas (64) y duración (4 h). **E2E**: el TLS de la sesión se monta sobre la tubería — el relay solo transporta cifrado. |
 | Cliente host | `run_host_client` (tarea persistente): register → hb30 s → por cada `invite` monta la tubería y la entrega al bucle de escucha como si fuese un `Accepted::Tcp` (bootstrap → TLS → `establish_common` — **cero duplicación** del flujo de sesión). Reconexión con backoff5 s; avisos por stderr (`rdv: registrado en …`). |
@@ -34,47 +34,38 @@
 | `cargo fmt --check` | **0** |
 | `flutter analyze` | limpio |
 | `flutter test` | **9/9** (test de widgets actualizado:2 campos — destino + encuentro) |
-| CI | job nuevo **`rdv-linux`**: construye `anyremote-rdv` para **Linux** y lo sube como artefacto (`anyremote-rdv-linux-x86_64`) — el binario del VPS sale de cada run de CI. |
+| CI | el build de Linux y la **validación del Dockerfile** viven en el CI del repo **serveremote** (fmt/clippy/test + `docker build`); este repo solo lo consume como dependencia git (Cargo.lock fija el commit). |
 
 ## Guía de despliegue en el VPS (para la validación de campo)
 
-1. **Binario**: descargar el artefacto `anyremote-rdv-linux-x86_64` del job
-   `rdv-linux` del último run de CI (o `cargo build --release -p
-   anyremote-rendezvous --bin anyremote-rdv` en cualquier máquina con Rust).
-2. **Puertos**: abrir **TCP 21120** (control + relay en el mismo puerto).
-3. **systemd** (`/etc/systemd/system/anyremote-rdv.service`):
-
-```ini
-[Unit]
-Description=anyremote rendezvous + relay
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=/opt/anyremote/anyremote-rdv --bind 0.0.0.0:21120
-Restart=always
-RestartSec=5
-# El servidor NO guarda estado (los hosts re-registran cada 30 s → se
-# autosana tras cada reinicio); sin usuario dedicado solo si lo prefieres:
-# User=anyremote
-
-[Install]
-WantedBy=multi-user.target
-```
+**Vía recomendada — Docker** (el repo incluye un `Dockerfile` multi-etapa y su
+CI valida el build):
 
 ```bash
-sudo install -m755 anyremote-rdv /opt/anyremote/
-sudo systemctl daemon-reload && sudo systemctl enable --now anyremote-rdv
-sudo firewall-cmd --add-port=21120/tcp --permanent && sudo firewall-cmd --reload   # (o ufw allow21120/tcp)
+git clone https://github.com/brisaning/serveremote.git
+cd serveremote
+docker build -t serveremote:latest .
+docker run -d --name serveremote -p 21120:21120/tcp --restart unless-stopped serveremote:latest
+docker logs -f serveremote
 ```
 
-4. **Clientes** (los dos equipos): en la app, «servidor de encuentro» =
-   `<ip-del-vps>:21120` (o el fichero `rdv` en el directorio de configuración
-   con esa línea). El anfitrión debe escuchar con `Escuchar (red)` — registra
-   su endpoint y recibe los invites.
-5. **WAN sin reenvío en el router** = relay (funciona ya). Con reenvío manual
-   de TCP+UDP 21118 al anfitrión = conexión **directa** (el resolve devuelve la
-   IP pública observada; QUIC si el UDP va reenviado).
+Mensaje de arranque esperado:
+`anyremote-rdv-v1: serveremote escuchando en 0.0.0.0:21120 (parejas relay max 64)`.
+
+- **Firewall**: solo **TCP 21120** (registro, resolución y relay comparten puerto).
+- Estado en memoria (sin volúmenes): tras un reinicio los hosts se re-registran
+  solos en ≤30 s.
+- **Sin Docker**: `cargo build --release` en el VPS y la unidad systemd de
+  ejemplo del README del repo (`serveremote --bind 0.0.0.0:21120`).
+
+**Clientes** (los dos equipos): en la app, «servidor de encuentro» =
+`<ip-del-vps>:21120` (o el fichero `rdv` en el directorio de configuración, o
+`--rdv <ip>:21120` en CLI). El anfitrión debe escuchar con «Escuchar (red)» —
+su registro debe verse como `rdv: registrado en …`.
+
+**WAN sin reenvío en el router** = relay (funciona ya). Con reenvío manual de
+TCP+UDP 21118 al anfitrión = conexión **directa** (el resolve devuelve la IP
+pública observada; QUIC si el UDP va reenviado).
 
 ## Pendiente de validación de campo
 

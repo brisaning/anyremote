@@ -48,23 +48,7 @@ jobs:
         run: flutter test
         working-directory: app
 
-  # C-17: el servidor de encuentro (rendezvous + relay) es portable (solo
-  # tokio/serde/identity) — se construye en Linux porque ahí se despliega (VPS
-  # del usuario). El artefacto queda en los runs de CI para descargar.
-  rdv-linux:
-    name: anyremote-rdv (build Linux para VPS)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: rdv-linux
-      - name: build servidor de encuentro
-        run: cargo build --release -p anyremote-rendezvous --bin anyremote-rdv
-        working-directory: core
-      - uses: actions/upload-artifact@v4
-        with:
-          name: anyremote-rdv-linux-x86_64
-          path: core/target/release/anyremote-rdv
-          if-no-files-found: error
+  # C-17: el SERVIDOR se reubicó en su propio repo público (brisaning/serveremote)
+  # — su CI (allí) construye el binario Linux y valida el Dockerfile. Este
+  # repo solo lo consume como dependencia git (el alias `anyremote-rendezvous`
+  # del workspace lo resuelve y Cargo.lock fija el commit).

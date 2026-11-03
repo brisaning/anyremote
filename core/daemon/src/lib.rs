@@ -835,6 +835,25 @@ impl Drop for AbortOnDrop {
     }
 }
 
+/// Adaptador del `Identity` local al trait `RegisterSigner` de serveremote
+/// (C-17): el `Identity` vendorizado de ALLÍ no puede cruzar la frontera —
+/// dos copias del mismo código serían dos tipos distintos. El binding que se
+/// firma se construye allí con `registration_binding` (byte-idéntico a la
+/// verificación del servidor).
+struct RdvSigner(std::sync::Arc<Identity>);
+
+impl anyremote_rendezvous::RegisterSigner for RdvSigner {
+    fn node_id(&self) -> String {
+        self.0.node_id().to_string()
+    }
+    fn pk_hex(&self) -> String {
+        data_encoding::HEXLOWER.encode(&self.0.verifying_key_bytes())
+    }
+    fn sign_binding(&self, binding: &str) -> String {
+        data_encoding::HEXLOWER.encode(&self.0.sign_auth(binding.as_bytes()))
+    }
+}
+
 enum SessionFlow {
     /// Sigue escuchando (sesión cerrada bien o cliente descartado).
     Continue,
@@ -1059,7 +1078,8 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                 let ident = identity.clone();
                 let tx = relay_tx.clone();
                 Some(AbortOnDrop(tokio::spawn(async move {
-                    anyremote_rendezvous::run_host_client(rdv_addr, ident, reg_port, tx).await
+                    let signer = std::sync::Arc::new(RdvSigner(ident));
+                    anyremote_rendezvous::run_host_client(rdv_addr, signer, reg_port, tx).await
                 })))
             }
             Err(e) => {
