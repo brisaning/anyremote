@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -379,6 +380,46 @@ void main() {
     expect(normalizedPointer(const Offset(-50, 900), box), (0, 65535));
     // Caja degenerada → (0,0) sin división por cero.
     expect(normalizedPointer(Offset.zero, Size.zero), (0, 0));
+  });
+
+  testWidgets('C-23: el placeholder «esperando primer frame» captura input',
+      (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+
+    // Visor abierto pero SIN frames: socket local que no manda nada.
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close());
+    await tester.runAsync(() async {
+      st.debugStartViewer(server.port);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await tester.pump();
+
+    expect(find.text('conectado… esperando primer frame'), findsOneWidget);
+    // C-23: el Listener/Focus envuelve el placeholder → el ratón y el
+    // teclado se capturan aunque todavía no haya vídeo (antes: sin frame
+    // no había input y la pantalla del anfitrión nunca cambiaba).
+    expect(
+      find.ancestor(
+          of: find.text('conectado… esperando primer frame'),
+          matching: find.byType(Listener)),
+      findsWidgets,
+    );
+    // Interacción sin excepciones (sin daemon real el envío es noop).
+    await tester.tap(find.text('conectado… esperando primer frame'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+
+    // Al llegar el primer frame, el visor pasa al vídeo sin perder input.
+    final rec = ui.PictureRecorder();
+    final canvas = Canvas(rec);
+    canvas.drawRect(const Rect.fromLTWH(0, 0, 64, 64),
+        Paint()..color = const Color(0xFF102030));
+    st.debugShowViewerFrame(rec.endRecording().toImageSync(64, 64));
+    await tester.pump();
+    expect(find.byType(RawImage), findsOneWidget);
+    expect(find.text('conectado… esperando primer frame'), findsNothing);
   });
 
   test('C-22: effectiveRdv usa el VPS por defecto si el campo está vacío', () {
