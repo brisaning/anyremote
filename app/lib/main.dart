@@ -311,6 +311,11 @@ class _HomePageState extends State<HomePage> {
 
   // Hito M2: visor remoto (preview local del daemon controlador).
   Socket? _preview;
+  /// C-23: `dispose` en marcha — `Socket.destroy()` dispara `onDone` de
+  /// forma SÍNCRONA y esos cierres llaman a `_stopViewer`/`setState` con el
+  /// elemento ya `defunct` (crash de depuración al cerrar con el visor
+  /// abierto). Con la bandera, las rutas de cierre se saltan el `setState`.
+  bool _disposed = false;
   /// C-19: ensamblador de frames con buffer amortizado — antes el buffer
   /// completo se recopilaba en CADA chunk de TCP (coste cuadrático/frame).
   final VideoFrameAssembler _assembler = VideoFrameAssembler();
@@ -371,6 +376,10 @@ class _HomePageState extends State<HomePage> {
   /// Costura de test (C-19): empuja bytes crudos por el mismo camino que el
   /// preview (ensamblador → render) sin socket.
   void debugPushVideoBytes(Uint8List chunk) => _onVideoBytes(chunk);
+
+  /// Costura de test (C-23): abre el visor contra un puerto local para
+  /// verificar el estado «esperando primer frame» con input activo.
+  void debugStartViewer(int port) => unawaited(_startViewer(port));
 
   /// Costura de test (C-9): fija el ID local mostrado en la tarjeta Conexión.
   void debugSetLocalNodeId(String id) {
@@ -915,11 +924,11 @@ class _HomePageState extends State<HomePage> {
           // C-10: el preview terminó → se limpia el visor; sin esto
           // quedaría el último frame con el layout de modo visor «congelado».
           unawaited(_stopViewer());
-          if (mounted) _videoStatus.value = 'visor finalizado';
+          if (mounted && !_disposed) _videoStatus.value = 'visor finalizado';
         },
         onError: (Object e) {
           unawaited(_stopViewer());
-          if (mounted) _videoStatus.value = 'visor con error: $e';
+          if (mounted && !_disposed) _videoStatus.value = 'visor con error: $e';
         },
         cancelOnError: true,
       );
@@ -929,6 +938,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _stopViewer() async {
+    // C-23: dispose en marcha → `Socket.destroy()` dispara `onDone` (a veces
+    // en el mismo hilo) y los notifiers están a punto de morir: no tocarlos.
+    if (_disposed) return;
     _preview?.destroy();
     _preview = null;
     _cursor.value = const _CursorState();
@@ -938,8 +950,9 @@ class _HomePageState extends State<HomePage> {
     img?.dispose();
     _videoFrames = 0;
     // C-19: al soltar el frame, la página reevalúa `viewerVisible` (antes
-    // dependía de que cada llamante hiciera su propio `setState`).
-    if (mounted) setState(() {});
+    // dependía de que cada llamante hiciera su propio `setState`). C-23:
+    // nunca durante `dispose` (ver `_disposed`).
+    if (mounted && !_disposed) setState(() {});
   }
 
   void _onVideoBytes(Uint8List chunk) {
@@ -1104,6 +1117,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _disposed = true;
     _daemon?.kill(ProcessSignal.sigkill);
     _listener?.kill(ProcessSignal.sigkill);
     _preview?.destroy();
@@ -1434,8 +1448,11 @@ class _HomePageState extends State<HomePage> {
                         aspectRatio: img != null
                             ? img.width / img.height
                             : 16 / 9,
-                        child: img != null
-                            ? LayoutBuilder(
+                        // C-23 (A): el input se captura SIEMPRE, también en
+                        // «esperando primer frame» — sin frame el usuario no
+                        // podía ni mover el ratón, la pantalla del anfitrión
+                        // seguía estática y el vídeo no arrancaba (deadlock).
+                        child: LayoutBuilder(
                                 builder: (context, constraints) {
                                   final box = Size(
                                       constraints.maxWidth, constraints.maxHeight);
@@ -1479,8 +1496,17 @@ class _HomePageState extends State<HomePage> {
                                       child: Stack(
                                         fit: StackFit.expand,
                                         children: [
-                                          RawImage(image: img, fit: BoxFit.contain),
-                                          if (cur.visible &&
+                                          if (img != null)
+                                            RawImage(image: img, fit: BoxFit.contain)
+                                          else
+                                            // C-23: el placeholder vive ya
+                                            // DENTRO del Listener/Focus.
+                                            const Center(
+                                              child: Text('conectado… esperando primer frame',
+                                                  style: TextStyle(color: Colors.grey)),
+                                            ),
+                                          if (img != null &&
+                                              cur.visible &&
                                               cur.nx != null &&
                                               cur.ny != null)
                                             Positioned(
@@ -1499,10 +1525,6 @@ class _HomePageState extends State<HomePage> {
                                     ),
                                   );
                                 },
-                              )
-                            : const Center(
-                                child: Text('conectado… esperando primer frame',
-                                    style: TextStyle(color: Colors.grey)),
                               ),
                               );
                             },

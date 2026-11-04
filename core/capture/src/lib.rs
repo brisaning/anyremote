@@ -130,6 +130,27 @@ pub fn best_capturer(width: u32, height: u32) -> PlatformCapturer {
 #[cfg(windows)]
 pub mod dxgi;
 
+#[cfg(windows)]
+mod gdi;
+
+/// C-23: snapshot de arranque en frío (GDI) — DXGI no entrega nada hasta que
+/// el escritorio cambia, y sin primer frame el visor se queda en «esperando»
+/// (ver `gdi`: pantalla estática o bloqueada). En plataformas sin soporte
+/// devuelve [`CaptureError::Unavailable`] (el bucle de vídeo sigue como
+/// antes).
+pub fn initial_snapshot() -> Result<Frame, CaptureError> {
+    #[cfg(windows)]
+    {
+        gdi::gdi_snapshot()
+    }
+    #[cfg(not(windows))]
+    {
+        Err(CaptureError::Unavailable(
+            "snapshot inicial: solo Windows".into(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +189,27 @@ mod tests {
                 Err(e) => panic!("error inesperado: {e:?}"),
             },
             Err(CaptureError::Unavailable(_)) => {}
+            Err(e) => panic!("error inesperado: {e:?}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn gdi_snapshot_works_or_reports_unavailable() {
+        // C-23: en entornos sin escritorio (CI/servicio) debe reportar
+        // Unavailable, no paniquear; con escritorio → BGRA8 con alfa opaco
+        // (BI_RGB deja el4º byte en0 y el visor lo vería transparente).
+        match initial_snapshot() {
+            Ok(f) => {
+                assert!(f.width > 0 && f.height > 0);
+                assert_eq!(f.format, PixelFormat::Bgra8);
+                assert_eq!(f.data.len(), (f.width as usize) * (f.height as usize) * 4);
+                assert!(
+                    f.data.as_chunks::<4>().0.iter().all(|p| p[3] == 0xFF),
+                    "alfa de BI_RGB en0: el frame inicial se vería transparente"
+                );
+            }
+            Err(CaptureError::Unavailable(_)) | Err(CaptureError::Io(_)) => {}
             Err(e) => panic!("error inesperado: {e:?}"),
         }
     }

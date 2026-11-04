@@ -385,9 +385,20 @@ pub fn spawn_video_task(
                     // una vez por segundo para mantener viva la vista.
                     match last_frame.as_ref() {
                         Some(f) if last_emit.elapsed() >= Duration::from_secs(1) => Some(f.clone()),
-                        _ => None,
+                        Some(_) => None,
+                        // C-23: arranque en frío SIN imagen (pantalla estática
+                        // o bloqueada) — DXGI no entrega nada hasta que algo
+                        // cambie y el visor se quedaría en «esperando primer
+                        // frame» (su input solo se monta con imagen → sin
+                        // frame no llegaba input, sin input no había cambios).
+                        // GDI da la imagen inicial; después el reenvío de
+                        // arriba mantiene viva la vista.
+                        None => anyremote_capture::initial_snapshot().ok(),
                     }
                 }
+                // C-23: ídem en errores duros del backend (p. ej. acceso
+                // perdido con el escritorio bloqueado) mientras no haya imagen.
+                Err(_) if last_frame.is_none() => anyremote_capture::initial_snapshot().ok(),
                 Err(_) => None, // error transitorio del backend: se reintenta
             };
             let Some(captured) = captured else {
