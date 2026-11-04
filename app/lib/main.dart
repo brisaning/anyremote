@@ -576,7 +576,7 @@ class _HomePageState extends State<HomePage> {
             if (detail.contains('10061') ||
                 detail.contains('refused') ||
                 detail.contains('rechazada')) {
-              _append('[ui] nadie escucha en el destino — usa "Escuchar (red)" '
+              _append('[ui] nadie escucha en el destino — usa "Compartir escritorio" '
                   'o abre `anyremoted listen` en otra terminal');
             }
             _setStatus('Error', Colors.red);
@@ -656,6 +656,12 @@ class _HomePageState extends State<HomePage> {
     if (_listener != null) {
       _append('[ui] el listener local ya corre');
       return;
+    }
+    // C-21: «Compartir escritorio» activa el control remoto por defecto si
+    // no estaba seleccionado (se fija ANTES de `_sendPerms()` para que el
+    // daemon reciba `input:true` al abrir sesión).
+    if (!_acceptRemoteControl) {
+      setState(() => _acceptRemoteControl = true);
     }
     if (!File(_daemonBin).existsSync()) {
       _append('[ui] anyremoted.exe no encontrado en $_daemonBin');
@@ -1152,7 +1158,7 @@ class _HomePageState extends State<HomePage> {
                         OutlinedButton.icon(
                           onPressed: _listener == null ? _startLocalListen : _stopLocalListen,
                           icon: Icon(_listener == null ? Icons.sensors : Icons.stop_circle_outlined),
-                          label: Text(_listener == null ? 'Escuchar (red)' : 'Detener listen'),
+                          label: Text(_listener == null ? 'Compartir escritorio' : 'Detener listen'),
                         ),
                       ],
                     ),

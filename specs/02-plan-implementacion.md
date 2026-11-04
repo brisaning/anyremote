@@ -58,6 +58,7 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-18 resampler de mayor orden (`rubato`) v0.12.1 | ✅ gate verde (13/13 audio con3 tests de calidad; plan de `evidence/menores-gate.md` §4) · 🟡 pendiente campo (oír el audio) | `resampler-v0.12.1` · `evidence/resampler-gate.md` |
 | C-19 render alto sin nativo v0.12.2 | ✅ gate verde (8 tests del ensamblador + integración de frame crudo; Rust 51/0 · clippy0 · fmt0 · Flutter 18/18; diseño §11) · 🟡 pendiente campo (`fps render` → decidir `Texture`) | `render-high-v0.12.2` · `evidence/render-gate.md` |
 | C-20 defaults de sesión: UDP + rdv v0.12.3 | ✅ gate verde (Flutter 18/18 con aserciones nuevas; Rust 51/0) · petición de campo del usuario | `udp-rdv-defaults-v0.12.3` · `evidence/defaults-gate.md` |
+| C-21 «Compartir escritorio» + control remoto automático v0.12.4 | ✅ gate verde (Flutter 18/18 con aserción nueva; Rust 51/0) · petición de campo del usuario | `share-desktop-v0.12.4` · `evidence/share-desktop-gate.md` |
 | **Pendientes** | 🟡 revalidación campo: audio (cadena `rubato`) · «Nativa» · `fps render` a 720p/1080p/Nativa (decisión `Texture`, C-19) | [README § Pendientes](../README.md#pendientes) |
 
 ---
