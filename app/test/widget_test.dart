@@ -54,11 +54,18 @@ void main() {
     await tester.pump();
     expect(find.textContaining('perfiles: anyremoted.exe no encontrado'), findsWidgets);
 
-    // Botón de par local presente (listener autocontenido).
-    expect(find.widgetWithText(OutlinedButton, 'Escuchar (red)'), findsOneWidget);
-    await tester.tap(find.widgetWithText(OutlinedButton, 'Escuchar (red)'));
+    // Botón de compartir presente (listener autocontenido) — C-21: el texto
+    // pasó de «Escuchar (red)» a «Compartir escritorio».
+    expect(find.widgetWithText(OutlinedButton, 'Compartir escritorio'), findsOneWidget);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Compartir escritorio'));
     await tester.pump();
     expect(find.textContaining('anyremoted.exe no encontrado'), findsWidgets);
+    // C-21: al oprimirlo, control remoto se activa solo si no estaba.
+    expect(
+      tester.widget<Checkbox>(find.byType(Checkbox).at(0)).value,
+      isTrue,
+      reason: 'C-21: compartir escritorio activa control remoto automáticamente',
+    );
   });
 
   testWidgets('C-2: tres toggles desactivados por defecto y dinámicos (D-07)',
