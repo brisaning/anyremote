@@ -12,8 +12,14 @@ void main() {
 
     expect(find.text('anyremote'), findsOneWidget);
     expect(find.text('v$kVersion'), findsOneWidget);
-    // Dos campos: destino (C-9) + servidor de encuentro (C-17, vacío por defecto).
+    // Dos campos: destino (C-9) + servidor de encuentro (C-17, prestablecido
+    // con el VPS desde v0.12.3).
     expect(find.byType(TextField), findsNWidgets(2));
+    expect(
+      find.widgetWithText(TextField, '51.222.81.81:21120'),
+      findsOneWidget,
+      reason: 'v0.12.3: servidor de encuentro prestablecido (VPS serveremote)',
+    );
     expect(find.widgetWithText(FilledButton, 'Conectar'), findsOneWidget);
     expect(find.widgetWithText(OutlinedButton, 'Detener'), findsOneWidget);
     expect(find.textContaining('ciclos S0..C8 completos'), findsOneWidget);
@@ -70,8 +76,8 @@ void main() {
     expect(find.text('UDP (QUIC)'), findsOneWidget);
     expect(
       tester.widget<Checkbox>(find.byType(Checkbox).at(3)).value,
-      isFalse,
-      reason: 'C-15: TCP por defecto (historico)',
+      isTrue,
+      reason: 'v0.12.3: UDP (QUIC) preseleccionado — más rápido que TCP',
     );
     for (var i = 0; i < 3; i++) {
       expect(
@@ -148,7 +154,8 @@ void main() {
     expect(args[args.indexOf('--codec') + 1], 'h264');
     expect(args[args.indexOf('--video-size') + 1], '1280x720');
     expect(args[args.indexOf('--max-bitrate') + 1], '3000');
-    // C-15: sin el toggle, el transporte por defecto es TCP (sin flag).
+    // C-15: default de la FUNCIÓN = TCP sin flag (la app preselecciona UDP
+    // desde v0.12.3 y lo pasa explícito con `udp: _useUdp`).
     expect(args.contains('--transport'), isFalse);
 
     // Con el toggle UDP (QUIC) activo: listen pide `--transport udp` (y el
