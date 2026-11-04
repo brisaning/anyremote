@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:anyremote_app/main.dart';
@@ -294,6 +295,53 @@ void main() {
     st.debugSetRemoteCursor(0, 0, false);
     await tester.pump();
     expect(find.byKey(const Key('remote-cursor')), findsNothing);
+  });
+
+  testWidgets('C-19: bytes crudos → ensamblador → RawImage visible', (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+
+    // Frame BGRA 64x64 con la cabecera real del preview, partido en3 chunks
+    // impares (como llegaría por TCP): cabecera a trozos + payload.
+    const w = 64;
+    const h = 64;
+    final payload = Uint8List(w * h * 4)..fillRange(0, w * h * 4, 0x30);
+    final bytes = Uint8List(16 + payload.length);
+    final bd = ByteData.sublistView(bytes);
+    bd.setUint32(0, w, Endian.little);
+    bd.setUint32(4, h, Endian.little);
+    bd.setUint32(8, 1, Endian.little);
+    bd.setUint32(12, payload.length, Endian.little);
+    bytes.setAll(16, payload);
+
+    // El decode real es asíncrono (engine) → runAsync para que corra.
+    await tester.runAsync(() async {
+      st.debugPushVideoBytes(Uint8List.sublistView(bytes, 0, 10));
+      st.debugPushVideoBytes(Uint8List.sublistView(bytes, 10, 40));
+      st.debugPushVideoBytes(Uint8List.sublistView(bytes, 40));
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    });
+    await tester.pump();
+
+    expect(find.byType(RawImage), findsOneWidget,
+        reason: 'C-19: el ensamblador + render entregan el frame al visor');
+    expect(find.text('Registro'), findsNothing, reason: 'modo visor activo');
+
+    // Segundo frame (resolución distinta) → el visor sigue vivo y actualiza
+    // el aspecto por el notifier, sin tocar el resto de la página.
+    final bytes2 = Uint8List(16 + 32 * 16 * 4);
+    final bd2 = ByteData.sublistView(bytes2);
+    bd2.setUint32(0, 32, Endian.little);
+    bd2.setUint32(4, 16, Endian.little);
+    bd2.setUint32(8, 2, Endian.little);
+    bd2.setUint32(12, 32 * 16 * 4, Endian.little);
+    await tester.runAsync(() async {
+      st.debugPushVideoBytes(bytes2);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    });
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(find.byType(RawImage), findsOneWidget);
   });
 
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {

@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
+import 'video_assembler.dart';
 
 /// anyremote — shell de escritorio v0.1.0 con integración daemon (`anyremoted`).
 ///
@@ -114,6 +115,17 @@ class _RemoteCursorPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _RemoteCursorPainter oldDelegate) => false;
+}
+
+/// Estado inmutable del overlay del cursor remoto (C-11 → C-19): al vivir en
+/// un `ValueNotifier` el overlay repinta SOLO el visor, no la página entera.
+class _CursorState {
+  const _CursorState({this.nx, this.ny, this.visible = false});
+
+  /// Posición normalizada 0..65535 del anfitrión (null = sin posición).
+  final int? nx;
+  final int? ny;
+  final bool visible;
 }
 
 /// Argumentos de `anyremoted listen` (extraídos para testearlos).
@@ -248,17 +260,24 @@ class _HomePageState extends State<HomePage> {
 
   // Hito M2: visor remoto (preview local del daemon controlador).
   Socket? _preview;
-  Uint8List _videoBuf = Uint8List(0);
-  ui.Image? _lastImage;
+  /// C-19: ensamblador de frames con buffer amortizado — antes el buffer
+  /// completo se recopilaba en CADA chunk de TCP (coste cuadrático/frame).
+  final VideoFrameAssembler _assembler = VideoFrameAssembler();
+  /// C-19: frame + estado + cursor viven en NOTIFIERS: solo el visor se
+  /// repinta por frame (antes: `setState` de la página entera ~30 veces/s y
+  /// ~20 Hz por el cursor remoto).
+  final ValueNotifier<ui.Image?> _frame = ValueNotifier<ui.Image?>(null);
+  final ValueNotifier<String> _videoStatus = ValueNotifier<String>('sin vídeo');
+  final ValueNotifier<_CursorState> _cursor =
+      ValueNotifier<_CursorState>(const _CursorState());
+  /// Los dos listenables del visor, combinados (un solo `ListenableBuilder`).
+  late final Listenable _viewerPaint = Listenable.merge([_frame, _cursor]);
   int _videoFrames = 0;
   double _renderFps = 0;
   int _lastRenderMs = 0;
+  /// Última actualización del texto de cabecera (C-19: tope de 2 Hz).
+  int _lastStatusMs = 0;
   bool _rendering = false;
-  String _videoStatus = 'sin vídeo';
-  // C-11: overlay del cursor del anfitrión (DXGI no lo dibuja en los frames).
-  int? _cursorNx;
-  int? _cursorNy;
-  bool _cursorVisible = false;
   final List<String> _log = [
     '[build] anyremote $kVersion · rev $kGitRev',
     '[build] Flutter $kFlutterBuild · windows-x64',
@@ -289,11 +308,18 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  /// Costura de test (C-9): inyecta un frame en el visor para verificar el
-  /// layout sin red real.
+  /// Costura de test (C-9/C-19): inyecta un frame en el visor por el MISMO
+  /// notifier que usa el render real, para verificar el layout sin red.
   void debugShowViewerFrame(ui.Image image) {
-    setState(() => _lastImage = image);
+    final prev = _frame.value;
+    _frame.value = image;
+    prev?.dispose();
+    setState(() {});
   }
+
+  /// Costura de test (C-19): empuja bytes crudos por el mismo camino que el
+  /// preview (ensamblador → render) sin socket.
+  void debugPushVideoBytes(Uint8List chunk) => _onVideoBytes(chunk);
 
   /// Costura de test (C-9): fija el ID local mostrado en la tarjeta Conexión.
   void debugSetLocalNodeId(String id) {
@@ -309,11 +335,7 @@ class _HomePageState extends State<HomePage> {
 
   /// Costura de test (C-11): fija el cursor remoto del overlay.
   void debugSetRemoteCursor(int nx, int ny, bool visible) {
-    setState(() {
-      _cursorNx = nx;
-      _cursorNy = ny;
-      _cursorVisible = visible;
-    });
+    _cursor.value = _CursorState(nx: nx, ny: ny, visible: visible);
   }
 
   /// Carga los aliases de perfil desde el daemon (`profiles --list`, JSONL).
@@ -446,8 +468,9 @@ class _HomePageState extends State<HomePage> {
           case 'video_start':
             _append('[daemon] vídeo iniciando: ${ev['width']}x${ev['height']} @${ev['fps']} fps (${ev['codec']})');
           case 'video_stats':
-            _videoStatus = 'vídeo ${ev['w']}x${ev['h']} · ${ev['frames']} frames';
-            if (mounted) setState(() {});
+            // C-19: el texto va por SU notifier → sin `setState` de página.
+            _videoStatus.value =
+                'vídeo ${ev['w']}x${ev['h']} · ${ev['frames']} frames';
           case 'video_adapt':
             _append('[daemon] calidad adaptada: ${ev['reason']} → ${ev['size']}${ev['bps'] != null ? ' @${ev['bps']} bps' : ''}');
           case 'video_backend':
@@ -456,18 +479,19 @@ class _HomePageState extends State<HomePage> {
                 '${ev['detail'] != null ? ' — ${ev['detail']}' : ''}');
           case 'cursor':
             // C-11: posición del cursor del anfitrión → overlay sobre el
-            // vídeo. Sin visor no hay dónde dibujarlo (evita rebuilds ~20 Hz).
-            // Sin `_append`: ~20 Hz inundarían el registro.
+            // vídeo. Sin visor no hay dónde dibujarlo. Sin `_append`: ~20 Hz
+            // inundarían el registro. C-19: su notifier repinta SOLO el
+            // visor (antes: `setState` de página ~20 veces/s).
             final cnx = ev['nx'] as num?;
             final cny = ev['ny'] as num?;
             if (cnx != null &&
                 cny != null &&
-                (_lastImage != null || _preview != null)) {
-              setState(() {
-                _cursorNx = cnx.toInt();
-                _cursorNy = cny.toInt();
-                _cursorVisible = ev['visible'] == true;
-              });
+                (_frame.value != null || _preview != null)) {
+              _cursor.value = _CursorState(
+                nx: cnx.toInt(),
+                ny: cny.toInt(),
+                visible: ev['visible'] == true,
+              );
             }
           case 'file_resume':
             _append('[daemon] reanudando envío de ${ev['name']} desde offset ${ev['from_offset']}');
@@ -530,7 +554,7 @@ class _HomePageState extends State<HomePage> {
             _heldButton = null;
             _heldChars.clear();
             _audioHint = '';
-            _cursorVisible = false;
+            _cursor.value = const _CursorState();
             // v0.8.2: con el listener repetidor, cerrar una sesión (p. ej. el
             // invitado pulsa «Detener») vuelve a «Escuchando (red)»: sigue
             // aceptando reconexiones. Sin listener → Desconectado.
@@ -811,13 +835,13 @@ class _HomePageState extends State<HomePage> {
       }
       setState(() {
         _preview = sock;
-        _videoStatus = 'visor conectado (esperando frames)…';
+        _videoStatus.value = 'visor conectado (esperando frames)…';
       });
       _append('[ui] visor conectado al preview 127.0.0.1:$port');
       Timer(const Duration(seconds: 5), () {
-        if (mounted && _lastImage == null && _preview != null) {
-          setState(() => _videoStatus =
-              'sin frames: el escuchador debe iniciar con --video on');
+        if (mounted && _frame.value == null && _preview != null) {
+          _videoStatus.value =
+              'sin frames: el escuchador debe iniciar con --video on';
         }
       });
       sock.listen(
@@ -826,11 +850,11 @@ class _HomePageState extends State<HomePage> {
           // C-10: el preview terminó → se limpia el visor; sin esto
           // quedaría el último frame con el layout de modo visor «congelado».
           unawaited(_stopViewer());
-          if (mounted) setState(() => _videoStatus = 'visor finalizado');
+          if (mounted) _videoStatus.value = 'visor finalizado';
         },
         onError: (Object e) {
           unawaited(_stopViewer());
-          if (mounted) setState(() => _videoStatus = 'visor con error: $e');
+          if (mounted) _videoStatus.value = 'visor con error: $e';
         },
         cancelOnError: true,
       );
@@ -842,37 +866,23 @@ class _HomePageState extends State<HomePage> {
   Future<void> _stopViewer() async {
     _preview?.destroy();
     _preview = null;
-    _cursorVisible = false;
-    _videoBuf = Uint8List(0);
-    final img = _lastImage;
-    _lastImage = null;
+    _cursor.value = const _CursorState();
+    _assembler.reset();
+    final img = _frame.value;
+    _frame.value = null;
     img?.dispose();
     _videoFrames = 0;
+    // C-19: al soltar el frame, la página reevalúa `viewerVisible` (antes
+    // dependía de que cada llamante hiciera su propio `setState`).
+    if (mounted) setState(() {});
   }
 
   void _onVideoBytes(Uint8List chunk) {
-    if (chunk.isEmpty) return;
-    if (_videoBuf.isEmpty) {
-      _videoBuf = chunk;
-    } else {
-      final merged = Uint8List(_videoBuf.length + chunk.length);
-      merged.setAll(0, _videoBuf);
-      merged.setAll(_videoBuf.length, chunk);
-      _videoBuf = merged;
-    }
-    while (_videoBuf.length >= 16) {
-      final bd = ByteData.sublistView(_videoBuf);
-      final w = bd.getUint32(0, Endian.little);
-      final h = bd.getUint32(4, Endian.little);
-      final len = bd.getUint32(12, Endian.little);
-      if (w == 0 || h == 0 || w > 8192 || h > 8192 || len > 128 * 1024 * 1024) {
-        _videoBuf = Uint8List(0); // pérdida de sincronía: resincronizar
-        return;
-      }
-      if (_videoBuf.length < 16 + len) break;
-      final payload = Uint8List.fromList(_videoBuf.sublist(16, 16 + len));
-      _videoBuf = Uint8List.fromList(_videoBuf.sublist(16 + len));
-      unawaited(_renderFrame(payload, w, h));
+    // C-19: el ensamblador amortiza el buffer (antes: recopiar el buffer
+    // COMPLETO en cada chunk → cuadrático en bytes por frame) y devuelve
+    // los frames completos con una sola copia de payload por frame.
+    for (final f in _assembler.push(chunk)) {
+      unawaited(_renderFrame(f.bgra, f.width, f.height));
     }
   }
 
@@ -890,26 +900,39 @@ class _HomePageState extends State<HomePage> {
       final codec = await desc.instantiateCodec();
       final frame = await codec.getNextFrame();
       final img = frame.image;
+      // C-19: liberar los recursos del decode en cuanto se usan — antes
+      // quedaban al GC (a 1080p son ~8 MB por frame de presión de GC).
+      codec.dispose();
+      desc.dispose();
+      buf.dispose();
       if (!mounted) {
         img.dispose();
         return;
       }
-      final prev = _lastImage;
+      final prev = _frame.value;
       final now = DateTime.now().millisecondsSinceEpoch;
       if (_lastRenderMs > 0 && now > _lastRenderMs) {
         final inst = 1000.0 / (now - _lastRenderMs);
         _renderFps = _renderFps == 0 ? inst : 0.8 * _renderFps + 0.2 * inst;
       }
       _lastRenderMs = now;
-      setState(() {
-        _lastImage = img;
-        _videoFrames += 1;
-        _videoStatus =
+      _videoFrames += 1;
+      // C-19: la cabecera se actualiza como máximo a 2 Hz (contador/fps no
+      // necesitan más) y por SU notifier → no repinta la cabecera por frame.
+      if (now - _lastStatusMs >= 500) {
+        _lastStatusMs = now;
+        _videoStatus.value =
             'vídeo ${w}x$h · $_videoFrames frames · ${_renderFps.toStringAsFixed(0)} fps render';
-      });
+      }
+      // C-19: solo escucha el visor (ListenableBuilder) → la página entera
+      // ya no se reconstruye por frame (antes: `setState` completo ~30 veces/s).
+      _frame.value = img;
       prev?.dispose();
+      if (prev == null && mounted) {
+        setState(() {}); // primer frame: `viewerVisible` pasa a true
+      }
     } catch (e) {
-      if (mounted) _videoStatus = 'render error: $e';
+      if (mounted) _videoStatus.value = 'render error: $e';
     } finally {
       _rendering = false;
     }
@@ -1017,7 +1040,11 @@ class _HomePageState extends State<HomePage> {
     _daemon?.kill(ProcessSignal.sigkill);
     _listener?.kill(ProcessSignal.sigkill);
     _preview?.destroy();
-    _lastImage?.dispose();
+    final img = _frame.value;
+    _frame.dispose();
+    img?.dispose();
+    _videoStatus.dispose();
+    _cursor.dispose();
     _inputFocus.dispose();
     _target.dispose();
     _rdv.dispose();
@@ -1029,7 +1056,7 @@ class _HomePageState extends State<HomePage> {
     final running = _daemon != null;
     // C-10: modo visor — con el visor visible, la sección Conexión y el
     // Registro quedan OCULTOS y «Detener» sube a la barra superior.
-    final viewerVisible = _lastImage != null || _preview != null;
+    final viewerVisible = _frame.value != null || _preview != null;
     return Scaffold(
       appBar: AppBar(
         title: Row(
@@ -1308,7 +1335,13 @@ class _HomePageState extends State<HomePage> {
                             Text('entrada: $_inputEvents',
                                 style: const TextStyle(fontSize: 12, color: Colors.teal)),
                           if (_inputEvents > 0) const SizedBox(width: 10),
-                          Text(_videoStatus, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                          // C-19: la cabecera escucha SU notifier: los
+                          // cambios de estado no reconstruyen la página.
+                          ValueListenableBuilder<String>(
+                            valueListenable: _videoStatus,
+                            builder: (_, status, _) => Text(status,
+                                style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 6),
@@ -1322,16 +1355,23 @@ class _HomePageState extends State<HomePage> {
                       // a cualquier tamaño de ventana.
                       Expanded(
                         child: Center(
-                          child: AspectRatio(
-                        aspectRatio: _lastImage != null
-                            ? _lastImage!.width / _lastImage!.height
+                          // C-19: un ÚNICO listener (frame + cursor) del visor:
+                          // solo repinta ÉSTE subtree — la página entera ya no
+                          // se reconstruye por frame ni ~20 Hz por el cursor.
+                          child: ListenableBuilder(
+                            listenable: _viewerPaint,
+                            builder: (context, _) {
+                              final img = _frame.value;
+                              final cur = _cursor.value;
+                              return AspectRatio(
+                        aspectRatio: img != null
+                            ? img.width / img.height
                             : 16 / 9,
-                        child: _lastImage != null
+                        child: img != null
                             ? LayoutBuilder(
                                 builder: (context, constraints) {
                                   final box = Size(
                                       constraints.maxWidth, constraints.maxHeight);
-                                  final img = _lastImage!;
                                   return Listener(
                                     // Ratón: cualquier movimiento (arrastrando o
                                     // pasando por encima) → cursor remoto. El
@@ -1373,14 +1413,14 @@ class _HomePageState extends State<HomePage> {
                                         fit: StackFit.expand,
                                         children: [
                                           RawImage(image: img, fit: BoxFit.contain),
-                                          if (_cursorVisible &&
-                                              _cursorNx != null &&
-                                              _cursorNy != null)
+                                          if (cur.visible &&
+                                              cur.nx != null &&
+                                              cur.ny != null)
                                             Positioned(
                                               // Normalizado del anfitrión →
                                               // caja de la imagen (0..65535).
-                                              left: _cursorNx! / 65535 * box.width,
-                                              top: _cursorNy! / 65535 * box.height,
+                                              left: cur.nx! / 65535 * box.width,
+                                              top: cur.ny! / 65535 * box.height,
                                               child: const CustomPaint(
                                                 key: Key('remote-cursor'),
                                                 size: Size(16, 24),
@@ -1397,9 +1437,11 @@ class _HomePageState extends State<HomePage> {
                                 child: Text('conectado… esperando primer frame',
                                     style: TextStyle(color: Colors.grey)),
                               ),
-                      ),
+                              );
+                            },
                           ),
                         ),
+                      ),
                     ],
                   ),
                 ),
