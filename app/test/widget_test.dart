@@ -12,13 +12,13 @@ void main() {
 
     expect(find.text('anyremote'), findsOneWidget);
     expect(find.text('v$kVersion'), findsOneWidget);
-    // Dos campos: destino (C-9) + servidor de encuentro (C-17, prestablecido
-    // con el VPS desde v0.12.3).
+    // Dos campos: destino (C-9) + servidor de encuentro (C-17, vacío por
+    // defecto — C-22: el default lo aplica `effectiveRdv()`).
     expect(find.byType(TextField), findsNWidgets(2));
     expect(
       find.widgetWithText(TextField, '51.222.81.81:21120'),
-      findsOneWidget,
-      reason: 'v0.12.3: servidor de encuentro prestablecido (VPS serveremote)',
+      findsNothing,
+      reason: 'C-22: el campo arranca vacío; el VPS es el default EFECTIVO',
     );
     expect(find.widgetWithText(FilledButton, 'Conectar'), findsOneWidget);
     expect(find.widgetWithText(OutlinedButton, 'Detener'), findsOneWidget);
@@ -147,7 +147,7 @@ void main() {
   test('buildListenArgs: el listener de la app es repetidor (v0.8.2)', () {
     // Regresión del reporte de campo: al cerrar la sesión desde el invitado el
     // anfitrión debe seguir aceptando reconexiones → la app pasa
-    // `--max-sessions 0` (escucha ilimitada hasta «Detener listen»).
+    // `--max-sessions 0` (escucha ilimitada hasta «Detener compartir»).
     final args = buildListenArgs(size: '1280x720', kbps: 3000);
     expect(args.first, 'listen');
     final i = args.indexOf('--max-sessions');
@@ -379,5 +379,33 @@ void main() {
     expect(normalizedPointer(const Offset(-50, 900), box), (0, 65535));
     // Caja degenerada → (0,0) sin división por cero.
     expect(normalizedPointer(Offset.zero, Size.zero), (0, 0));
+  });
+
+  test('C-22: effectiveRdv usa el VPS por defecto si el campo está vacío', () {
+    expect(effectiveRdv(''), '51.222.81.81:21120');
+    expect(effectiveRdv('   '), '51.222.81.81:21120');
+    expect(effectiveRdv('1.2.3.4:21120'), '1.2.3.4:21120');
+    expect(effectiveRdv('  10.0.0.1:9 '), '10.0.0.1:9');
+  });
+
+  test('C-22: isLanAddress clasifica LAN vs WAN', () {
+    expect(isLanAddress('192.168.6.152:21118'), isTrue);
+    expect(isLanAddress('10.0.0.1:21118'), isTrue);
+    expect(isLanAddress('172.20.3.4:21118'), isTrue, reason: '172.16/12');
+    expect(isLanAddress('127.0.0.1:21118'), isTrue);
+    expect(isLanAddress('[::1]:21118'), isTrue);
+    expect(isLanAddress('[fd00::1]:21118'), isTrue, reason: 'ULA v6');
+    expect(isLanAddress('51.222.81.81:21120'), isFalse);
+    expect(isLanAddress('8.8.8.8:21118'), isFalse);
+    expect(isLanAddress('[2001:4860:4860::8888]:21118'), isFalse);
+    expect(isLanAddress('172.32.1.1:1'), isFalse, reason: 'fuera de 172.16/12');
+    expect(isLanAddress('192.169.1.1:1'), isFalse);
+  });
+
+  test('C-22: resolveViaLabel etiqueta la auto-detección LAN/WAN', () {
+    expect(resolveViaLabel('broadcast', '192.168.6.152:21118'), 'LAN (broadcast)');
+    expect(resolveViaLabel('rdv', '51.222.81.81:21120'), 'WAN (servidor de encuentro)');
+    expect(resolveViaLabel('cache', '192.168.6.152:21118'), 'caché — LAN');
+    expect(resolveViaLabel('cache', '203.0.113.7:21118'), 'caché — WAN');
   });
 }

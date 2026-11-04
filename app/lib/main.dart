@@ -36,6 +36,51 @@ String normalizeTarget(String raw) {
 
 bool looksLikeAlias(String target) => !target.contains(':');
 
+/// C-22: servidor de encuentro por defecto (el VPS propio `serveremote`) —
+/// el campo de la app puede quedar vacío y la sesión igual sabe dónde
+/// registrar/resolver por WAN.
+const String kDefaultRdv = '51.222.81.81:21120';
+
+/// C-22: valor efectivo del servidor de encuentro (vacío → [kDefaultRdv]).
+String effectiveRdv(String raw) {
+  final t = raw.trim();
+  return t.isEmpty ? kDefaultRdv : t;
+}
+
+/// C-22: ¿la dirección resuelta es LAN (privada/loopback/ULA)? Para
+/// etiquetar la auto-detección LAN/WAN en el registro.
+bool isLanAddress(String hostPort) {
+  String h;
+  if (hostPort.startsWith('[')) {
+    final end = hostPort.indexOf(']');
+    if (end < 0) return false;
+    h = hostPort.substring(1, end);
+  } else {
+    final ci = hostPort.lastIndexOf(':');
+    h = ci > 0 ? hostPort.substring(0, ci) : hostPort;
+  }
+  if (h == '::1' || h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80')) {
+    return true;
+  }
+  final parts = h.split('.');
+  if (parts.length != 4) return false;
+  final o = int.tryParse(parts[0]) ?? -1;
+  final second = int.tryParse(parts[1]) ?? -1;
+  return o == 10 ||
+      o == 127 ||
+      (o == 172 && second >= 16 && second <= 31) ||
+      (o == 192 && second == 168) ||
+      (o == 169 && second == 254);
+}
+
+/// C-22: etiqueta LAN/WAN de una resolución (evento `resolve_ok` del daemon:
+/// broadcast → LAN · rdv → WAN · caché → según la dirección resultante).
+String resolveViaLabel(String source, String addr) => switch (source) {
+      'broadcast' => 'LAN (broadcast)',
+      'rdv' => 'WAN (servidor de encuentro)',
+      _ => isLanAddress(addr) ? 'caché — LAN' : 'caché — WAN',
+    };
+
 /// Punto del visor → **coordenadas normalizadas 0..65535** del wire (RF-02a).
 ///
 /// Independiente de la resolución del vídeo y de la pantalla del anfitrión: con
@@ -232,13 +277,12 @@ class _HomePageState extends State<HomePage> {
   /// y sin bloqueo entre streams): el par TCP-only sigue conectando (fallback
   /// `quic_fallback` a los 3 s) y el listener ata TCP+UDP en el mismo puerto.
   bool _useUdp = true;
-  /// C-17: servidor de encuentro (rendezvous + relay). **Prestablecido desde
-  /// v0.12.3** con el VPS propio (`serveremote`): resolución WAN + relay de
-  /// respaldo. No penaliza la LAN (el broadcast va primero; `--rdv` solo
-  /// actúa si aquél falla) — vaciar el campo = LAN pura, o el fichero `rdv`
-  /// del directorio de configuración del daemon.
-  final TextEditingController _rdv =
-      TextEditingController(text: '51.222.81.81:21120');
+  /// C-17/C-22: servidor de encuentro (rendezvous + relay) — el campo
+  /// arranca **vacío** y el valor efectivo lo fija `effectiveRdv()` (VPS
+  /// propio por defecto): el daemon resuelve el ID broadcast LAN → rdv →
+  /// caché (**auto-detección LAN/WAN**) y la LAN nunca depende del VPS.
+  /// Escribir otra dirección sustituye al default.
+  final TextEditingController _rdv = TextEditingController(text: '');
   static const Map<String, String> _qualities = {
     '720p': '1280x720',
     '1080p': '1920x1080',
@@ -472,6 +516,13 @@ class _HomePageState extends State<HomePage> {
             // comparte); solo el controlador abre visor con su propio preview.
             if (isListener) return;
             _startViewer((ev['port'] as num).toInt());
+          case 'resolve_ok':
+            // C-22: auto-detección LAN/WAN del ID — el daemon resuelve
+            // broadcast (LAN) → servidor de encuentro (WAN) → caché; aquí
+            // se pinta el camino usado en el registro.
+            _append('[ui] ID resuelto → ${resolveViaLabel('${ev['source']}', '${ev['addr']}')}: ${ev['addr']}');
+          case 'rdv_error':
+            _append('[ui] servidor de encuentro no respondió (${ev['target']}): ${ev['detail']}');
           case 'video_start':
             _append('[daemon] vídeo iniciando: ${ev['width']}x${ev['height']} @${ev['fps']} fps (${ev['codec']})');
           case 'video_stats':
@@ -673,7 +724,7 @@ class _HomePageState extends State<HomePage> {
         size: _qualities[_videoQuality] ?? '1280x720',
         kbps: _qualityKbps[_videoQuality] ?? 3000,
         udp: _useUdp,
-        rdv: _rdv.text.trim(),
+        rdv: effectiveRdv(_rdv.text),
       );
       final proc = await Process.start(
         _daemonBin,
@@ -688,6 +739,7 @@ class _HomePageState extends State<HomePage> {
         if (_shareMic) 'micrófono',
       ];
       _append('[ui] listener de red lanzado (0.0.0.0:21118 — ${_useUdp ? 'tcp+udp (QUIC)' : 'tcp'} — vídeo $_videoQuality@15 h264'
+          ' — encuentro ${effectiveRdv(_rdv.text)}'
           '${activos.isEmpty
               ? ' — sin control remoto ni audio (D-07)'
               : ' — acepta ${activos.join(' + ')}'}'
@@ -981,8 +1033,10 @@ class _HomePageState extends State<HomePage> {
     args.addAll(['--audio', 'on']);
     // C-15: udp = QUIC con fallback automático a TCP si el par no lo habla.
     if (_useUdp) args.addAll(['--transport', 'udp']);
-    // C-17: servidor de encuentro (resolución WAN + relay de respaldo).
-    if (_rdv.text.trim().isNotEmpty) args.addAll(['--rdv', _rdv.text.trim()]);
+    // C-17/C-22: servidor de encuentro (resolución WAN + relay de respaldo)
+    // — SIEMPRE presente: vacío → VPS por defecto. El daemon resuelve el ID
+    // broadcast LAN → rdv → caché (auto-detección LAN/WAN).
+    args.addAll(['--rdv', effectiveRdv(_rdv.text)]);
     _append('[ui] lanzando anyremoted ${asAlias ? 'connect --profile $target' : 'connect $target'}');
     try {
       final proc = await Process.start(
@@ -1158,7 +1212,7 @@ class _HomePageState extends State<HomePage> {
                         OutlinedButton.icon(
                           onPressed: _listener == null ? _startLocalListen : _stopLocalListen,
                           icon: Icon(_listener == null ? Icons.sensors : Icons.stop_circle_outlined),
-                          label: Text(_listener == null ? 'Compartir escritorio' : 'Detener listen'),
+                          label: Text(_listener == null ? 'Compartir escritorio' : 'Detener compartir'),
                         ),
                       ],
                     ),
@@ -1295,7 +1349,7 @@ class _HomePageState extends State<HomePage> {
                             enabled: !running,
                             style: const TextStyle(fontSize: 12),
                             decoration: const InputDecoration(
-                              hintText: 'servidor de encuentro (ip:puerto)',
+                              hintText: 'servidor de encuentro (vacío = VPS)',
                               hintStyle: TextStyle(fontSize: 11),
                               isDense: true,
                               border: OutlineInputBorder(),
