@@ -56,7 +56,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-16 conexión por ID (resolutor LAN) v0.11.0 (+ hotfixes v0.11.1–v0.11.2) | ✅ gate verde (8 unit + 3 e2e) · ✅ **validada en campo** (2026-11-03: `resolve_ok` broadcast 343 ms + caché 37 ms, auditoría `transport:quic` y `transport:tcp`, pin por ID, sin fallback — tras los2 hotfixes de campo: fan-out de subredes y anti-ICMP-poison del /32 WARP) | `id-resolve-v0.11.0`…`v0.11.2` · `evidence/id-connect-gate.md` |
 | C-17 WAN: rendezvous + relay (D-04) v0.12.0 | ✅ gate verde (5 unit protocolo + 3 e2e daemon: resolve+directo, puerto cerrado→relay E2E, fichero `rdv`+offline) · ✅ **servidor reubicado en el repo [serveremote](https://github.com/brisaning/serveremote) con Dockerfile** (consumido por git-alias; su CI valida la imagen) · ✅ **validada en campo** (2026-11-03: VPS `51.222.81.81` Docker · registro+resolución por internet · **2 sesiones por relay** con `peer_addr` del VPS en la auditoría, C-13 adaptando a454 ms de RTT sin caer, `bye` limpio) | `rdv-relay-v0.12.0` · `evidence/rdv-relay-gate.md` · repo `serveremote` |
 | C-18 resampler de mayor orden (`rubato`) v0.12.1 | ✅ gate verde (13/13 audio con3 tests de calidad; plan de `evidence/menores-gate.md` §4) · 🟡 pendiente campo (oír el audio) | `resampler-v0.12.1` · `evidence/resampler-gate.md` |
-| **Pendientes** | 🟡 revalidación campo: audio (con la cadena nueva) y «Nativa» · render nativo alto (C-19) | [README § Pendientes](../README.md#pendientes) |
+| C-19 render alto sin nativo v0.12.2 | ✅ gate verde (8 tests del ensamblador + integración de frame crudo; Rust 51/0 · clippy0 · fmt0 · Flutter 18/18; diseño §11) · 🟡 pendiente campo (`fps render` → decidir `Texture`) | `render-high-v0.12.2` · `evidence/render-gate.md` |
+| **Pendientes** | 🟡 revalidación campo: audio (cadena `rubato`) · «Nativa» · `fps render` a 720p/1080p/Nativa (decisión `Texture`, C-19) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
@@ -333,3 +334,39 @@ lo envuelve en `RdvSigner` (implementación del trait `RegisterSigner`).
 `serveremote` (guía completa en `evidence/rdv-relay-gate.md`) · firewall: solo
 TCP21120 (control+relay en el mismo puerto). Los clientes: campo «servidor de
 encuentro» de la app, `--rdv <ip-vps>:21120` o fichero `rdv`.
+
+
+---
+
+## 11. C-19: render alto — pipeline sin nativo (2026-11-04)
+
+**Disparador**: backlog «Render a alta resolución → posible paso a widget
+`Texture` si el fps de render limita» (README § Pendientes 4). Diagnóstico del
+pipeline en `app/lib/main.dart`:
+
+1. **`_onVideoBytes` era cuadrático**: cada chunk de TCP recopiaba el buffer
+   COMPLETO (`merged = old + chunk`) → un frame de 720p (≈3,7 MB) llega en
+   ~200 chunks ⇒ ~200 `memcpy` de hasta 3,7 MB **por frame**.
+2. **`setState` de la página entera por frame** (~30 Hz) y **otro por el
+   cursor remoto** (~20 Hz): reconstruían AppBar, chips, toggles y registro.
+3. **Recursos de decode al GC**: `ImmutableBuffer`/`ImageDescriptor`/`Codec`
+   sin `dispose` (a 1080p ≈ 8 MB/frame de presión de GC).
+
+**Solución (v0.12.2)** — todavía sin widget nativo:
+
+- **`VideoFrameAssembler`** (`app/lib/video_assembler.dart`): buffer con
+  crecimiento por duplicación y compactación reutilizando capacidad
+  (amortizado); **una sola copia** de payload por frame; resincronía por
+  cabecera inválida contada en `dropped` (mismo comportamiento que antes).
+- **Notifiers acotando el repintado**: `_frame` (imagen), `_videoStatus`
+  (cabecera, tope 2 Hz) y `_cursor` (overlay) → un único `ListenableBuilder`
+  repinta **solo el subtree del visor**.
+- **Disposal por frame** de `codec`/`desc`/`buf` (patrón de
+  `instantiateImageCodecWithSize` del SDK: el buffer se libera al crear el
+  codec) + la imagen vieja al reemplazarse. Wire y daemon intactos.
+
+**`Texture` nativo: CONDICIONADO a medición de campo.** Medir el `fps render`
+de la cabecera del visor a 720p/1080p/«Nativa» con este build; solo si no
+llega a los fps del stream se plantea el paso a `Texture` (decode fuera de
+Flutter: wire de preview + plataforma Windows — esfuerzo L). Si el pipeline
+actual llega, el backlog queda **cerrado sin nativo**.
