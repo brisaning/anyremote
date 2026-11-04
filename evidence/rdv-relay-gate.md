@@ -73,3 +73,28 @@ pública observada; QUIC si el UDP va reenviado).
   datos móviles) → `connect <ID>` → `resolve_ok source:rdv` → sesión con
   `relay_fallback` (o directa si hay reenvío) y tráfico fluyendo por el VPS
   (vigilar el ancho de banda del plan: 720p ≈2-6 Mbps por sesión).
+
+
+---
+
+## Validación de campo COMPLETA (2026-11-03 19:22–19:27, v0.12.0) — C-17 cerrado
+
+**Setup**: servidor `serveremote` en el **VPS del usuario** (`51.222.81.81:21120`,
+Docker), anfitrión y visora con `--rdv 51.222.81.81:21120`. El router NO tiene
+reenvío de puertos ni UPnP → **todo debió pasar por relay** (y así fue).
+
+| Evidencia | Sesión A (19:22, `--transport udp --rdv`) | Sesión B (19:25, `--rdv`, TCP) |
+|---|---|---|
+| Anfitrión | `rdv: registrado en 51.222.81.81:21120 como ONDH6IU4RU (puerto 21118)` + evento `rdv_bound` | idem tras reinicio del listener |
+| Resolución | `resolve_ok` (3 s: broadcast LAN sin respuesta → **servidor de encuentro**) | `resolve_ok` |
+| Directo → relay | `relay_fallback` (QUIC 3 s + TCP directo 8 s agotados → **pipeline del VPS**) | `relay_fallback` |
+| **Auditoría (clave)** | `session_established` con **`peer_addr: "51.222.81.81:21120"`** y `transport:"tcp"` — **la sesión corrió por la tubería del VPS** (relay = TCP ciego, E2E: TLS entre pares) y `peer_trusted:true` (C2 sobre el relay) | ídem |
+| Salud | 59 frames / 1,31 MB · **86 heartbeats rtt 454–491 ms** · `frames_dropped: 0` · **323 inyecciones** · `bye` limpio | 34 frames / 419 KB · **87 heartbeats rtt 461 ms (pico 1429 ms)** · `frames_dropped: 0` · 103 inyecciones · `bye` limpio |
+| **C-13 sobre el relay** | cascada completa: `red_bitrate` 1382k→691k→345k→**200k** + `red_escala` 1280×720→**924×520** y recuperaciones — el enlace a454 ms de RTT se degradó y **la sesión NO murió** (cierre `bye`, no `connection_gone`) | misma cascada; la sesión sobrevivió un pico de **1,4 s de RTT** |
+
+**Conclusión**: **C-17 validado en campo de punta a punta** — registro en el
+VPS por internet, resolución por ID a través del rendezvous, caída al relay
+cuando lo directo no llega (router sin reenvío), sesiones E2E sobre la tubería
+ciegra con C2 verificado (`peer_trusted`), vídeo H.264 fluyendo con la
+adaptación C-13 actuando y cierres limpios. Los tres modos de connect (`udp`,
+`tcp`, con/sin `--rdv`) probados. **WAN cerrado.**

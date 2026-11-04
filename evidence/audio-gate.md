@@ -81,8 +81,8 @@ anyremoted connect 127.0.0.1:21119 --audio on   # suena un tono de 440 Hz
 
 - ~~**Micrófono** como única fuente~~ → **resuelto en v0.6.1** con el **loopback
   (audio del sistema)** como fuente por defecto (ver §Diagnóstico de campo).
-- Resample **lineal** 44.1↔48 (calidad suficiente en ratios cercanos; mejorable
-  con un resampler de mayor orden si el campo lo pide).
+- ~~Resample **lineal** 44.1↔48~~ → **resuelto en v0.12.1 (C-18)**: `rubato`
+  (windowed-sinc) en captura Y reproducción — ver `evidence/resampler-gate.md`.
 - Sin VAD/eco-cancelación ni silencio adaptativo: se envía 20 ms continuos
   (52 kbps constantes aproximadamente).
 - Si el dispositivo falla en mitad de la sesión, la captura/reproducción se

@@ -8,6 +8,7 @@ license.workspace = true
 opus = "0.4"
 cpal = "0.15"
 tokio = { version = "1", features = ["sync"] }
+rubato = "5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }

@@ -25,7 +25,7 @@
 |RF-04 Perfiles|✅ (C6 + UI v0.4.0)|`c6-gate`, `ui-batch-gate`|
 |RF-05 Registro|✅ (C7)|`c7-gate`|
 |RF-06 Trazabilidad|✅ (fases 0–6 + evidencia versionada)|`evidence/`|
-|Pendientes globales|🟡 revalidación audio/720p/Nativa — **H.264/red/visor/ID/dueño ✅ verificados en campo** · **UDP/QUIC ✅ hecho y verificado en campo (C-15, v0.10.0–v0.10.1)** · **conexión por ID ✅ hecho y verificado en campo (C-16, v0.11.0–v0.11.2)** · **WAN ✅ hecho (C-17, v0.12.0) — pendiente campo con VPS** · resampler (único menor)|README § Pendientes|
+|Pendientes globales|🟡 revalidación audio/720p/Nativa — **H.264/red/visor/ID/dueño ✅ verificados en campo** · **UDP/QUIC ✅ hecho y verificado en campo (C-15, v0.10.0–v0.10.1)** · **conexión por ID ✅ hecho y verificado en campo (C-16, v0.11.0–v0.11.2)** · **WAN ✅ hecho y verificado en campo (C-17, v0.12.0): VPS + relay + adaptación sin caídas** · **resampler ✅ hecho (C-18, v0.12.1)** — queda oírlo en campo|README § Pendientes|
 
 ---
 
