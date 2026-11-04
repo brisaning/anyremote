@@ -20,6 +20,10 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+/// Resampler de mayor orden (rubato) — el lineal se retiró (C-18, plan de
+/// `evidence/menores-gate.md`): ver el módulo para el porqué y el diseño.
+pub mod resample;
+
 /// Fija de sesión: 48 kHz mono (formato soportado por Opus; WASAPI suele dar
 /// 48 kHz en entrada y 44.1 kHz en salida → se remuestrea en ambos lados).
 pub const AUDIO_RATE: u32 = 48_000;
@@ -127,30 +131,10 @@ pub fn interleaved_to_mono_i16(samples: &[f32], channels: usize) -> Vec<i16> {
         .collect()
 }
 
-/// Remuestreo lineal `from` → `to` (identidad si las tasas coinciden).
-/// Calidad suficiente para ratios cercanos (44.1↔48); mejorable con un
-/// resampler de mayor orden si el campo nota artificios.
-pub fn resample_linear_i16(input: &[i16], from: u32, to: u32) -> Vec<i16> {
-    if from == to || input.is_empty() || from == 0 || to == 0 {
-        return input.to_vec();
-    }
-    let out_len = (input.len() as u64 * to as u64 / from as u64) as usize;
-    if out_len == 0 {
-        return Vec::new();
-    }
-    let ratio = from as f64 / to as f64;
-    let last = input.len() - 1;
-    (0..out_len)
-        .map(|i| {
-            let pos = i as f64 * ratio;
-            let i0 = (pos as usize).min(last);
-            let frac = (pos - i0 as f64) as f32;
-            let a = input[i0] as f32;
-            let b = input[(i0 + 1).min(last)] as f32;
-            (a + (b - a) * frac) as i16
-        })
-        .collect()
-}
+// El remuestreo lineal (C-7: «suficiente en ratios cercanos») se retiró en
+// C-18: captura y reproducción usan ahora `resample::SincResampler` (rubato,
+// ventana BlackmanHarris2) — sin alias al bajar ni imagen al subir. El
+// lineal de referencia vive en los tests de `resample` para la comparación.
 
 /// Mono i16 → interleaved f32 con `channels` (upmix por duplicación).
 pub fn mono_i16_to_interleaved_f32(pcm: &[i16], channels: usize) -> Vec<f32> {
@@ -432,6 +416,8 @@ fn capture_loop(
         frame_in: usize,
         acc: Vec<i16>,   // mono a la tasa del dispositivo
         pcm48: Vec<i16>, // ya a 48 kHz
+        /// Conversor de mayor orden (C-18) si la tasa del dispositivo ≠ 48 kHz.
+        resamp: Option<resample::SincResampler>,
     }
     let mut feeds: Vec<Feed> = sources
         .iter()
@@ -439,6 +425,8 @@ fn capture_loop(
             frame_in: ((FRAME_SAMPLES as u64 * o.rate as u64) / AUDIO_RATE as u64).max(1) as usize,
             acc: Vec::new(),
             pcm48: Vec::new(),
+            resamp: (o.rate != AUDIO_RATE)
+                .then(|| resample::SincResampler::new(o.rate, AUDIO_RATE)),
         })
         .collect();
     let mut pending: Vec<i16> = Vec::new();
@@ -456,14 +444,15 @@ fn capture_loop(
             }
             while feed.acc.len() >= feed.frame_in {
                 let head: Vec<i16> = feed.acc.drain(..feed.frame_in).collect();
-                if opened.rate == AUDIO_RATE {
-                    feed.pcm48.extend_from_slice(&head);
-                } else {
-                    feed.pcm48.extend_from_slice(&resample_linear_i16(
-                        &head,
-                        opened.rate,
-                        AUDIO_RATE,
-                    ));
+                match feed.resamp.as_mut() {
+                    // Tasa ya 48 kHz: sin conversión.
+                    None => feed.pcm48.extend_from_slice(&head),
+                    // C-18: sinc (rubato) en streaming por chunks — el
+                    // lineal pliegaba Nyquist al bajar.
+                    Some(r) => {
+                        let out = r.process(&head);
+                        feed.pcm48.extend_from_slice(&out);
+                    }
                 }
             }
             if feed.pcm48.len() > cap {
@@ -650,6 +639,11 @@ fn playback_loop(
     device: Option<PlaybackDevice>,
 ) {
     let mut device = device;
+    // C-18: conversor de mayor orden si la tasa del altavoz ≠ 48 kHz (Opus
+    // entrega PCM ya a 48 kHz); `None` = sin conversión (tasas iguales).
+    let mut resamp = device.as_ref().and_then(|(_, _, rate, _)| {
+        (*rate != AUDIO_RATE).then(|| resample::SincResampler::new(AUDIO_RATE, *rate))
+    });
     while !stop.load(Ordering::Relaxed) {
         let pcm = match rx.recv_timeout(Duration::from_millis(20)) {
             Ok(p) => p,
@@ -660,11 +654,12 @@ fn playback_loop(
         frames.fetch_add(1, Ordering::Relaxed);
         samples.fetch_add(n, Ordering::Relaxed);
         if let Some((stream, buf, rate, channels)) = device.as_mut() {
-            let converted = if *rate == AUDIO_RATE {
-                mono_i16_to_interleaved_f32(&pcm, *channels)
-            } else {
-                let r = resample_linear_i16(&pcm, AUDIO_RATE, *rate);
-                mono_i16_to_interleaved_f32(&r, *channels)
+            let converted = match resamp.as_mut() {
+                None => mono_i16_to_interleaved_f32(&pcm, *channels),
+                Some(r) => {
+                    let out = r.process(&pcm);
+                    mono_i16_to_interleaved_f32(&out, *channels)
+                }
             };
             if let Ok(mut g) = buf.lock() {
                 if g.len() > *rate as usize * 2 {
@@ -747,13 +742,18 @@ mod tests {
     }
 
     #[test]
-    fn resample_is_identity_or_scales_length() {
+    fn resample_sinc_scales_length() {
+        // C-18: el lineal se retiró; el sinc cubre subir y bajar con la
+        // longitud esperada (los tests de calidad viven en `resample`).
         let src: Vec<i16> = (0..882).map(|i| (i % 100) as i16).collect();
-        assert_eq!(resample_linear_i16(&src, 44_100, 44_100), src);
-        let up = resample_linear_i16(&src, 44_100, 48_000);
-        assert_eq!(up.len(), 960); // 882 × 48000/44100 = 960 exacto
-        let down = resample_linear_i16(&vec![0i16; 960], 48_000, 44_100);
-        assert_eq!(down.len(), 882);
+        let up = resample::SincResampler::new(44_100, 48_000).process(&src);
+        assert!((up.len() as i64 - 960).abs() <= 1200, "up={}", up.len());
+        let down = resample::SincResampler::new(48_000, 44_100).process(&vec![0i16; 4096]);
+        assert!(
+            (down.len() as i64 - 4096 * 44_100 / 48_000).abs() <= 1200,
+            "down={}",
+            down.len()
+        );
     }
 
     #[test]
