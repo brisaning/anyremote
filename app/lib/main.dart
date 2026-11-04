@@ -227,11 +227,18 @@ class _HomePageState extends State<HomePage> {
   /// prueba de campo de 2026-10-27 `native` solo alcanzó ~4.6 fps en el
   /// anfitrión y el enlace marcó RTT 57–782 ms (vídeo demasiado pesado).
   String _videoQuality = '720p';
-  /// C-15: transporte UDP/QUIC para listen y connect (default TCP = histórico).
-  bool _useUdp = false;
-  /// C-17: servidor de encuentro (rendezvous + relay) para WAN — vacío =
-  /// LAN, o el fichero `rdv` del directorio de configuración del daemon.
-  final TextEditingController _rdv = TextEditingController(text: '');
+  /// C-15: transporte UDP/QUIC para listen y connect. **Preseleccionado desde
+  /// v0.12.3** (más rápido que TCP: handshake integrado con TLS 1.3 en 1 RTT
+  /// y sin bloqueo entre streams): el par TCP-only sigue conectando (fallback
+  /// `quic_fallback` a los 3 s) y el listener ata TCP+UDP en el mismo puerto.
+  bool _useUdp = true;
+  /// C-17: servidor de encuentro (rendezvous + relay). **Prestablecido desde
+  /// v0.12.3** con el VPS propio (`serveremote`): resolución WAN + relay de
+  /// respaldo. No penaliza la LAN (el broadcast va primero; `--rdv` solo
+  /// actúa si aquél falla) — vaciar el campo = LAN pura, o el fichero `rdv`
+  /// del directorio de configuración del daemon.
+  final TextEditingController _rdv =
+      TextEditingController(text: '51.222.81.81:21120');
   static const Map<String, String> _qualities = {
     '720p': '1280x720',
     '1080p': '1920x1080',
