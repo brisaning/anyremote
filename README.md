@@ -36,7 +36,7 @@ _Última actualización: 2026-10-26_
 ### Pendientes
 
 1. **Audio**: re-verificar en LAN (v0.7.x: loopback + micrófono + toggles + gate de silencio ya implementados); **resampler de mayor orden** (único menor: plan definido — `rubato`, esfuerzo M, pendiente de que el campo lo pida).
-2. **WAN ✅ (v0.12.0)**: servidor propio `anyremote-rdv` (rendezvous + relay, guía de despliegue en `evidence/rdv-relay-gate.md`) — **recon**: el router del usuario no tiene UPnP (descartado aquí); con reenvío manual de21118 hay conexión directa y sin él va por relay. Queda la **validación de campo** con el VPS desplegado.
+2. **WAN ✅ verificado en campo (v0.12.0)**: servidor propio `serveremote` desplegado en el VPS del usuario (`51.222.81.81:21120`, Docker) — **2 sesiones reales por relay** (`resolve_ok` + `relay_fallback` + auditoría con `peer_addr` del VPS): registro, resolución, pipeline ciego E2E con C2, vídeo con C-13 adaptando a un enlace de 454 ms de RTT **sin morir** (guía: `evidence/rdv-relay-gate.md`). Con reenvío manual de21118 habría conexión directa.
 3. **Rendimiento**: quick wins en v0.7.1 · **cursor visible ✅ v0.8.5** · **adaptación por red ✅ v0.8.7** (RTT del receptor → el host baja bitrate/escala con confirmación+cooldown); **aceleración por hardware ✅ v0.9.0** (H.264/MF con fallback VP9 + decoder OpenH264); **UDP/QUIC ✅ v0.10.0 (C-15)** — el backlog §7 queda **sin pendientes** (futuros: datagrams con mini-ARQ, VP8, libyuv, WAN).
 4. Render a alta resolución → posible paso a widget `Texture` si el fps de render limita.
 5. Tabla de entrada: Insert, PageUp/Down y bloqueos (F1..F12 ✅ v0.8.1).
