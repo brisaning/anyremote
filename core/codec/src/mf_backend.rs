@@ -350,6 +350,13 @@ fn read_sample(s: &mf::IMFSample) -> Result<Vec<u8>, CodecError> {
 /// Codificador H.264 (MF). La creación del MFT es **perezosa** (en el primer
 /// frame, con sus dimensiones reales): si MF no sirve, `encode` devuelve
 /// error y `video.rs` cae a VP9 con evento `video_backend`.
+/// C-24: intervalo mínimo entre reconstrucciones del MFT marcadas por
+/// `set_target_bitrate` — cada reconstrucción reinicia el calentamiento
+/// (n inputs antes del primer slice emitido), así que con la cascada de
+/// adaptación (cada ~3 s en WAN) y pantalla estática (~1 Hz) el encoder
+/// nunca llegaba a emitir → sesión SIN vídeo (campo 2026-11-05).
+const REBUILD_COALESCE: std::time::Duration = std::time::Duration::from_secs(6);
+
 pub struct MfH264Encoder {
     transform: Option<mf::IMFTransform>,
     fps: u32,
@@ -363,6 +370,8 @@ pub struct MfH264Encoder {
     /// SPS+PPS (`MF_MT_MPEG_SEQUENCE_HEADER`): se anteponen a cada frame
     /// para que cualquier NAL sea decodificable por sí solo (resiliencia).
     seq_hdr: Vec<u8>,
+    /// C-24: última reconstrucción del MFT (coalescado de `set_target_bitrate`).
+    last_rebuild: Option<std::time::Instant>,
 }
 
 // Los MFT son pointers COM sin `Send` (NonNull). Seguridad: ambos wrappers
@@ -384,6 +393,7 @@ impl MfH264Encoder {
             input: None,
             output: None,
             seq_hdr: Vec::new(),
+            last_rebuild: None,
         }
     }
 
@@ -407,6 +417,7 @@ impl MfH264Encoder {
         let out_max = output_slot_size(&t, nv12_len);
         let output = make_slot(out_max)?;
         self.transform = Some(t);
+        self.last_rebuild = Some(std::time::Instant::now());
         self.width = ew;
         self.height = eh;
         self.nv12.resize(nv12_len, 0);
@@ -579,8 +590,20 @@ impl VideoEncoder for MfH264Encoder {
         // 720p en campo. Se marca reconstrucción y el PRÓXIMO frame rehace
         // la configuración completa (camino que sí funciona), con el cbSize
         // nuevo de `GetOutputStreamInfo`.
-        self.transform = None;
-        self.seq_hdr.clear();
+        // C-24 (coalescado): cada reconstrucción reinicia el calentamiento
+        // del MFT; con la cascada de adaptación (~3 s en WAN) y pantalla
+        // estática (~1 Hz de reenvío) el encoder no emitía NADA en toda la
+        // sesión → visor en negro. Máx. una cada [REBUILD_COALESCE]; el
+        // bitrate pendiente se aplica en la próxima reconstrucción (usa
+        // `self.bitrate`, que ya está actualizado).
+        let fresh = self
+            .last_rebuild
+            .map(|t| t.elapsed() >= REBUILD_COALESCE)
+            .unwrap_or(true);
+        if fresh {
+            self.transform = None;
+            self.seq_hdr.clear();
+        }
         true
     }
 
@@ -729,6 +752,39 @@ mod tests {
         assert!(produced > 0, "frames a 720p");
         let out = decoded.expect("algún frame 720p decodifica con OpenH264");
         assert_eq!((out.width, out.height), (1280, 720));
+    }
+
+    /// C-24: las reconstrucciones del MFT por bitrate se COALESCENC (cada
+    /// una reinicia el calentamiento; con la cascada de adaptación a ~3 s y
+    /// pantalla estática a ~1 Hz el MFT nunca emitía → sesión sin vídeo).
+    #[test]
+    fn bitrate_rebuilds_are_coalesced() {
+        if mf_ready().is_err() {
+            eprintln!("MF no disponible en esta máquina: se omite");
+            return;
+        }
+        let mut enc = MfH264Encoder::new(15, 1_000_000);
+        enc.ensure(320, 180).expect("ensure inicial");
+        assert!(enc.transform.is_some());
+        enc.set_target_bitrate(700_000);
+        assert!(
+            enc.transform.is_some(),
+            "dentro de la ventana NO se reconstruye (coalescado)"
+        );
+        assert_eq!(enc.bitrate, 700_000, "el bitrate pendiente sí se guarda");
+        // Fuera de ventana (viaje en el tiempo): sí se marca reconstrucción.
+        enc.last_rebuild =
+            Some(std::time::Instant::now() - REBUILD_COALESCE - std::time::Duration::from_secs(1));
+        enc.set_target_bitrate(500_000);
+        assert!(
+            enc.transform.is_none(),
+            "fuera de la ventana SÍ se reconstruye"
+        );
+        // La próxima codificación reconstruye con el ÚLTIMO bitrate pendiente.
+        let frame = TestPatternCapturer::render(320, 180, 1);
+        let _ = enc.encode(&frame).expect("encode tras reconstrucción");
+        assert!(enc.transform.is_some());
+        assert_eq!(enc.bitrate, 500_000);
     }
 
     /// Recorte a dims pares: un frame impar se recorta (1 px) sin error.
