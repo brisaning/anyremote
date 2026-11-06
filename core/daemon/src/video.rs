@@ -317,6 +317,40 @@ pub fn resolve_native(mode: VideoMode, requested: (u32, u32), first: (u32, u32))
     first
 }
 
+/// C-24: cadencia de reenvío del último frame en pantalla estática. Con
+/// salidas del códec todavía vacías (calentamiento del MFT: n inputs antes
+/// del primer slice) se reemite cada 200 ms en vez de 1 s para que el
+/// encoder llegue a emitir aunque nadie toque el anfitrión.
+fn reemit_gap(empty_run: u32) -> Duration {
+    if empty_run > 0 {
+        Duration::from_millis(200)
+    } else {
+        Duration::from_secs(1)
+    }
+}
+
+/// C-23/C-24: frame inicial GDI con diagnóstico en stderr (una vez por
+/// sesión — la app lo muestra como `[listener-err]` y en campo se ve si GDI
+/// falló o dio la imagen).
+fn cold_start_gdi(logged: &mut bool) -> Option<Frame> {
+    match anyremote_capture::initial_snapshot() {
+        Ok(f) => {
+            if !*logged {
+                eprintln!("[video] frame inicial GDI: {}x{}", f.width, f.height);
+                *logged = true;
+            }
+            Some(f)
+        }
+        Err(e) => {
+            if !*logged {
+                eprintln!("[video] frame inicial GDI no disponible: {e:?}");
+                *logged = true;
+            }
+            None
+        }
+    }
+}
+
 /// Lanza la tarea de vídeo hacia `out` (preview local + eventos). Deténela con `stop`.
 ///
 /// **Hilo propio (QW-5, campo v0.7.2)**: la captura DXGI puede bloquear hasta
@@ -371,6 +405,9 @@ pub fn spawn_video_task(
         // Último frame emitido + instante (para el reenvío en pantalla estática).
         let mut last_frame: Option<Frame> = None;
         let mut last_emit = std::time::Instant::now();
+        // C-24: salidas de códec vacías seguidas (calentamiento) + log del GDI.
+        let mut empty_run: u32 = 0;
+        let mut gdi_logged = false;
 
         loop {
             if stop.load(Ordering::Relaxed) {
@@ -384,21 +421,21 @@ pub fn spawn_video_task(
                     // los frames de solo-cursor). Reemitir el último como mucho
                     // una vez por segundo para mantener viva la vista.
                     match last_frame.as_ref() {
-                        Some(f) if last_emit.elapsed() >= Duration::from_secs(1) => Some(f.clone()),
+                        // C-24: con el códec aún calentando (salidas vacías)
+                        // se reemite cada 200 ms → el MFT recibe inputs y
+                        // emite su primer slice aunque la pantalla no cambie.
+                        Some(f) if last_emit.elapsed() >= reemit_gap(empty_run) => Some(f.clone()),
                         Some(_) => None,
                         // C-23: arranque en frío SIN imagen (pantalla estática
                         // o bloqueada) — DXGI no entrega nada hasta que algo
                         // cambie y el visor se quedaría en «esperando primer
-                        // frame» (su input solo se monta con imagen → sin
-                        // frame no llegaba input, sin input no había cambios).
-                        // GDI da la imagen inicial; después el reenvío de
-                        // arriba mantiene viva la vista.
-                        None => anyremote_capture::initial_snapshot().ok(),
+                        // frame». GDI da la imagen inicial (log una vez).
+                        None => cold_start_gdi(&mut gdi_logged),
                     }
                 }
                 // C-23: ídem en errores duros del backend (p. ej. acceso
                 // perdido con el escritorio bloqueado) mientras no haya imagen.
-                Err(_) if last_frame.is_none() => anyremote_capture::initial_snapshot().ok(),
+                Err(_) if last_frame.is_none() => cold_start_gdi(&mut gdi_logged),
                 Err(_) => None, // error transitorio del backend: se reintenta
             };
             let Some(captured) = captured else {
@@ -466,7 +503,12 @@ pub fn spawn_video_task(
             seq = seq.wrapping_add(1);
             last_emit = std::time::Instant::now();
             last_frame = Some(frame);
-            if !enc.data.is_empty() {
+            if enc.data.is_empty() {
+                // C-24: códec aún calentando → el reenvío en pantalla
+                // estática se acelera (`reemit_gap`) hasta que emita.
+                empty_run = empty_run.saturating_add(1);
+            } else {
+                empty_run = 0;
                 let _ = out.try_send(VideoMsg::Frame(enc)); // backpressure: descarte
             }
 
@@ -539,6 +581,14 @@ pub fn spawn_video_task(
 mod tests {
     use super::*;
     use anyremote_capture::{Frame, PixelFormat};
+
+    /// C-24: la cadencia de reenvío se acelera mientras el códec calienta.
+    #[test]
+    fn reemit_gap_accelerates_while_codec_warms_up() {
+        assert_eq!(reemit_gap(0), Duration::from_secs(1));
+        assert!(reemit_gap(1) < Duration::from_millis(300));
+        assert!(reemit_gap(u32::MAX) < Duration::from_millis(300));
+    }
 
     fn gradient4x4() -> Frame {
         let mut data = vec![0u8; 4 * 4 * 4];

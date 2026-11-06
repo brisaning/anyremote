@@ -61,7 +61,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-21 «Compartir escritorio» + control remoto automático v0.12.4 | ✅ gate verde (Flutter 18/18 con aserción nueva; Rust 51/0) · petición de campo del usuario | `share-desktop-v0.12.4` · `evidence/share-desktop-gate.md` |
 | C-22 rdv vacío con default efectivo + auto-detección LAN/WAN v0.12.5 | ✅ gate verde (Flutter 21/21 con3 tests nuevos; Rust 51/0) · petición de campo del usuario | `lan-wan-auto-v0.12.5` · `evidence/lan-wan-auto-gate.md` |
 | C-23 arranque en frío: GDI + input en placeholder v0.12.6 | ✅ gate verde (Flutter 22/22 con test nuevo; capture 5/5 con `gdi_snapshot`; Rust 51/0) · disparador: revisión de logs de campo (2 sesiones relay sin vídeo ni input) | `cold-start-v0.12.6` · `evidence/cold-start-gate.md` |
-| **Pendientes** | 🟡 revalidación campo: audio (cadena `rubato`) · «Nativa» · `fps render` a 720p/1080p/Nativa (decisión `Texture`, C-19) · verificar arranque en frío con pantalla estática | [README § Pendientes](../README.md#pendientes) |
+| C-24 encoder: reconstrucciones coalescadas + reenvío rápido v0.12.7 | ✅ gate verde (Rust 51/0 con2 tests nuevos; Flutter 22/22) · reporte de campo («conexión sin pantalla», relay+estático) | `encoder-warmup-v0.12.7` · `evidence/encoder-warmup-gate.md` |
+| **Pendientes** | 🟡 revalidación campo: audio (cadena `rubato`) · «Nativa» · `fps render` a 720p/1080p/Nativa (decisión `Texture`, C-19) · **repetir el escenario WAN+pantalla estática (C-24)** | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
