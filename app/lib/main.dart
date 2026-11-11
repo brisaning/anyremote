@@ -381,6 +381,9 @@ class _HomePageState extends State<HomePage> {
   /// verificar el estado «esperando primer frame» con input activo.
   void debugStartViewer(int port) => unawaited(_startViewer(port));
 
+  /// Costura de test (C-25): inyecta una línea de evento del daemon.
+  void debugHandleEvent(String line) => _handleEvent(line);
+
   /// Costura de test (C-9): fija el ID local mostrado en la tarjeta Conexión.
   void debugSetLocalNodeId(String id) {
     setState(() => _localNodeId = id);
@@ -544,6 +547,12 @@ class _HomePageState extends State<HomePage> {
             // C-14: backend realmente usado (mf_h264 o fallback vpx_vp9).
             _append('[daemon] códec de vídeo: ${ev['encoder']}'
                 '${ev['detail'] != null ? ' — ${ev['detail']}' : ''}');
+          case 'video_error':
+            // C-25: el detalle de decode (`dsRefLost`, SPS/PPS incompatible
+            // al cambiar de resolución en caliente…) se perdía: el registro
+            // solo mostraba el tipo genérico. En campo es lo único que
+            // explica un salto o frame transitorio (los audits ya lo traían).
+            _append('[daemon] vídeo: ${ev['detail'] ?? ev}');
           case 'cursor':
             // C-11: posición del cursor del anfitrión → overlay sobre el
             // vídeo. Sin visor no hay dónde dibujarlo. Sin `_append`: ~20 Hz
