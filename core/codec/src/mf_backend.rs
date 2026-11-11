@@ -357,6 +357,77 @@ fn read_sample(s: &mf::IMFSample) -> Result<Vec<u8>, CodecError> {
 /// nunca llegaba a emitir → sesión SIN vídeo (campo 2026-11-05).
 const REBUILD_COALESCE: std::time::Duration = std::time::Duration::from_secs(6);
 
+/// Posición del primer start code Annex-B (`00 00 01`; cubre también
+/// `00 00 00 01` porque contiene `00 00 01` en la posición+1).
+fn find_start_code(b: &[u8], from: usize) -> Option<usize> {
+    if from >= b.len() {
+        return None;
+    }
+    b[from..]
+        .windows(3)
+        .position(|w| w == [0, 0, 1])
+        .map(|p| p + from)
+}
+
+/// ¿El buffer contiene un NAL **SPS** (tipo 7) delimitado por start codes?
+/// Si el MFT ya lleva los parámetros in-band, NO se debe anteponer nada.
+fn contains_sps(b: &[u8]) -> bool {
+    let mut i = 0;
+    while let Some(p) = find_start_code(b, i) {
+        let long = b[p..].starts_with(&[0, 0, 0, 1]);
+        let nal = p + if long { 4 } else { 3 };
+        if let Some(first) = b.get(nal) {
+            if first & 0x1F == 7 {
+                return true;
+            }
+        }
+        i = nal;
+    }
+    false
+}
+
+/// Convierte un blob estilo avcC (`[len_be32][NAL]…`) a Annex-B; `None` si
+/// el recorrido no consume exactamente el buffer.
+fn avc_c_to_annexb(b: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(b.len() + 8);
+    let mut pos = 0;
+    let mut nals = 0;
+    while pos + 4 <= b.len() {
+        let n = u32::from_be_bytes([b[pos], b[pos + 1], b[pos + 2], b[pos + 3]]) as usize;
+        if n == 0 || n > 4096 || pos + 4 + n > b.len() {
+            return None;
+        }
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&b[pos + 4..pos + 4 + n]);
+        pos += 4 + n;
+        nals += 1;
+    }
+    (pos == b.len() && nals >= 1).then_some(out)
+}
+
+/// Normaliza el blob `MF_MT_MPEG_SEQUENCE_HEADER` a Annex-B. Los MFT no
+/// uniforman el formato: unos dan `00 00 00 01 SPS … PPS` y otros la
+/// cabecera en formato **avcC** (longitud 4B por NAL). En juank2
+/// (2026-11-11) el prepend crudo resultaba ilegible para el decoder y
+/// **todos** los P-frames fallaban con `native:18` (243/261 frames).
+fn normalize_seq_header(blob: Vec<u8>) -> Vec<u8> {
+    if blob.is_empty() {
+        return blob;
+    }
+    if blob.starts_with(&[0, 0, 0, 1]) || blob.starts_with(&[0, 0, 1]) {
+        return blob; // ya Annex-B
+    }
+    match find_start_code(&blob, 0) {
+        Some(p) => blob[p..].to_vec(), // basura delante → cortar
+        None => avc_c_to_annexb(&blob) // ¿avcC?
+            .unwrap_or_else(|| {
+                let mut out = vec![0u8, 0, 0, 1];
+                out.extend_from_slice(&blob);
+                out
+            }),
+    }
+}
+
 pub struct MfH264Encoder {
     transform: Option<mf::IMFTransform>,
     fps: u32,
@@ -372,6 +443,8 @@ pub struct MfH264Encoder {
     seq_hdr: Vec<u8>,
     /// C-24: última reconstrucción del MFT (coalescado de `set_target_bitrate`).
     last_rebuild: Option<std::time::Instant>,
+    /// C-26: ¿ya se logueó el diagnóstico de framing de esta sesión?
+    framing_logged: bool,
 }
 
 // Los MFT son pointers COM sin `Send` (NonNull). Seguridad: ambos wrappers
@@ -394,6 +467,7 @@ impl MfH264Encoder {
             output: None,
             seq_hdr: Vec::new(),
             last_rebuild: None,
+            framing_logged: false,
         }
     }
 
@@ -441,7 +515,10 @@ impl MfH264Encoder {
                             .GetBlob(&mf::MF_MT_MPEG_SEQUENCE_HEADER, &mut buf, None)
                             .is_ok()
                         {
-                            self.seq_hdr = buf;
+                            // C-26: normalizar a Annex-B en el límite (avcC →
+                            // start codes) — el prepend de `encode` solo
+                            // entiende Annex-B.
+                            self.seq_hdr = normalize_seq_header(buf);
                         }
                     }
                 }
@@ -559,7 +636,26 @@ impl VideoEncoder for MfH264Encoder {
             Err(e) => return Err(e),
         };
         self.load_seq_header(&t);
-        if !payload.is_empty() && !self.seq_hdr.is_empty() && !payload.starts_with(&self.seq_hdr) {
+        // C-26: diagnóstico de framing (una vez por sesión) — en el campo se
+        // ve qué dio exactamente el MFT y si hizo falta el prepend.
+        if !self.framing_logged && !payload.is_empty() {
+            self.framing_logged = true;
+            eprintln!(
+                "[video] h264 framing: seq_hdr[{}]={:02x?} payload[0..{}]={:02x?} con_sps={}",
+                self.seq_hdr.len(),
+                &self.seq_hdr[..self.seq_hdr.len().min(16)],
+                payload.len().min(16),
+                &payload[..payload.len().min(16)],
+                contains_sps(&payload),
+            );
+        }
+        // C-26: prepend SOLO si el payload no trae ya los parámetros
+        // in-band (si los trae, duplicarlos/enredarlos envenena el stream).
+        if !payload.is_empty()
+            && !self.seq_hdr.is_empty()
+            && !payload.starts_with(&self.seq_hdr)
+            && !contains_sps(&payload)
+        {
             let mut with_hdr = self.seq_hdr.clone();
             with_hdr.extend_from_slice(&payload);
             payload = with_hdr;
@@ -752,6 +848,45 @@ mod tests {
         assert!(produced > 0, "frames a 720p");
         let out = decoded.expect("algún frame 720p decodifica con OpenH264");
         assert_eq!((out.width, out.height), (1280, 720));
+    }
+
+    /// C-26: la cabecera del MFT se normaliza a Annex-B en el límite
+    /// (avcC → start codes) — sin esto el prepend producía P-frames
+    /// ilegibles en juank2 (`native:18`,243/261 frames perdidos).
+    #[test]
+    fn seq_header_normalizes_to_annexb() {
+        // Annex-B puro → intacto.
+        let ab = vec![0, 0, 0, 1, 0x67, 0x42, 0, 0, 1, 0x68, 0xEE];
+        assert_eq!(normalize_seq_header(ab.clone()), ab);
+        // Con basura delante → se corta desde el start code.
+        // Basura delante: se corta desde el primer start code (aquí de3
+        // bytes: `00 00 01`, también Annex-B válido).
+        let dirty = vec![0xFF, 0x00, 0x00, 0x01, 0x67, 0x42];
+        assert_eq!(normalize_seq_header(dirty), vec![0, 0, 1, 0x67, 0x42]);
+        // avcC ([len4B][NAL]…) → Annex-B.
+        let mut acc = Vec::new();
+        let sps = [0x67u8, 0x42, 0x00, 0x1E];
+        let pps = [0x68u8, 0xCE, 0x06];
+        acc.extend_from_slice(&(sps.len() as u32).to_be_bytes());
+        acc.extend_from_slice(&sps);
+        acc.extend_from_slice(&(pps.len() as u32).to_be_bytes());
+        acc.extend_from_slice(&pps);
+        assert_eq!(
+            normalize_seq_header(acc),
+            vec![0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1E, 0, 0, 0, 1, 0x68, 0xCE, 0x06]
+        );
+        // Ni Annex-B ni avcC → se antepone un start code (último recurso).
+        let out = normalize_seq_header(vec![0x67, 0x42, 0x00]);
+        assert!(out.starts_with(&[0, 0, 0, 1]));
+    }
+
+    /// C-26: detección de SPS in-band para NO duplicar la cabecera.
+    #[test]
+    fn contains_sps_detects_in_band_headers() {
+        assert!(contains_sps(&[0, 0, 0, 1, 0x67, 0x42, 0, 0, 1, 0x41]));
+        assert!(!contains_sps(&[0, 0, 0, 1, 0x41, 0x9A]), "P-slice solo");
+        assert!(!contains_sps(&[0, 0, 0, 1, 0x68, 0xCE]), "PPS no es SPS");
+        assert!(!contains_sps(&[0x67, 0x42]), "sin start codes no cuenta");
     }
 
     /// C-24: las reconstrucciones del MFT por bitrate se COALESCENC (cada
