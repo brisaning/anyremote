@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "anyremote-daemon"
-version = "0.12.8"
+version = "0.12.9"
 dependencies = [
  "anyremote-audio",
  "anyremote-capture",

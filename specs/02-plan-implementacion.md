@@ -63,7 +63,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-23 arranque en frío: GDI + input en placeholder v0.12.6 | ✅ gate verde (Flutter 22/22 con test nuevo; capture 5/5 con `gdi_snapshot`; Rust 51/0) · disparador: revisión de logs de campo (2 sesiones relay sin vídeo ni input) | `cold-start-v0.12.6` · `evidence/cold-start-gate.md` |
 | C-24 encoder: reconstrucciones coalescadas + reenvío rápido v0.12.7 | ✅ gate verde (Rust 51/0 con2 tests nuevos; Flutter 22/22) · reporte de campo («conexión sin pantalla», relay+estático) | `encoder-warmup-v0.12.7` · `evidence/encoder-warmup-gate.md` |
 | C-25 `video_error` con detalle v0.12.8 | ✅ gate verde (Flutter 23/23 con test nuevo; Rust 51/0) · revisión de logs de campo (4 sesiones WAN exitosas en3 modos + audio) | `video-error-detail-v0.12.8` · `evidence/video-error-log-gate.md` |
-| **Pendientes** | 🟡 **`fps render` a 720p/1080p/Nativa (decisión `Texture`, C-19)** · micrófono end-to-end (dispositivo en el anfitrión) + tono real (DTX) · ✅ audio loopback y WAN+estático **validados en campo 2026-11-11** | [README § Pendientes](../README.md#pendientes) |
+| C-26 framing H.264 + decoder auto-sanado v0.12.9 | ✅ gate verde (Rust 51/0 con3 tests nuevos; Flutter 23/23) · reporte de campo (juank/juank2: `native:18` en243/261 frames = vídeo congelado) | `h264-framing-v0.12.9` · `evidence/h264-framing-gate.md` |
+| **Pendientes** | 🟡 **repetir la prueba en juank/juank2 con v0.12.9** (validar sin lluvia de `native:18`) · **`fps render` a 720p/1080p/Nativa (decisión `Texture`, C-19)** · micrófono end-to-end (dispositivo en el anfitrión) + tono real (DTX) · ✅ audio loopback y WAN+estático **validados en campo 2026-11-11** | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
