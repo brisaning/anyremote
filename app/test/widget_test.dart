@@ -422,6 +422,20 @@ void main() {
     expect(find.text('conectado… esperando primer frame'), findsNothing);
   });
 
+  testWidgets('C-25: video_error registra el detalle de decode', (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+
+    st.debugHandleEvent(
+        '{"event":"video_error","detail":"Decode(openh264: native:18 paramSets)"}');
+    await tester.pump();
+
+    expect(find.textContaining('openh264: native:18'), findsOneWidget,
+        reason: 'C-25: el detalle de decode debe llegar al registro');
+    expect(find.textContaining('[daemon] video_error'), findsNothing,
+        reason: 'sin el caso, el registro solo mostraba el tipo genérico');
+  });
+
   test('C-22: effectiveRdv usa el VPS por defecto si el campo está vacío', () {
     expect(effectiveRdv(''), '51.222.81.81:21120');
     expect(effectiveRdv('   '), '51.222.81.81:21120');
