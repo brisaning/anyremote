@@ -57,6 +57,9 @@ pub enum CodecError {
     Decode(String),
     Unsupported(CodecFormat),
     Capture(CaptureError),
+    /// C-27: frame omitido a propósito (esperando IDR tras auto-reset) —
+    /// el llamador lo ignora sin ruido en el registro.
+    Skipped,
 }
 
 pub trait VideoEncoder: Send {

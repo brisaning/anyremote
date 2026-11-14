@@ -20,13 +20,20 @@ pub struct H264Decoder {
     inner: Decoder,
     /// C-26: resets auto-sanadores realizados (se loguean los primeros3).
     resets: u8,
+    /// C-27: esperando un IDR tras auto-reset (se saltan los frames sin
+    /// referencia en vez de acumular `native:18`).
+    waiting_idr: bool,
 }
 
 impl H264Decoder {
     pub fn new() -> Result<Self, CodecError> {
         let inner =
             Decoder::new().map_err(|e| CodecError::Decode(format!("openh264 new: {e:?}")))?;
-        Ok(Self { inner, resets: 0 })
+        Ok(Self {
+            inner,
+            resets: 0,
+            waiting_idr: false,
+        })
     }
 }
 
@@ -41,18 +48,22 @@ impl VideoDecoder for H264Decoder {
         if frame.data.is_empty() {
             return Err(CodecError::Decode("frame H.264 vacío".into()));
         }
-        // C-26: si el stream trae parámetros distintos a los que el decoder
-        // tenía (MFT que reescribe el SPS en caliente / cabecera re-escrita),
-        // openh264 queda ENVENENADO y TODOS los frames posteriores fallan
-        // (campo juank2 2026-11-11: `native:18` = paramSets+refLost en
-        // 243/261 frames → vídeo congelado). Con bits de parámetros
-        // (dsParamSetsNotCompatible 0x10 / dsNoParamSets 0x20) se recrea el
-        // decoder y se reintenta UNA vez: si el frame era un P sin
-        // referencia volverá a fallar y el próximo IDR lo recupera.
+        // C-27: tras un auto-reset el decoder está vacío — mientras no
+        // llegue un IDR no hay referencia que valga: se SALTAN los frames
+        // (sin `native:18` en el registro; en campo eran cientos por
+        // sesión) y el IDR reconstruye el estado.
+        if self.waiting_idr && !has_idr_nal(&frame.data) {
+            return Err(CodecError::Skipped);
+        }
+        // C-26/C-27: errores de parámetros (0x10 params /0x20 no-params) →
+        // reset + esperar IDR (reintento inmediato si el frame ES un IDR).
         // Primera pasada con salida OWNED: el borrow del decode queda
         // consumido antes de poder reasignar `self.inner`.
         let params_code: Option<i64> = match self.inner.decode(&frame.data) {
-            Ok(Some(y)) => return yuv_to_frame(y),
+            Ok(Some(y)) => {
+                self.waiting_idr = false;
+                return yuv_to_frame(y);
+            }
             Ok(None) => None,
             Err(e) if e.native_code() & 0x30 != 0 => Some(e.native_code()),
             Err(e) => return Err(CodecError::Decode(format!("openh264: {e:?}"))),
@@ -60,18 +71,20 @@ impl VideoDecoder for H264Decoder {
         if let Some(code) = params_code {
             if self.resets < 3 {
                 self.resets += 1;
-                eprintln!("[video] decoder H.264 auto-reset (params native={code}) y reintento");
+                eprintln!("[video] decoder H.264 auto-reset (params native={code})");
             }
             self.inner = Decoder::new()
                 .map_err(|er| CodecError::Decode(format!("openh264 reset: {er:?}")))?;
-            let yuv = self
-                .inner
-                .decode(&frame.data)
-                .map_err(|e2| CodecError::Decode(format!("openh264: {e2:?}")))?;
-            let yuv = yuv.ok_or_else(|| {
-                CodecError::Decode("bitstream incompleto (NEED_MORE_INPUT)".into())
-            })?;
-            return yuv_to_frame(yuv);
+            self.waiting_idr = true;
+            if !has_idr_nal(&frame.data) {
+                return Err(CodecError::Skipped); // P: esperar al próximo IDR
+            }
+            // El frame ES un IDR con los parámetros nuevos → reintento ya.
+            self.waiting_idr = false;
+            return match self.inner.decode(&frame.data) {
+                Ok(Some(y)) => yuv_to_frame(y),
+                Ok(None) | Err(_) => Err(CodecError::Skipped),
+            };
         }
         // `None` = el decoder aún no tiene frame completo (p. ej. solo
         // SPS/PPS): mismo significado que NEED_MORE_INPUT en el backend MF.
@@ -102,11 +115,36 @@ fn yuv_to_frame(yuv: openh264::decoder::DecodedYUV<'_>) -> Result<Frame, CodecEr
     })
 }
 
+/// C-27: ¿el payload contiene un IDR (NAL tipo5)? Tras un auto-reset el
+/// decoder solo puede reconstruirse desde un IDR.
+fn has_idr_nal(b: &[u8]) -> bool {
+    let mut i = 0;
+    while let Some(p) = crate::mf_backend::find_start_code(b, i) {
+        let long = b[p..].starts_with(&[0, 0, 0, 1]);
+        let nal = p + if long { 4 } else { 3 };
+        if let Some(first) = b.get(nal) {
+            if first & 0x1F == 5 {
+                return true;
+            }
+        }
+        i = nal;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{CodecFormat, VideoEncoder};
     use anyremote_capture::TestPatternCapturer;
+
+    /// C-27: detección de IDR (NAL tipo5) para el salto tras auto-reset.
+    #[test]
+    fn has_idr_nal_detects_idr_slices() {
+        assert!(has_idr_nal(&[0, 0, 0, 1, 0x65, 0x88]), "IDR");
+        assert!(!has_idr_nal(&[0, 0, 0, 1, 0x41, 0x9A]), "P-slice");
+        assert!(!has_idr_nal(&[0, 0, 0, 1, 0x67, 0x42]), "SPS no es IDR");
+    }
 
     /// C-26: con un cambio de parámetros en caliente (dims distintas →
     /// SPS nuevo) el decoder se AUTO-SANifica en vez de quedarse
@@ -137,20 +175,29 @@ mod tests {
         // Cambio de parámetros en caliente:160x90 → SPS distinto.
         let f2 = TestPatternCapturer::render(160, 90, 7);
         let mut recovered = false;
-        for _ in 0..40 {
+        let mut skipped = 0u32;
+        for _ in 0..60 {
             let e = enc.encode(&f2).expect("encode dims nuevas");
             if e.data.is_empty() {
                 continue;
             }
-            if dec.decode(&e).is_ok() {
-                recovered = true;
-                break;
+            match dec.decode(&e) {
+                Ok(_) => {
+                    recovered = true;
+                    break;
+                }
+                // C-27: esperando IDR = silencioso y permitido.
+                Err(CodecError::Skipped) => skipped += 1,
+                // C-27: NINGÚN error de decode (p. ej. native:18) debe
+                // escapar tras el auto-reset — el registro se inundaba.
+                Err(other) => panic!("no debe escapar error de decode: {other:?}"),
             }
         }
         assert!(
             recovered,
-            "el decoder debe auto-sanarse con el SPS nuevo (reset+reintento)"
+            "el decoder debe auto-sanarse con el SPS nuevo (reset+IDR)"
         );
+        eprintln!("recuperado con {skipped} frames saltados (esperado: ≥0)");
     }
 
     /// Roundtrip real: encoder MF de Microsoft → decoder OpenH264 (B→C).

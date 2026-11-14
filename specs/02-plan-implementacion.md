@@ -64,7 +64,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-24 encoder: reconstrucciones coalescadas + reenvío rápido v0.12.7 | ✅ gate verde (Rust 51/0 con2 tests nuevos; Flutter 22/22) · reporte de campo («conexión sin pantalla», relay+estático) | `encoder-warmup-v0.12.7` · `evidence/encoder-warmup-gate.md` |
 | C-25 `video_error` con detalle v0.12.8 | ✅ gate verde (Flutter 23/23 con test nuevo; Rust 51/0) · revisión de logs de campo (4 sesiones WAN exitosas en3 modos + audio) | `video-error-detail-v0.12.8` · `evidence/video-error-log-gate.md` |
 | C-26 framing H.264 + decoder auto-sanado v0.12.9 | ✅ gate verde (Rust 51/0 con3 tests nuevos; Flutter 23/23) · reporte de campo (juank/juank2: `native:18` en243/261 frames = vídeo congelado) | `h264-framing-v0.12.9` · `evidence/h264-framing-gate.md` |
-| **Pendientes** | 🟡 **repetir la prueba en juank/juank2 con v0.12.9** (validar sin lluvia de `native:18`) · **`fps render` a 720p/1080p/Nativa (decisión `Texture`, C-19)** · micrófono end-to-end (dispositivo en el anfitrión) + tono real (DTX) · ✅ audio loopback y WAN+estático **validados en campo 2026-11-11** | [README § Pendientes](../README.md#pendientes) |
+| C-27 usable: exceso de RTT + IDR + log tasaado v0.13.0 | ✅ gate verde (Rust 51/0 con3 tests nuevos; Flutter 24/24) · reporte de campo («ventanas por saltos»: relay11 frames/78 s +146/77 `native:18` +735 líneas de log) | `adapt-excess-v0.13.0` · `evidence/adapt-excess-gate.md` |
+| **Pendientes** | 🟡 **repetir el escenario en campo con v0.13.0** (relay sin cascada + LAN sin `native:18`) · reenvío de puertos21118 para WAN directo · **`fps render` a 720p/1080p/Nativa (decisión `Texture`, C-19)** · micrófono end-to-end | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
