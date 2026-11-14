@@ -333,6 +333,9 @@ class _HomePageState extends State<HomePage> {
   int _lastRenderMs = 0;
   /// Última actualización del texto de cabecera (C-19: tope de 2 Hz).
   int _lastStatusMs = 0;
+  /// C-27: errores de decode vistos (para tasar el registro: en campo un
+  /// MFT con SPS in-band inundó el log con735 líneas/sesión).
+  int _videoDecodeErrors = 0;
   bool _rendering = false;
   final List<String> _log = [
     '[build] anyremote $kVersion · rev $kGitRev',
@@ -548,11 +551,17 @@ class _HomePageState extends State<HomePage> {
             _append('[daemon] códec de vídeo: ${ev['encoder']}'
                 '${ev['detail'] != null ? ' — ${ev['detail']}' : ''}');
           case 'video_error':
-            // C-25: el detalle de decode (`dsRefLost`, SPS/PPS incompatible
-            // al cambiar de resolución en caliente…) se perdía: el registro
-            // solo mostraba el tipo genérico. En campo es lo único que
-            // explica un salto o frame transitorio (los audits ya lo traían).
-            _append('[daemon] vídeo: ${ev['detail'] ?? ev}');
+            // C-25: el detalle de decode al registro. C-27: TASAADO — en
+            // campo un MFT con SPS in-band por frame inundó el log (735
+            // líneas en una sesión) y cada `_append` reconstruía la página.
+            // Primeros3 completos + resumen cada50; la auditoría sigue
+            // grabando TODOS los errores.
+            _videoDecodeErrors += 1;
+            final nErr = _videoDecodeErrors;
+            if (nErr <= 3 || nErr % 50 == 0) {
+              _append('[daemon] vídeo: ${ev['detail'] ?? ev}'
+                  '${nErr > 3 ? ' (errores: $nErr)' : ''}');
+            }
           case 'cursor':
             // C-11: posición del cursor del anfitrión → overlay sobre el
             // vídeo. Sin visor no hay dónde dibujarlo. Sin `_append`: ~20 Hz
@@ -958,6 +967,7 @@ class _HomePageState extends State<HomePage> {
     _frame.value = null;
     img?.dispose();
     _videoFrames = 0;
+    _videoDecodeErrors = 0;
     // C-19: al soltar el frame, la página reevalúa `viewerVisible` (antes
     // dependía de que cada llamante hiciera su propio `setState`). C-23:
     // nunca durante `dispose` (ver `_disposed`).

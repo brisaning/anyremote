@@ -100,6 +100,15 @@ pub fn scale_frame(src: &Frame, w: u32, h: u32) -> Frame {
 // observaciones (los latidos llegan 1/s), recuperación a los 10 con 20 s de
 // cooldown anti-oscilación. La escalera es la PROBADA (bitrate primero,
 // escala después); el fps no se toca (`--video-fps` ya tiene su suelo).
+/// C-27: exceso de RTT sobre el mínimo de la sesión — señal de congestión
+/// RELATIVA. Con RTT absoluto, un enlace con latencia base alta (relay
+/// ~335 ms) estaba siempre ≥ umbral → cascada permanente y suelo de
+/// 200 kbps (campo 2026-11-14: 11 frames/78 s). Peer viejo sin baseline →
+/// 0 → equivale al absoluto.
+pub(crate) fn net_excess(rtt_ms: u32, rtt_min_ms: u32) -> u32 {
+    rtt_ms.saturating_sub(rtt_min_ms)
+}
+
 const NET_RTT_HIGH_MS: u32 = 200;
 const NET_RTT_LOW_MS: u32 = 100;
 const NET_CONFIRM: u32 = 3;
@@ -222,7 +231,8 @@ impl AdaptState {
         None
     }
 
-    /// C-13: observa el RTT (ms) medido por el **controlador** (1/s).
+    /// C-13: observa el RTT (ms; **exceso** sobre el mínimo desde C-27)
+    /// medido por el **controlador** (1/s).
     /// Política anti-oscilación (`specs/02` §7):
     /// - congestión: RTT ≥ alto en **3 muestras** → baja bitrate 50 % (o
     ///   escala 85 % si ya está en el suelo) y activa **cooldown de 20 s**;
@@ -581,6 +591,19 @@ pub fn spawn_video_task(
 mod tests {
     use super::*;
     use anyremote_capture::{Frame, PixelFormat};
+
+    /// C-27: el exceso es relativo al mínimo (relay estable = sano).
+    #[test]
+    fn net_excess_is_relative_to_session_min() {
+        assert_eq!(net_excess(335, 335), 0, "relay estable → sano");
+        assert_eq!(net_excess(507, 335), 172, "pico real sobre el mínimo");
+        assert_eq!(net_excess(50, 335), 0, "nunca negativo");
+        assert_eq!(
+            net_excess(300, 0),
+            300,
+            "sin baseline (peer viejo) = absoluto"
+        );
+    }
 
     /// C-24: la cadencia de reenvío se acelera mientras el códec calienta.
     #[test]

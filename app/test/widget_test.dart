@@ -436,6 +436,18 @@ void main() {
         reason: 'sin el caso, el registro solo mostraba el tipo genérico');
   });
 
+  testWidgets('C-27: los errores de vídeo se tasan en el registro', (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+    for (var i = 0; i < 4; i++) {
+      st.debugHandleEvent(
+          '{"event":"video_error","detail":"Decode(openh264: native:18)"}');
+    }
+    await tester.pump();
+    expect(find.textContaining('[daemon] vídeo:').evaluate().length, 3,
+        reason: 'C-27: primeros3 completos; el resto se tasa (sin inundar)');
+  });
+
   test('C-22: effectiveRdv usa el VPS por defecto si el campo está vacío', () {
     expect(effectiveRdv(''), '51.222.81.81:21120');
     expect(effectiveRdv('   '), '51.222.81.81:21120');

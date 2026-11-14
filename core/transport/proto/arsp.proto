@@ -93,6 +93,11 @@ message VideoFrame {
 // congestión se nota en el receptor, pero el que baja el bitrate es el host.
 message NetHint {
   uint32 rtt_ms = 1; // RTT medido por el controlador (0 = sin datos)
+  // C-27: mínimo de la sesión (baseline). El host decide congestión por
+  // EXCESO (rtt − rtt_min): con RTT absoluto un relay (base ~335 ms) estaba
+  // siempre ≥ umbral → cascada permanente a200 kbps (campo2026-11-14:
+  // 11 frames en78 s). Peer viejo no lo envía →0 → comportamiento absoluto.
+  uint32 rtt_min_ms = 2;
 }
 
 // Estado del cursor del anfitrión (C-11): DXGI NO lo dibuja en los frames —

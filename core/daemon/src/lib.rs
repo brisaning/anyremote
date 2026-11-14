@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use anyremote_audio::{AudioCapture, AudioMode, AudioPlayback, AudioSource, OpusCodec};
 use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
-use anyremote_codec::VideoDecoder;
+use anyremote_codec::{CodecError, VideoDecoder};
 use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender};
 use anyremote_identity::{Identity, NodeId, TrustStore};
 use anyremote_input::cursor::{CursorBackend, CursorPos};
@@ -31,7 +31,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 pub mod preview;
 pub mod video;
 
-use video::{spawn_video_task, VideoMode, VideoMsg};
+use video::{net_excess, spawn_video_task, VideoMode, VideoMsg};
 
 #[derive(Debug)]
 pub enum DaemonError {
@@ -1587,7 +1587,11 @@ async fn active_controlled<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
                         // codificador. Además enriquece el informe del host:
                         // su `heartbeats`/`rtt_min` pasaban de 0/None a reales.
                         report.record_heartbeat(n.rtt_ms as u64);
-                        let _ = net_tx.send(n.rtt_ms);
+                        // C-27: el watch lleva el EXCESO sobre el mínimo de
+                        // la sesión (señal de congestión relativa) — con RTT
+                        // absoluto un relay nunca "se recuperaba" (min ~335 >
+                        // umbral100) y la calidad se estancaba en el suelo.
+                        let _ = net_tx.send(net_excess(n.rtt_ms, n.rtt_min_ms));
                     }
                     Some(proto::envelope::Payload::Clipboard(w)) => {
                         let content = arsp::clipboard_from_wire(w)?;
@@ -2591,6 +2595,10 @@ fn handle_video_wire(
                         ));
                     }
                 }
+                Err(CodecError::Skipped) => {
+                    // C-27: esperando un IDR tras auto-reset — sin ruido
+                    // (en campo eran cientos de líneas por sesión).
+                }
                 Err(e) => {
                     log.record(
                         AuditEventKind::Error,
@@ -2745,6 +2753,8 @@ async fn active_controller<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
         ));
     }
 
+    // C-27: mínimo de RTT visto (baseline para NetHint.rtt_min_ms).
+    let mut rtt_min: u32 = u32::MAX;
     loop {
         tokio::select! {
             env = ch.recv() => {
@@ -2774,8 +2784,18 @@ async fn active_controller<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
                         let hinted = cfg
                             .net_rtt_override
                             .unwrap_or(rtt.min(u32::MAX as u64) as u32);
+                        // C-27: baseline de la sesión → el anfitrión decide
+                        // congestión por EXCESO (rtt − rtt_min). Con RTT
+                        // absoluto, un relay (base ~335 ms) estaba SIEMPRE
+                        // ≥ umbral → cascada permanente a200 kbps y el
+                        // encoder dejó de emitir (11 frames/78 s, campo
+                        // 2026-11-14). Override (tests) = absoluto (min0).
+                        rtt_min = rtt_min.min(hinted);
+                        let baseline =
+                            if cfg.net_rtt_override.is_some() { 0 } else { rtt_min };
                         if let Err(e) = ch.send(proto::envelope::Payload::NetHint(proto::NetHint {
                             rtt_ms: hinted,
+                            rtt_min_ms: baseline,
                         })).await {
                             if conn_gone(&e) {
                                 log.record(AuditEventKind::Disconnected, session_id,

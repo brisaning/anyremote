@@ -359,7 +359,7 @@ const REBUILD_COALESCE: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// Posición del primer start code Annex-B (`00 00 01`; cubre también
 /// `00 00 00 01` porque contiene `00 00 01` en la posición+1).
-fn find_start_code(b: &[u8], from: usize) -> Option<usize> {
+pub(crate) fn find_start_code(b: &[u8], from: usize) -> Option<usize> {
     if from >= b.len() {
         return None;
     }
