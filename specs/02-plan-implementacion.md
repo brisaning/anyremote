@@ -65,7 +65,8 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-25 `video_error` con detalle v0.12.8 | ✅ gate verde (Flutter 23/23 con test nuevo; Rust 51/0) · revisión de logs de campo (4 sesiones WAN exitosas en3 modos + audio) | `video-error-detail-v0.12.8` · `evidence/video-error-log-gate.md` |
 | C-26 framing H.264 + decoder auto-sanado v0.12.9 | ✅ gate verde (Rust 51/0 con3 tests nuevos; Flutter 23/23) · reporte de campo (juank/juank2: `native:18` en243/261 frames = vídeo congelado) | `h264-framing-v0.12.9` · `evidence/h264-framing-gate.md` |
 | C-27 usable: exceso de RTT + IDR + log tasaado v0.13.0 | ✅ gate verde (Rust 51/0 con3 tests nuevos; Flutter 24/24) · reporte de campo («ventanas por saltos»: relay11 frames/78 s +146/77 `native:18` +735 líneas de log) | `adapt-excess-v0.13.0` · `evidence/adapt-excess-gate.md` |
-| **Pendientes** | 🟡 **repetir el escenario en campo con v0.13.0** (relay sin cascada + LAN sin `native:18`) · reenvío de puertos21118 para WAN directo · **`fps render` a 720p/1080p/Nativa (decisión `Texture`, C-19)** · micrófono end-to-end | [README § Pendientes](../README.md#pendientes) |
+| C-28 encoder sin tirar frames + instrumentación v0.13.1 | ✅ gate verde (Rust 51/0 con test de cola; Flutter 25/25) · diagnóstico por correlación de logs (enviado=decodificado byte a byte, pero solo~1,5 fps emitidos) | `encode-pending-v0.13.1` · `evidence/encode-pending-gate.md` |
+| **Pendientes** | 🟡 **test de campo de5 s con la nueva instrumentación** (arrastre: `captura vs emitidos` → distingue códec de captura) · repetir relay sin cascada + LAN sin `native:18` (v0.13.0+) · reenvío de puertos21118 para WAN directo · **`fps render` (decisión `Texture`)** · micrófono end-to-end | [README § Pendientes](../README.md#pendientes) |
 
 ---
 

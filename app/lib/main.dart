@@ -316,6 +316,8 @@ class _HomePageState extends State<HomePage> {
   /// elemento ya `defunct` (crash de depuración al cerrar con el visor
   /// abierto). Con la bandera, las rutas de cierre se saltan el `setState`.
   bool _disposed = false;
+  /// C-28: timer de tasa del visor (log cada5 s, sin setState).
+  Timer? _fpsLogTimer;
   /// C-19: ensamblador de frames con buffer amortizado — antes el buffer
   /// completo se recopilaba en CADA chunk de TCP (coste cuadrático/frame).
   final VideoFrameAssembler _assembler = VideoFrameAssembler();
@@ -444,6 +446,14 @@ class _HomePageState extends State<HomePage> {
   void _append(String line) {
     _logToFile(line);
     setState(() => _log.add(line));
+  }
+
+  /// C-28: como `_append` pero SIN `setState` — el log de tasa NO debe
+  /// forzar repaints (enmascararía el problema que mide). El archivo y la
+  /// lista se actualizan; la UI lo mostrará en el próximo rebuild natural.
+  void _appendQuiet(String line) {
+    _logToFile(line);
+    _log.add(line);
   }
 
   void _setStatus(String text, Color color) {
@@ -930,6 +940,14 @@ class _HomePageState extends State<HomePage> {
         _videoStatus.value = 'visor conectado (esperando frames)…';
       });
       _append('[ui] visor conectado al preview 127.0.0.1:$port');
+      // C-28: tasa del visor cada5 s — si `frames` no crece entre líneas,
+      // el render no está recibiendo (o no produciendo) frames.
+      _fpsLogTimer?.cancel();
+      _fpsLogTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        if (!mounted || _preview == null) return;
+        _appendQuiet(
+            '[ui] visor: fps render=${_renderFps.toStringAsFixed(1)} · $_videoFrames frames');
+      });
       Timer(const Duration(seconds: 5), () {
         if (mounted && _frame.value == null && _preview != null) {
           _videoStatus.value =
@@ -959,6 +977,8 @@ class _HomePageState extends State<HomePage> {
     // C-23: dispose en marcha → `Socket.destroy()` dispara `onDone` (a veces
     // en el mismo hilo) y los notifiers están a punto de morir: no tocarlos.
     if (_disposed) return;
+    _fpsLogTimer?.cancel();
+    _fpsLogTimer = null;
     _preview?.destroy();
     _preview = null;
     _cursor.value = const _CursorState();
@@ -1137,6 +1157,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _disposed = true;
+    _fpsLogTimer?.cancel();
     _daemon?.kill(ProcessSignal.sigkill);
     _listener?.kill(ProcessSignal.sigkill);
     _preview?.destroy();

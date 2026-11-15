@@ -418,14 +418,41 @@ pub fn spawn_video_task(
         // C-24: salidas de códec vacías seguidas (calentamiento) + log del GDI.
         let mut empty_run: u32 = 0;
         let mut gdi_logged = false;
+        // C-28: diagnóstico de tasa cada5 s (campo: en qué etapa se pierden
+        // los frames — captura real vs entraron al encode vs emitidos vs
+        // entregados al canal de sesión).
+        let mut fps_log_at = std::time::Instant::now();
+        let mut c_cap: u64 = 0;
+        let mut c_in: u64 = 0;
+        let mut c_emit: u64 = 0;
+        let mut c_queued: u64 = 0;
 
         loop {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
+            // C-28: log de tasa (stderr → `[listener-err]` en el ui.log).
+            if fps_log_at.elapsed() >= Duration::from_secs(5) {
+                eprintln!(
+                    "[video] fps ({} s): captura={} entraron={} emitidos={} entregados={}",
+                    fps_log_at.elapsed().as_secs(),
+                    c_cap,
+                    c_in,
+                    c_emit,
+                    c_queued
+                );
+                c_cap = 0;
+                c_in = 0;
+                c_emit = 0;
+                c_queued = 0;
+                fps_log_at = std::time::Instant::now();
+            }
             let t0 = std::time::Instant::now();
             let captured = match capturer.next_frame() {
-                Ok(f) => Some(f),
+                Ok(f) => {
+                    c_cap += 1;
+                    Some(f)
+                }
                 Err(anyremote_capture::CaptureError::Timeout) => {
                     // Pantalla estática: DXGI no entrega nada nuevo (QW-1 salta
                     // los frames de solo-cursor). Reemitir el último como mucho
@@ -455,6 +482,7 @@ pub fn spawn_video_task(
                 }
                 continue;
             };
+            c_in += 1;
             // Fija la resolución nativa con el primer frame.
             if w == 0 || h == 0 {
                 w = captured.width;
@@ -519,7 +547,11 @@ pub fn spawn_video_task(
                 empty_run = empty_run.saturating_add(1);
             } else {
                 empty_run = 0;
-                let _ = out.try_send(VideoMsg::Frame(enc)); // backpressure: descarte
+                c_emit += 1;
+                // backpressure: descarte (contado como emitido≠entregado)
+                if out.try_send(VideoMsg::Frame(enc)).is_ok() {
+                    c_queued += 1;
+                }
             }
 
             // Control adaptativo de calidad: pista de RED (C-13, la observa
