@@ -436,6 +436,25 @@ void main() {
         reason: 'sin el caso, el registro solo mostraba el tipo genérico');
   });
 
+  testWidgets('C-28: el visor registra su tasa cada5 s', (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close());
+    // El Timer se crea en la zona real (runAsync) → esperas reales.
+    await tester.runAsync(() async {
+      st.debugStartViewer(server.port);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await Future<void>.delayed(const Duration(seconds: 5));
+    });
+    // En modo visor el Registro está OCULTO (C-10) → se cierra el visor
+    // para poder asertar la entrada del log (el archivo ya la tiene).
+    st.debugStopViewerForTest();
+    await tester.pump();
+    expect(find.textContaining('fps render'), findsWidgets,
+        reason: 'C-28: cada5 s debe registrarse la tasa del visor');
+  });
+
   testWidgets('C-27: los errores de vídeo se tasan en el registro', (tester) async {
     await tester.pumpWidget(const AnyremoteApp());
     final st = tester.state(find.byType(HomePage)) as dynamic;

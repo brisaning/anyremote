@@ -16,6 +16,7 @@
 //! Si nada sirve, el llamador (`video.rs`) cae a VP9/libvpx con evento
 //! `video_backend`. Las conversiones de color viven en [`crate::conv`].
 
+use std::collections::VecDeque;
 use std::sync::OnceLock;
 
 use anyremote_capture::Frame;
@@ -428,6 +429,26 @@ fn normalize_seq_header(blob: Vec<u8>) -> Vec<u8> {
     }
 }
 
+/// C-28: tope de la cola de salida pendiente (≈0,5 s a15 fps).
+const PENDING_CAP: usize = 8;
+
+/// C-28: elige la pieza a emitir — lo MÁS VIEJO primero (el drenaje previo
+/// corresponde al frame ANTERIOR; antes se tiraba con `let _ =` y se
+/// perdían frames en interacción intensa: campo14/11 ≈1,5 fps emitidos).
+/// La cola queda acotada a `cap` (con el MFT rezagado se descarta lo nuevo
+/// para no acumular latencia sin límite).
+fn pick_output(pending: &mut VecDeque<Vec<u8>>, current: Vec<u8>, cap: usize) -> Vec<u8> {
+    match pending.pop_front() {
+        Some(old) => {
+            if !current.is_empty() && pending.len() < cap {
+                pending.push_back(current);
+            }
+            old
+        }
+        None => current,
+    }
+}
+
 pub struct MfH264Encoder {
     transform: Option<mf::IMFTransform>,
     fps: u32,
@@ -445,6 +466,8 @@ pub struct MfH264Encoder {
     last_rebuild: Option<std::time::Instant>,
     /// C-26: ¿ya se logueó el diagnóstico de framing de esta sesión?
     framing_logged: bool,
+    /// C-28: salidas drenadas esperando turno (FIFO, tope [PENDING_CAP]).
+    pending: VecDeque<Vec<u8>>,
 }
 
 // Los MFT son pointers COM sin `Send` (NonNull). Seguridad: ambos wrappers
@@ -468,6 +491,7 @@ impl MfH264Encoder {
             seq_hdr: Vec::new(),
             last_rebuild: None,
             framing_logged: false,
+            pending: VecDeque::new(),
         }
     }
 
@@ -590,10 +614,16 @@ impl VideoEncoder for MfH264Encoder {
             .clone()
             .ok_or_else(|| CodecError::Encode("sin MFT".into()))?;
         // Si la entrada no está libre, drena antes (evita MF_E_NOTACCEPTING).
+        // C-28: ese drenaje traía la salida PENDIENTE del frame ANTERIOR —
+        // antes se TIRABA (`let _ =`) y se perdían frames sistemáticamente
+        // en interacción intensa (campo14/11: ~1,5 fps emitidos con la
+        // captura a15). Ahora se conserva para emitirla en orden (FIFO).
         let status = unsafe { t.GetInputStatus(0) }.unwrap_or(1);
-        if status & 1 == 0 {
-            let _ = self.drain(&t)?;
-        }
+        let pre_raw = if status & 1 == 0 {
+            self.drain(&t)?
+        } else {
+            None
+        };
         self.pack_nv12(frame)?;
         let fps = self.fps.max(1) as i64;
         let time = (self.seq as i64) * 10_000_000 / fps;
@@ -607,7 +637,7 @@ impl VideoEncoder for MfH264Encoder {
             t.ProcessInput(0, &input.sample, 0)
                 .map_err(|e| CodecError::Encode(format!("ProcessInput: {e}")))?;
         }
-        let mut payload = match self.drain(&t) {
+        let payload = match self.drain(&t) {
             Ok(v) => v.unwrap_or_default(),
             Err(err) if matches!(&err, CodecError::Encode(m) if m.starts_with("MF_E_BUFFERTOOSMALL")) =>
             {
@@ -635,6 +665,14 @@ impl VideoEncoder for MfH264Encoder {
             }
             Err(e) => return Err(e),
         };
+        // C-28: emite lo MÁS VIEJO primero (el pre-drenaje corresponde al
+        // frame anterior); la cola queda acotada a [PENDING_CAP].
+        if let Some(raw) = pre_raw {
+            if self.pending.len() < PENDING_CAP {
+                self.pending.push_back(raw);
+            }
+        }
+        let mut payload = pick_output(&mut self.pending, payload, PENDING_CAP);
         self.load_seq_header(&t);
         // C-26: diagnóstico de framing (una vez por sesión) — en el campo se
         // ve qué dio exactamente el MFT y si hizo falta el prepend.
@@ -699,6 +737,7 @@ impl VideoEncoder for MfH264Encoder {
         if fresh {
             self.transform = None;
             self.seq_hdr.clear();
+            self.pending.clear(); // salidas del MFT anterior (seq_hdr nuevo)
         }
         true
     }
@@ -848,6 +887,30 @@ mod tests {
         assert!(produced > 0, "frames a 720p");
         let out = decoded.expect("algún frame 720p decodifica con OpenH264");
         assert_eq!((out.width, out.height), (1280, 720));
+    }
+
+    /// C-28: el pre-drenaje (frame anterior) se emite ANTES que el actual
+    /// y la cola queda acotada (antes ese drenaje se tiraba → ~1,5 fps).
+    #[test]
+    fn pick_output_keeps_order_and_caps_pending() {
+        // Sin cola → sale el actual.
+        let mut pending = VecDeque::new();
+        assert_eq!(pick_output(&mut pending, vec![1], 8), vec![1]);
+        // Pre-drenaje (más viejo) primero; el actual queda encolado (FIFO).
+        pending.push_back(vec![9]);
+        assert_eq!(pick_output(&mut pending, vec![2], 8), vec![9]);
+        assert_eq!(pick_output(&mut pending, vec![3], 8), vec![2]);
+        assert_eq!(pick_output(&mut pending, Vec::new(), 8), vec![3]);
+        // Acotado: pre-drenaje + actual en cada vuelta no desborda.
+        let mut pending = VecDeque::new();
+        for i in 0..30u8 {
+            pending.push_back(vec![0xF0]);
+            let _ = pick_output(&mut pending, vec![i], 8);
+        }
+        assert!(pending.len() <= 8, "cola acotada: {}", pending.len());
+        // Actual vacío → no encola basura.
+        let mut pending = VecDeque::new();
+        assert!(pick_output(&mut pending, Vec::new(), 8).is_empty());
     }
 
     /// C-26: la cabecera del MFT se normaliza a Annex-B en el límite
