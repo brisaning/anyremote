@@ -97,7 +97,7 @@ pub fn scale_frame(src: &Frame, w: u32, h: u32) -> Frame {
 // C-13: umbrales de la adaptación por RED (decisión documentada en
 // `evidence/net-adapt-gate.md`). El WiFi en campo marcaba 57–782 ms y la LAN
 // <10 ms: 200/100 separan congestión real de ruido. Confirmación de 3
-// observaciones (los latidos llegan 1/s), recuperación a los 10 con 20 s de
+// observaciones (los latidos llegan 1/s), recuperación a los 5 (C-A1) con 20 s de
 // cooldown anti-oscilación. La escalera es la PROBADA (bitrate primero,
 // escala después); el fps no se toca (`--video-fps` ya tiene su suelo).
 /// C-27: exceso de RTT sobre el mínimo de la sesión — señal de congestión
@@ -112,7 +112,7 @@ pub(crate) fn net_excess(rtt_ms: u32, rtt_min_ms: u32) -> u32 {
 const NET_RTT_HIGH_MS: u32 = 200;
 const NET_RTT_LOW_MS: u32 = 100;
 const NET_CONFIRM: u32 = 3;
-const NET_RECOVER: u32 = 10;
+const NET_RECOVER: u32 = 5; // C-A1: era10 — con jitter real nunca se acumulaban10 seguidos
 const NET_COOLDOWN: u32 = 20;
 
 /// Decisión del controlador adaptativo de calidad.
@@ -164,6 +164,16 @@ impl AdaptState {
         }
     }
 
+    /// C-A2: presupuesto «sano» por tamaño — 1 bit por píxel, acotado
+    /// entre 4× suelo y el tope. La fórmula anterior `w*h*3` REINFLABA el
+    /// bitrate en cada escalón de escala (1632×918 → 4,47 M) →
+    /// re-congestión → bucle que arrastró la calidad hasta850x478@200k
+    /// (campo15/11: texto ilegible).
+    fn size_bps(&self, w: u32, h: u32) -> usize {
+        let floor = (self.min_bps * 4).min(self.max_bps);
+        ((w as usize) * (h as usize)).clamp(floor, self.max_bps)
+    }
+
     /// Observa un frame codificado; decide adaptar cada ~60 frames.
     pub fn observe(&mut self, encode_ms: f64, budget_ms: f64) -> Option<AdaptDecision> {
         self.ema_ms = if self.ema_ms <= 0.0 {
@@ -190,9 +200,16 @@ impl AdaptState {
             let (w0, h0) = self.size;
             let nw = ((w0 as f32 * 0.85) as u32).max(320);
             let nh = ((h0 as f32 * 0.85) as u32).max(180);
+            // C-A2: tope de legibilidad — la escalera no baja del50 % del
+            // tamaño inicial (el texto muere antes que el movimiento).
+            let floor_w = (self.initial_size.0 as f32 * 0.5) as u32;
+            let floor_h = (self.initial_size.1 as f32 * 0.5) as u32;
+            if nw < floor_w || nh < floor_h {
+                return None; // suelo de legibilidad: solo bitrate/recuperación
+            }
             if (nw, nh) != self.size {
                 self.size = (nw, nh);
-                self.bps = (nw as usize * nh as usize * 3).max(150_000);
+                self.bps = self.size_bps(nw, nh);
                 return Some(AdaptDecision {
                     video_size: Some(self.size),
                     target_bps: None,
@@ -210,9 +227,7 @@ impl AdaptState {
                 self.size = self.initial_size;
                 // QW-3: el tope también rige al restaurar la escala (antes el
                 // bitrate «saltaba» el tope justo aquí — fix en el mismo ciclo).
-                self.bps = (self.size.0 as usize * self.size.1 as usize * 3)
-                    .max(150_000)
-                    .min(self.max_bps);
+                self.bps = self.size_bps(self.size.0, self.size.1);
                 return Some(AdaptDecision {
                     video_size: Some(self.size),
                     target_bps: None,
@@ -248,11 +263,15 @@ impl AdaptState {
         if rtt_ms <= NET_RTT_LOW_MS {
             self.net_low = self.net_low.saturating_add(1);
             self.net_high = 0;
-        } else {
+        } else if rtt_ms >= NET_RTT_HIGH_MS {
+            self.net_high = self.net_high.saturating_add(1);
             self.net_low = 0;
-            if rtt_ms >= NET_RTT_HIGH_MS {
-                self.net_high = self.net_high.saturating_add(1);
-            }
+        } else {
+            // Zona neutral (C-A1): antes SE BORRABA net_low → con el jitter
+            // intermedio de un enlace real (WAN/relay) nunca alcanzaba la
+            // recuperación y la escalera solo bajaba (campo15/11). Ahora
+            // solo decae; net_high no se toca (evidencia previa intacta).
+            self.net_low = self.net_low.saturating_sub(1);
         }
 
         if self.net_high >= NET_CONFIRM {
@@ -271,11 +290,16 @@ impl AdaptState {
             let (w0, h0) = self.size;
             let nw = ((w0 as f32 * 0.85) as u32).max(320);
             let nh = ((h0 as f32 * 0.85) as u32).max(180);
+            // C-A2: tope de legibilidad — la escalera no baja del50 % del
+            // tamaño inicial (el texto muere antes que el movimiento).
+            let floor_w = (self.initial_size.0 as f32 * 0.5) as u32;
+            let floor_h = (self.initial_size.1 as f32 * 0.5) as u32;
+            if nw < floor_w || nh < floor_h {
+                return None; // suelo de legibilidad: solo bitrate/recuperación
+            }
             if (nw, nh) != self.size {
                 self.size = (nw, nh);
-                self.bps = (nw as usize * nh as usize * 3)
-                    .max(150_000)
-                    .min(self.max_bps);
+                self.bps = self.size_bps(nw, nh);
                 return Some(AdaptDecision {
                     video_size: Some(self.size),
                     target_bps: None,
@@ -293,9 +317,7 @@ impl AdaptState {
             self.net_congested = false;
             if self.size != self.initial_size {
                 self.size = self.initial_size;
-                self.bps = (self.size.0 as usize * self.size.1 as usize * 3)
-                    .max(150_000)
-                    .min(self.max_bps);
+                self.bps = self.size_bps(self.size.0, self.size.1);
                 return Some(AdaptDecision {
                     video_size: Some(self.size),
                     target_bps: None,
@@ -643,6 +665,69 @@ mod tests {
         assert_eq!(reemit_gap(0), Duration::from_secs(1));
         assert!(reemit_gap(1) < Duration::from_millis(300));
         assert!(reemit_gap(u32::MAX) < Duration::from_millis(300));
+    }
+
+    /// C-A1: la zona neutral degrada `net_low` en vez de borrarlo — con
+    /// jitter intermedio (enlaces reales) la recuperación sigue alcanzable.
+    #[test]
+    fn net_low_survives_neutral_jitter() {
+        let mut s = AdaptState::new((1280, 720), Some(3_000_000));
+        // Congestión (3ª muestra) → baja bitrate + cooldown20 + net_low=0.
+        assert_eq!(s.observe_net(300), None, "1ª muestra");
+        assert_eq!(s.observe_net(300), None, "2ª muestra");
+        let step = s.observe_net(300).expect("3ª muestra → decisión");
+        assert_eq!(step.reason, "red_bitrate");
+        assert!(s.net_congested);
+        //5 sanas durante el cooldown → net_low=5 (bloqueado por cooldown).
+        for _ in 0..5 {
+            assert_eq!(s.observe_net(0), None, "cooldown activo");
+        }
+        // Jitter neutral (100–200): ANTES borraba net_low (→0, en WAN
+        // nunca se recuperaba); ahora solo DECAE (→4) — assert directo.
+        assert_eq!(s.observe_net(150), None);
+        assert_eq!(s.net_low, 4, "la zona neutral decae, no borra");
+        // Sano hasta agotar el cooldown → recupera (net_low intacto).
+        let mut got = None;
+        for _ in 0..20 {
+            got = got.or_else(|| s.observe_net(0));
+        }
+        let d = got.expect("recupera pese al jitter neutro previo");
+        assert_eq!(d.reason, "red_recupera_bitrate");
+    }
+
+    /// C-A2: la escalera no baja del50 % del inicial y el bitrate no se
+    /// reinfla en cada escalón (campo15/11:6 escalas en2 min sin
+    /// recuperación →850x478@200k, texto ilegible).
+    #[test]
+    fn scale_ladder_is_capped_and_does_not_reinflate() {
+        let mut s = AdaptState::new((1920, 1080), Some(6_000_000));
+        let mut escalas = 0;
+        for _ in 0..150 {
+            if let Some(d) = s.observe_net(500) {
+                if d.reason == "red_escala" {
+                    escalas += 1;
+                    let (w, h) = s.size;
+                    assert!(
+                        s.bps <= (w as usize * h as usize).max(s.min_bps * 4),
+                        "no reinfla a w*h*3: {} (tamaño {}x{})",
+                        s.bps,
+                        w,
+                        h
+                    );
+                    assert!(
+                        s.bps >= (s.min_bps * 4).min(s.max_bps),
+                        "bump conservador: {}",
+                        s.bps
+                    );
+                }
+            }
+        }
+        assert!(escalas > 0 && escalas <= 6, "escalera acotada: {escalas}");
+        assert!(
+            s.size.0 >= 960 && s.size.1 >= 540,
+            "nunca por debajo del50 %: {:?}",
+            s.size
+        );
     }
 
     fn gradient4x4() -> Frame {
