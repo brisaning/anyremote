@@ -253,6 +253,83 @@ async fn direct_failure_falls_back_to_relay() {
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }
 
+/// 4) C-30: la resolución por LAN (broadcast) apunta a un puerto CERRADO
+///    (firewall/equipo bloqueado) → lo directo falla → se **re-consulta el
+///    rendezvous** y la sesión sigue por relay. Antes el daemon moría con
+///    `conexion directa ... timeout` y sin fallback (campo Julie→Brian).
+#[tokio::test]
+async fn lan_resolved_direct_failure_retries_rdv_and_uses_relay() {
+    let rdv = start_rdv().await;
+    let cfg_dir = mk("lan-retry");
+    let bind_port = free_port().await;
+    let closed_port = free_port().await; // lo que anuncia el "LAN"
+    let disc_c = free_port().await;
+    let disc_h = free_port().await;
+    let node_id = anyremote_identity::Identity::load_or_generate(&cfg_dir)
+        .expect("identidad")
+        .node_id()
+        .to_string();
+
+    // Descubrimiento "de la LAN": anuncia un puerto CERRADO para el ID.
+    let _disc =
+        anyremote_transport::discover::DiscoveryServer::spawn(disc_c, node_id.clone(), closed_port)
+            .await
+            .expect("discovery");
+
+    let listen_events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let listen = tokio::spawn({
+        let cfg_dir = cfg_dir.clone();
+        let le = listen_events.clone();
+        let rdv = rdv.to_string();
+        async move {
+            run_listen(listen_cfg(
+                cfg_dir,
+                bind_port,
+                disc_h,
+                Some(&rdv),
+                Some(closed_port), // el endpoint directo del rdv también está cerrado
+                le,
+            ))
+            .await
+        }
+    });
+    wait_listening(&listen_events).await;
+
+    let ctl_events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let controller = tokio::spawn({
+        let cfg_dir = cfg_dir.clone();
+        let ce = ctl_events.clone();
+        let rdv = rdv.to_string();
+        let id = node_id.clone();
+        async move { run_connect(connect_cfg(cfg_dir, &id, disc_c, Some(&rdv), ce)).await }
+    });
+
+    controller
+        .await
+        .expect("join ctl")
+        .expect("sesion por relay tras reintento rdv");
+    let _srv = listen
+        .await
+        .expect("join listener")
+        .expect("listener completo");
+
+    let ctl_text = ctl_events.lock().unwrap().join("\n");
+    assert!(
+        ctl_text.contains("\"source\":\"broadcast\""),
+        "resolución por LAN:\n{ctl_text}"
+    );
+    assert!(
+        ctl_text.contains("\"event\":\"relay_fallback\"") && ctl_text.contains("rdv_retry"),
+        "fallback a relay con reintento al rdv:\n{ctl_text}"
+    );
+    assert!(
+        ctl_text.contains("\"event\":\"session_active\""),
+        "sesión completa:\n{ctl_text}"
+    );
+
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+}
+
 /// 3) Configuración por FICHERO `<config>/rdv` (sin bandera) y cadena de
 ///    error cuando el id no está registrado (evento `rdv_error`).
 #[tokio::test]
