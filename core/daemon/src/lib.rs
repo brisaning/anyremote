@@ -2004,27 +2004,37 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
     } else {
         match tcp_transport_stage(&label, &cfg, TcpSource::Direct(&addr)).await {
             Ok(v) => Some(v),
-            Err(direct_err) => match &relay {
+            Err(direct_err) => {
                 // C-17: lo directo falló y el rendezvous dio ticket → RELAY
                 // (WAN sin reenvío de puertos). El TLS de la sesión se monta
                 // sobre la tubería: E2E, el relay solo transporta cifrado.
-                Some((rdv_addr, ticket)) => {
-                    emit.emit(ev(
-                        "relay_fallback",
-                        serde_json::json!({
-                            "addr": addr.clone(),
-                            "direct": format!("{direct_err:?}"),
-                        }),
-                    ));
-                    match tcp_transport_stage(&label, &cfg, TcpSource::Relay(rdv_addr, ticket))
-                        .await
-                    {
-                        Ok(v) => Some(v),
-                        Err(e) => return Err(e),
+                // C-30: si la resolución fue por LAN/caché (sin ticket), se
+                // re-consulta el rdv antes de rendirse; si tampoco hay
+                // ticket se propaga el error directo original.
+                let had_ticket = relay.is_some();
+                let ticket =
+                    relay_ticket_on_direct_failure(relay, expected_id.as_ref(), &cfg, &mut emit)
+                        .await;
+                match ticket {
+                    Some((rdv_addr, ticket)) => {
+                        emit.emit(ev(
+                            "relay_fallback",
+                            serde_json::json!({
+                                "addr": addr.clone(),
+                                "direct": format!("{direct_err:?}"),
+                                "source": if had_ticket { "rdv" } else { "rdv_retry" },
+                            }),
+                        ));
+                        match tcp_transport_stage(&label, &cfg, TcpSource::Relay(&rdv_addr, &ticket))
+                            .await
+                        {
+                            Ok(v) => Some(v),
+                            Err(e) => return Err(e),
+                        }
                     }
+                    None => return Err(direct_err),
                 }
-                None => return Err(direct_err),
-            },
+            }
         }
     };
 
@@ -2560,6 +2570,36 @@ async fn resolve_id(
          firewall add rule name=\"anyremote-discover\" dir=in action=allow protocol=UDP localport={}",
         target.port()
     )))
+}
+
+/// C-30: ticket de relay para reintentar cuando lo directo falló.
+///
+/// Si la resolución vino por LAN (broadcast) o caché no hay ticket. Se
+/// re-consulta el servidor de encuentro AHORA: el anfitrión puede estar
+/// registrado y el relay alcanzable aunque su puerto directo esté bloqueado
+/// (campo 2026-11-17, Julie→Brian: broadcast OK, `192.168.6.230:21118` con
+/// timeout por firewall y el daemon moría sin fallback).
+async fn relay_ticket_on_direct_failure(
+    relay: Option<(std::net::SocketAddr, String)>,
+    expected_id: Option<&NodeId>,
+    cfg: &DaemonConfig,
+    emit: &mut Emit,
+) -> Option<(std::net::SocketAddr, String)> {
+    if relay.is_some() {
+        return relay;
+    }
+    let id = expected_id?;
+    let rdv = rdv_target_of(cfg)?;
+    match rendezvous_resolve(&rdv, id).await {
+        Ok((rdv_addr, ans)) => Some((rdv_addr, ans.ticket)),
+        Err(e) => {
+            emit.emit(ev(
+                "rdv_error",
+                serde_json::json!({ "target": rdv, "detail": e }),
+            ));
+            None
+        }
+    }
 }
 
 /// Decodifica un `VideoFrame` del wire y alimenta el preview local (Hito M2).
