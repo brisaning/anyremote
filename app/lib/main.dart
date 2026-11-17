@@ -290,10 +290,15 @@ class _HomePageState extends State<HomePage> {
   };
 
   /// Tope de ancho de banda por calidad en kbps (QW-3: `--max-bitrate`).
+  ///
+  /// C-32 (campo 17/11): 3/6/8 Mbps daban 0,06–0,22 bits/píxel/frame y el
+  /// texto del escritorio quedaba ilegible en las tres calidades. Con LAN
+  /// directa (rtt 3–4 ms) sobran 6–25 Mbps; en WAN el adaptativo sigue
+  /// bajando hasta lo que aguante el enlace (el tope solo pone el techo).
   static const Map<String, int> _qualityKbps = {
-    '720p': 3000,
-    '1080p': 6000,
-    'Nativa': 8000,
+    '720p': 6000,
+    '1080p': 15000,
+    'Nativa': 25000,
   };
   /// Botón mantenido en el visor (0/1/2) para emitir su `up` al soltar.
   int? _heldButton;
