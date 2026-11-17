@@ -2025,8 +2025,12 @@ pub async fn run_connect(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonErro
                                 "source": if had_ticket { "rdv" } else { "rdv_retry" },
                             }),
                         ));
-                        match tcp_transport_stage(&label, &cfg, TcpSource::Relay(&rdv_addr, &ticket))
-                            .await
+                        match tcp_transport_stage(
+                            &label,
+                            &cfg,
+                            TcpSource::Relay(&rdv_addr, &ticket),
+                        )
+                        .await
                         {
                             Ok(v) => Some(v),
                             Err(e) => return Err(e),
