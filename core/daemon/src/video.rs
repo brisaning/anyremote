@@ -56,34 +56,67 @@ impl VideoMode {
 }
 
 /// Escalado bilineal (BGRA8) — calidad de previsualización/streaming (M2+).
+///
+/// C-31 (campo 17/11): versión separable con pesos enteros 16.16 y accesos
+/// secuenciales. La anterior hacía, por cada píxel de salida, 4 lecturas
+/// dispersas y 3 canales en `f32`; con escritorio 4K→720p el bucle de vídeo
+/// (serie) bajaba a 1–5 fps en el anfitrión. Misma semántica: bilineal,
+/// alfa = 255.
 pub fn scale_frame(src: &Frame, w: u32, h: u32) -> Frame {
     if src.width == w && src.height == h {
         return src.clone();
     }
-    let (sw, sh) = (src.width.max(1), src.height.max(1));
-    let mut data = vec![0u8; (w * h * 4) as usize];
-    for y in 0..h {
-        let fy = (y as f32 + 0.5) * sh as f32 / h as f32 - 0.5;
+    let (sw, sh) = (src.width.max(1) as usize, src.height.max(1) as usize);
+    let (dw, dh) = (w as usize, h as usize);
+
+    // Tablas fijas (16.16): (x0, x1, peso) por columna/fila de salida.
+    let mut xtab: Vec<(usize, usize, u32)> = Vec::with_capacity(dw);
+    for x in 0..dw {
+        let fx = (x as f64 + 0.5) * sw as f64 / dw as f64 - 0.5;
+        let x0 = fx.floor().max(0.0) as usize;
+        let x1 = (x0 + 1).min(sw - 1);
+        let wx = ((fx - x0 as f64).clamp(0.0, 1.0) * 65536.0).round() as u32;
+        xtab.push((x0, x1, wx));
+    }
+    let mut ytab: Vec<(usize, usize, u32)> = Vec::with_capacity(dh);
+    for y in 0..dh {
+        let fy = (y as f64 + 0.5) * sh as f64 / dh as f64 - 0.5;
         let y0 = fy.floor().max(0.0) as usize;
-        let y1 = (y0 + 1).min(sh as usize - 1);
-        let wy = (fy - y0 as f32).clamp(0.0, 1.0);
-        for x in 0..w {
-            let fx = (x as f32 + 0.5) * sw as f32 / w as f32 - 0.5;
-            let x0 = fx.floor().max(0.0) as usize;
-            let x1 = (x0 + 1).min(sw as usize - 1);
-            let wx = (fx - x0 as f32).clamp(0.0, 1.0);
-            let di = ((y * w + x) * 4) as usize;
+        let y1 = (y0 + 1).min(sh - 1);
+        let wy = ((fy - y0 as f64).clamp(0.0, 1.0) * 65536.0).round() as u32;
+        ytab.push((y0, y1, wy));
+    }
+
+    // Pasada horizontal: src (sw×sh) → scratch (dw×sh), filas contiguas.
+    let mut scratch = vec![0u8; dw * sh * 4];
+    for y in 0..sh {
+        let row = &src.data[y * sw * 4..(y + 1) * sw * 4];
+        let out_row = &mut scratch[y * dw * 4..(y + 1) * dw * 4];
+        for (x, &(x0, x1, wx)) in xtab.iter().enumerate() {
+            let (i0, i1, o) = (x0 * 4, x1 * 4, x * 4);
             for c in 0..3 {
-                let p00 = src.data[(y0 * sw as usize + x0) * 4 + c] as f32;
-                let p10 = src.data[(y0 * sw as usize + x1) * 4 + c] as f32;
-                let p01 = src.data[(y1 * sw as usize + x0) * 4 + c] as f32;
-                let p11 = src.data[(y1 * sw as usize + x1) * 4 + c] as f32;
-                let top = p00 + (p10 - p00) * wx;
-                let bot = p01 + (p11 - p01) * wx;
-                let v = top + (bot - top) * wy;
-                data[di + c] = v.round().clamp(0.0, 255.0) as u8;
+                let a = row[i0 + c] as u32;
+                let b = row[i1 + c] as u32;
+                out_row[o + c] = ((a * (65536 - wx) + b * wx) >> 16).min(255) as u8;
             }
-            data[di + 3] = 255;
+            out_row[o + 3] = 255;
+        }
+    }
+
+    // Pasada vertical: scratch (dw×sh) → salida (dw×dh).
+    let mut data = vec![0u8; dw * dh * 4];
+    for (y, &(y0, y1, wy)) in ytab.iter().enumerate() {
+        let r0 = &scratch[y0 * dw * 4..(y0 + 1) * dw * 4];
+        let r1 = &scratch[y1 * dw * 4..(y1 + 1) * dw * 4];
+        let o = y * dw * 4;
+        for x in 0..dw {
+            let i = x * 4;
+            for c in 0..3 {
+                let a = r0[i + c] as u32;
+                let b = r1[i + c] as u32;
+                data[o + i + c] = ((a * (65536 - wy) + b * wy) >> 16).min(255) as u8;
+            }
+            data[o + i + 3] = 255;
         }
     }
     Frame {
@@ -448,6 +481,10 @@ pub fn spawn_video_task(
         let mut c_in: u64 = 0;
         let mut c_emit: u64 = 0;
         let mut c_queued: u64 = 0;
+        // C-31: tiempos por etapa (ms) para localizar el cuello del bucle.
+        let mut t_cap_ms: f64 = 0.0;
+        let mut t_scale_ms: f64 = 0.0;
+        let mut t_enc_ms: f64 = 0.0;
 
         loop {
             if stop.load(Ordering::Relaxed) {
@@ -456,23 +493,32 @@ pub fn spawn_video_task(
             // C-28: log de tasa (stderr → `[listener-err]` en el ui.log).
             if fps_log_at.elapsed() >= Duration::from_secs(5) {
                 eprintln!(
-                    "[video] fps ({} s): captura={} entraron={} emitidos={} entregados={}",
+                    "[video] fps ({} s): captura={} entraron={} emitidos={} entregados={} · captura_ms={:.1} escala_ms={:.1} encode_ms={:.1}",
                     fps_log_at.elapsed().as_secs(),
                     c_cap,
                     c_in,
                     c_emit,
-                    c_queued
+                    c_queued,
+                    if c_cap > 0 { t_cap_ms / c_cap as f64 } else { 0.0 },
+                    if c_in > 0 { t_scale_ms / c_in as f64 } else { 0.0 },
+                    if c_in > 0 { t_enc_ms / c_in as f64 } else { 0.0 },
                 );
                 c_cap = 0;
                 c_in = 0;
                 c_emit = 0;
                 c_queued = 0;
+                t_cap_ms = 0.0;
+                t_scale_ms = 0.0;
+                t_enc_ms = 0.0;
                 fps_log_at = std::time::Instant::now();
             }
             let t0 = std::time::Instant::now();
+            let t_cap = std::time::Instant::now();
+            let mut fresh_frame = false;
             let captured = match capturer.next_frame() {
                 Ok(f) => {
                     c_cap += 1;
+                    fresh_frame = true;
                     Some(f)
                 }
                 Err(anyremote_capture::CaptureError::Timeout) => {
@@ -497,6 +543,9 @@ pub fn spawn_video_task(
                 Err(_) if last_frame.is_none() => cold_start_gdi(&mut gdi_logged),
                 Err(_) => None, // error transitorio del backend: se reintenta
             };
+            if fresh_frame {
+                t_cap_ms += t_cap.elapsed().as_secs_f64() * 1000.0;
+            }
             let Some(captured) = captured else {
                 let elapsed = t0.elapsed();
                 if elapsed < period {
@@ -510,7 +559,9 @@ pub fn spawn_video_task(
                 w = captured.width;
                 h = captured.height;
             }
+            let t_scale = std::time::Instant::now();
             let frame = scale_frame(&captured, w, h);
+            t_scale_ms += t_scale.elapsed().as_secs_f64() * 1000.0;
             if adapt.is_none() {
                 adapt = Some(AdaptState::new((w, h), max_bps));
                 // QW-3: aplica el tope inicial (o el bitrate base) al encoder.
@@ -558,6 +609,7 @@ pub fn spawn_video_task(
                 }
             };
             let took_ms = te.elapsed().as_secs_f64() * 1000.0;
+            t_enc_ms += took_ms;
 
             preview.push(frame.width, frame.height, seq, &frame.data);
             seq = seq.wrapping_add(1);
@@ -766,6 +818,30 @@ mod tests {
             resolve_native(VideoMode::Test, (0, 0), (64, 64)),
             (1280, 720)
         );
+    }
+
+    #[test]
+    fn bilinear_scale_averages_2x2_block() {
+        // 2x2 con valores conocidos → 1x1 = media exacta (bilineal en el centro).
+        let mut data = vec![0u8; 2 * 2 * 4];
+        data[0] = 0; // (0,0) B
+        data[4] = 100; // (1,0) B
+        data[8] = 200; // (0,1) B
+        data[12] = 40; // (1,1) B
+        for i in 0..4 {
+            data[i * 4 + 3] = 255;
+        }
+        let src = Frame {
+            width: 2,
+            height: 2,
+            format: PixelFormat::Bgra8,
+            data,
+        };
+        let out = scale_frame(&src, 1, 1);
+        // horiz: 50 y 120; vert: (50 + 120) / 2 = 85
+        assert_eq!(out.data[0], 85);
+        assert_eq!(out.data[3], 255, "alfa opaco");
+        assert_eq!((out.width, out.height), (1, 1));
     }
 
     #[test]
