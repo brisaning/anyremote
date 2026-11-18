@@ -4,12 +4,13 @@
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, VkKeyScanW, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-    KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE,
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT,
-    MOUSE_EVENT_FLAGS, VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1,
-    VK_F10, VK_F11, VK_F12, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME,
-    VK_LEFT, VK_MENU, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
+    MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+    MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL,
+    VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F10, VK_F11, VK_F12, VK_F2, VK_F3, VK_F4,
+    VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME, VK_INSERT, VK_LEFT, VK_MENU, VK_NEXT, VK_NUMLOCK,
+    VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SCROLL, VK_SHIFT, VK_TAB, VK_UP,
 };
 
 use crate::{InputError, InputEvent, InputInjector, Key, MouseButton};
@@ -42,13 +43,27 @@ impl Default for SendInputInjector {
     }
 }
 
-/// (vk, requiere_shift) para una tecla del protocolo.
-fn vk_for(key: Key) -> Result<(u16, bool), InputError> {
+/// C-37: cómo inyectar una tecla lógica.
+enum Target {
+    /// Tecla física (VK) + si necesita Shift (la resuelve el teclado remoto).
+    Vk(u16, bool),
+    /// Carácter exacto por `KEYEVENTF_UNICODE` (acentos, ñ, €…): no depende del
+    /// layout del anfitrión y evita el bug de la dead key (antes se inyectaba
+    /// `´` y luego la vocal → `´o`).
+    Text(u16),
+}
+
+/// Convierte una tecla del protocolo en la inyección concreta.
+fn target_for(key: Key) -> Result<Target, InputError> {
     let (vk, shift) = match key {
         Key::Char(c) => {
+            // ASCII: VK (conserva atajos Ctrl+C, Ctrl+V…). No ASCII: Unicode.
+            if !c.is_ascii() {
+                return Ok(Target::Text(c as u32 as u16));
+            }
             let packed = unsafe { VkKeyScanW(c as u16) };
             if packed == -1 {
-                return Err(InputError::Unsupported(format!("tecla '{c}' sin VK")));
+                return Ok(Target::Text(c as u16));
             }
             ((packed as u16) & 0xff, ((packed as u16) & 0x100) != 0)
         }
@@ -66,6 +81,12 @@ fn vk_for(key: Key) -> Result<(u16, bool), InputError> {
         Key::Down => (VK_DOWN.0, true),
         Key::Home => (VK_HOME.0, true),
         Key::End => (VK_END.0, true),
+        Key::Insert => (VK_INSERT.0, true),
+        Key::PageUp => (VK_PRIOR.0, true),
+        Key::PageDown => (VK_NEXT.0, true),
+        Key::CapsLock => (VK_CAPITAL.0, false),
+        Key::NumLock => (VK_NUMLOCK.0, true),
+        Key::ScrollLock => (VK_SCROLL.0, false),
         Key::F1 => (VK_F1.0, false),
         Key::F2 => (VK_F2.0, false),
         Key::F3 => (VK_F3.0, false),
@@ -79,7 +100,27 @@ fn vk_for(key: Key) -> Result<(u16, bool), InputError> {
         Key::F11 => (VK_F11.0, false),
         Key::F12 => (VK_F12.0, false),
     };
-    Ok((vk, shift))
+    Ok(Target::Vk(vk, shift))
+}
+
+/// Entrada de teclado por carácter Unicode (sin VK, sin layout).
+fn text_input(unit: u16, up: bool) -> INPUT {
+    let mut flags = KEYEVENTF_UNICODE;
+    if up {
+        flags |= KEYEVENTF_KEYUP;
+    }
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: unit,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
 }
 
 fn key_input(vk: u16, up: bool, extended: bool) -> INPUT {
@@ -168,16 +209,91 @@ fn btn_flag(b: MouseButton, up: bool) -> MOUSE_EVENT_FLAGS {
 
 impl SendInputInjector {
     fn send_key(&self, key: Key, up: bool) -> Result<(), InputError> {
-        let (vk, shift) = vk_for(key)?;
-        let extended = matches!(
-            key,
-            Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End | Key::Delete
-        );
-        let mut inputs = Vec::with_capacity(2);
-        if shift {
-            inputs.push(key_input(VK_SHIFT.0, up, false));
+        match target_for(key)? {
+            Target::Text(unit) => Self::send(&[text_input(unit, up)]),
+            Target::Vk(vk, shift) => {
+                let extended = matches!(
+                    key,
+                    Key::Left
+                        | Key::Right
+                        | Key::Up
+                        | Key::Down
+                        | Key::Home
+                        | Key::End
+                        | Key::Delete
+                        | Key::Insert
+                        | Key::PageUp
+                        | Key::PageDown
+                        | Key::NumLock
+                );
+                let mut inputs = Vec::with_capacity(2);
+                if shift {
+                    inputs.push(key_input(VK_SHIFT.0, up, false));
+                }
+                inputs.push(key_input(vk, up, extended));
+                Self::send(&inputs)
+            }
         }
-        inputs.push(key_input(vk, up, extended));
-        Self::send(&inputs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C-37: los caracteres no ASCII van por `KEYEVENTF_UNICODE` (independiente
+    /// del layout del anfitrión); el bug de acentos venía de inyectar la dead
+    /// key (`´`) y luego la vocal.
+    #[test]
+    fn non_ascii_chars_use_unicode() {
+        assert!(matches!(target_for(Key::Char('á')), Ok(Target::Text(0xE1))));
+        assert!(matches!(target_for(Key::Char('ñ')), Ok(Target::Text(0xF1))));
+        assert!(matches!(target_for(Key::Char('ü')), Ok(Target::Text(0xFC))));
+        assert!(matches!(
+            target_for(Key::Char('€')),
+            Ok(Target::Text(0x20AC))
+        ));
+    }
+
+    /// ASCII conserva VK (los atajos Ctrl+C / Ctrl+V siguen siendo atajos).
+    #[test]
+    fn ascii_chars_keep_the_virtual_key() {
+        assert!(matches!(
+            target_for(Key::Char('a')),
+            Ok(Target::Vk(0x41, false))
+        ));
+        assert!(matches!(
+            target_for(Key::Char('A')),
+            Ok(Target::Vk(0x41, true))
+        ));
+    }
+
+    /// C-37: teclas de edición y bloqueos nuevas.
+    #[test]
+    fn editing_and_lock_keys_have_vk() {
+        assert!(matches!(
+            target_for(Key::Insert),
+            Ok(Target::Vk(0x2D, true))
+        ));
+        assert!(matches!(
+            target_for(Key::PageUp),
+            Ok(Target::Vk(0x21, true))
+        ));
+        assert!(matches!(
+            target_for(Key::PageDown),
+            Ok(Target::Vk(0x22, true))
+        ));
+        assert!(matches!(
+            target_for(Key::CapsLock),
+            Ok(Target::Vk(0x14, false))
+        ));
+        assert!(matches!(
+            target_for(Key::NumLock),
+            Ok(Target::Vk(0x90, true))
+        ));
+        assert!(matches!(
+            target_for(Key::ScrollLock),
+            Ok(Target::Vk(0x91, false))
+        ));
     }
 }

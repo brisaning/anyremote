@@ -109,6 +109,13 @@ int? keyCodeFor(LogicalKeyboardKey k) {
   if (k == LogicalKeyboardKey.arrowDown) return 9;
   if (k == LogicalKeyboardKey.home) return 10;
   if (k == LogicalKeyboardKey.end) return 11;
+  // C-37: edición/navegación y bloqueos que faltaban.
+  if (k == LogicalKeyboardKey.insert) return 12;
+  if (k == LogicalKeyboardKey.pageUp) return 13;
+  if (k == LogicalKeyboardKey.pageDown) return 14;
+  if (k == LogicalKeyboardKey.capsLock) return 23;
+  if (k == LogicalKeyboardKey.numLock) return 24;
+  if (k == LogicalKeyboardKey.scrollLock) return 25;
   if (k == LogicalKeyboardKey.controlLeft || k == LogicalKeyboardKey.controlRight) return 20;
   if (k == LogicalKeyboardKey.altLeft || k == LogicalKeyboardKey.altRight) return 21;
   if (k == LogicalKeyboardKey.shiftLeft || k == LogicalKeyboardKey.shiftRight) return 22;
@@ -126,6 +133,47 @@ int? keyCodeFor(LogicalKeyboardKey k) {
   if (k == LogicalKeyboardKey.f11) return 40;
   if (k == LogicalKeyboardKey.f12) return 41;
   return null;
+}
+
+/// C-37: acentos que Windows trata como **dead key** (no producen carácter
+/// hasta la siguiente pulsación).
+bool isDeadAccent(String ch) => ch == '´' || ch == '`' || ch == '^' || ch == '¨' || ch == '~';
+
+/// C-37: compone la dead key con la vocal/siguiente carácter. `null` si esa
+/// pareja no forma carácter compuesto.
+///
+/// Antes la app enviaba `´` y después la vocal: el anfitrión escribía `´o` en
+/// vez de `ó`. La composición se hace aquí (cliente) y viaja ya compuesta.
+String? composeDeadAccent(String dead, String base) {
+  const agudo = {
+    'a': 'á', 'e': 'é', 'i': 'í', 'o': 'ó', 'u': 'ú', 'y': 'ý',
+    'A': 'Á', 'E': 'É', 'I': 'Í', 'O': 'Ó', 'U': 'Ú', 'Y': 'Ý',
+  };
+  const grave = {
+    'a': 'à', 'e': 'è', 'i': 'ì', 'o': 'ò', 'u': 'ù',
+    'A': 'À', 'E': 'È', 'I': 'Ì', 'O': 'Ò', 'U': 'Ù',
+  };
+  const circunflejo = {
+    'a': 'â', 'e': 'ê', 'i': 'î', 'o': 'ô', 'u': 'û',
+    'A': 'Â', 'E': 'Ê', 'I': 'Î', 'O': 'Ô', 'U': 'Û',
+  };
+  const dieresis = {
+    'a': 'ä', 'e': 'ë', 'i': 'ï', 'o': 'ö', 'u': 'ü',
+    'A': 'Ä', 'E': 'Ë', 'I': 'Ï', 'O': 'Ö', 'U': 'Ü',
+  };
+  const tilde = {
+    'a': 'ã', 'n': 'ñ', 'o': 'õ',
+    'A': 'Ã', 'N': 'Ñ', 'O': 'Õ',
+  };
+  final tabla = switch (dead) {
+    '´' => agudo,
+    '`' => grave,
+    '^' => circunflejo,
+    '¨' => dieresis,
+    '~' => tilde,
+    _ => const <String, String>{},
+  };
+  return tabla[base];
 }
 
 /// Flecha del cursor remoto (C-11) — dibujo propio en canvas, sin assets.
@@ -264,6 +312,8 @@ class _HomePageState extends State<HomePage> {
   // flag D-07 que añade `--allow-input` al listener (denegado por defecto).
   final FocusNode _inputFocus = FocusNode();
   final Map<int, String> _heldChars = {};
+  /// C-37: dead key pendiente de componer (`´`, `` ` ``, `^`, `¨`, `~`).
+  String? _deadPending;
   bool _sessionActive = false;
   bool _acceptRemoteControl = false;
   bool _shareAudio = false;
@@ -662,6 +712,7 @@ class _HomePageState extends State<HomePage> {
             _sessionActive = false;
             _heldButton = null;
             _heldChars.clear();
+            _deadPending = null;
             _audioHint = '';
             _cursor.value = const _CursorState();
             // v0.8.2: con el listener repetidor, cerrar una sesión (p. ej. el
@@ -912,6 +963,14 @@ class _HomePageState extends State<HomePage> {
     final key = event.logicalKey;
     final code = keyCodeFor(key);
     if (code != null) {
+      // C-37: una dead key pendiente no debe perderse si la siguiente tecla
+      // no es un carácter: se envía suelta antes (como haría el SO).
+      if (down && _deadPending != null) {
+        final d = _deadPending!;
+        _deadPending = null;
+        _sendInput({'key': {'code': 0, 'ch': d, 'down': true}});
+        _sendInput({'key': {'code': 0, 'ch': d, 'down': false}});
+      }
       _sendInput({
         'key': {'code': code, 'down': down},
       });
@@ -924,6 +983,28 @@ class _HomePageState extends State<HomePage> {
           event is KeyDownEvent ? event.character : (event as KeyRepeatEvent).character;
       ch = (produced != null && produced.length == 1) ? produced : key.keyLabel;
       if (ch.length != 1) return KeyEventResult.ignored; // F5, Escape largo…
+      // C-37: la dead key no se envía; se compone con la siguiente pulsación.
+      if (isDeadAccent(ch)) {
+        _deadPending = ch;
+        return KeyEventResult.handled;
+      }
+      final dead = _deadPending;
+      if (dead != null) {
+        _deadPending = null;
+        if (ch == dead) {
+          // Doble pulsación (`´´`) → el acento suelto.
+          ch = dead;
+        } else {
+          final compuesto = composeDeadAccent(dead, ch);
+          if (compuesto != null) {
+            ch = compuesto;
+          } else {
+            // No componen: se envía el acento suelto y luego el carácter.
+            _sendInput({'key': {'code': 0, 'ch': dead, 'down': true}});
+            _sendInput({'key': {'code': 0, 'ch': dead, 'down': false}});
+          }
+        }
+      }
       _heldChars[key.keyId] = ch;
     } else {
       ch = _heldChars.remove(key.keyId);

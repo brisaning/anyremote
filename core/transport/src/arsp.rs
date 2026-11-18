@@ -230,7 +230,13 @@ fn key_from_code(code: u32, ch: &str) -> Option<anyremote_input::Key> {
         9 => Some(Key::Down),
         10 => Some(Key::Home),
         11 => Some(Key::End),
+        12 => Some(Key::Insert),
+        13 => Some(Key::PageUp),
+        14 => Some(Key::PageDown),
         20 => Some(Key::Ctrl),
+        23 => Some(Key::CapsLock),
+        24 => Some(Key::NumLock),
+        25 => Some(Key::ScrollLock),
         21 => Some(Key::Alt),
         22 => Some(Key::Shift),
         // F1..F12 (30..=41)
@@ -497,6 +503,34 @@ mod tests {
             input_event_from_wire(&proto::InputEventMsg { ev: None }),
             None
         );
+    }
+
+    /// C-37: códigos nuevos (edición/navegación y bloqueos).
+    #[test]
+    fn editing_and_lock_keys_map_from_wire_codes() {
+        use anyremote_input::{InputEvent, Key};
+        let key = |code: u32| proto::InputEventMsg {
+            ev: Some(proto::input_event_msg::Ev::Key(proto::Key {
+                code,
+                down: true,
+                extended: false,
+                ch: String::new(),
+            })),
+        };
+        for (code, want) in [
+            (12, Key::Insert),
+            (13, Key::PageUp),
+            (14, Key::PageDown),
+            (23, Key::CapsLock),
+            (24, Key::NumLock),
+            (25, Key::ScrollLock),
+        ] {
+            assert_eq!(
+                input_event_from_wire(&key(code)),
+                Some(InputEvent::KeyDown(want))
+            );
+        }
+        assert_eq!(input_event_from_wire(&key(15)), None);
     }
 
     /// Teclas de función F1..F12 (códigos 30..=41) — menores RF-02a.
