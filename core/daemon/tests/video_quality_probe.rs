@@ -1,9 +1,8 @@
-//! Sonda C-33 (ignorada en el gate): calidad real del pipeline completo
-//! captura → escala → H.264 → decode con **contenido en movimiento**
-//! (scroll), que es cuando el texto se degrada en campo.
+//! Sonda C-35 (ignorada en el gate): coste y calidad del encoder con el
+//! escritorio real, tras calentar (la creación del MFT no cuenta).
 //!
-//! Ejecutar: `cargo test -p anyremote-daemon --test video_quality_probe --
-//! --ignored --nocapture`.
+//! Ejecutar: `cargo test --release -p anyremote-daemon --test video_quality_probe
+//! -- --ignored --nocapture`
 
 use anyremote_capture::{initial_snapshot, Frame};
 use anyremote_codec::{encoder_for, CodecFormat, NativeDecoder, VideoDecoder};
@@ -55,53 +54,53 @@ fn scroll(src: &Frame, dx: u32) -> Frame {
     }
 }
 
+fn run(label: &str, w: u32, h: u32, src: &Frame, mbps: u64) {
+    let base = scale_frame(src, w, h);
+    let frames: Vec<Frame> = (0..30).map(|i| scroll(&base, i * 3)).collect();
+    let luma_src: Vec<Vec<u8>> = frames.iter().map(luma).collect();
+    let mut enc = encoder_for(CodecFormat::H264);
+    enc.set_target_bitrate((mbps * 1_000_000) as usize);
+    enc.set_fps(15);
+    let mut dec = NativeDecoder::new();
+    // Calentamiento (creación del MFT + primeros frames), fuera de la medida.
+    for f in frames.iter().take(6) {
+        let _ = enc.encode(f);
+    }
+    let mut sizes = Vec::new();
+    let mut best_psnr = 0.0f64;
+    let mut total_ms = 0.0f64;
+    for f in frames.iter().skip(6) {
+        let t = std::time::Instant::now();
+        let e = enc.encode(f).expect("encode");
+        total_ms += t.elapsed().as_secs_f64() * 1000.0;
+        if e.data.is_empty() {
+            continue;
+        }
+        sizes.push(e.data.len());
+        if let Ok(fr) = dec.decode(&e) {
+            let cur = luma(&fr);
+            let p = luma_src.iter().map(|s| psnr(s, &cur)).fold(0.0, f64::max);
+            best_psnr = best_psnr.max(p);
+        }
+    }
+    let total: usize = sizes.iter().sum();
+    let n = (frames.len() - 6) as f64;
+    eprintln!(
+        "{label} {w}x{h} @{mbps} Mbps · emitidos={}/{} · {:.1} KB/frame · {:.1} ms/frame · mejor PSNR {best_psnr:.1} dB",
+        sizes.len(),
+        frames.len() - 6,
+        total as f64 / sizes.len().max(1) as f64 / 1024.0,
+        total_ms / n
+    );
+}
+
 #[test]
 #[ignore]
-fn probe_scroll_quality() {
+fn probe_encoder() {
     let src = initial_snapshot().expect("snapshot del escritorio");
-    let base = scale_frame(&src, 1920, 1080);
     eprintln!("escritorio: {}x{}", src.width, src.height);
-    let frames: Vec<Frame> = (0..24).map(|i| scroll(&base, i * 3)).collect();
-    let luma_src: Vec<Vec<u8>> = frames.iter().map(luma).collect();
-
-    for mbps in [2u64, 6, 15] {
-        let mut enc = encoder_for(CodecFormat::H264);
-        enc.set_target_bitrate((mbps * 1_000_000) as usize);
-        enc.set_fps(15);
-        let mut dec = NativeDecoder::new();
-        let mut sizes = Vec::new();
-        for f in &frames {
-            let e = enc.encode(f).expect("encode");
-            if e.data.is_empty() {
-                continue;
-            }
-            sizes.push(e.data.len());
-            if let Ok(fr) = dec.decode(&e) {
-                // Latencia/lookahead del MFT: empareja contra la fuente MÁS
-                // parecida (no asumimos orden exacto de salida).
-                let cur = luma(&fr);
-                let mut best = (0.0f64, 0usize);
-                for (i, src_y) in luma_src.iter().enumerate() {
-                    let p = psnr(src_y, &cur);
-                    if p > best.0 {
-                        best = (p, i);
-                    }
-                }
-                eprintln!(
-                    "  {mbps}Mbps frame {} -> {:.1} KB · PSNR {:.1} dB (fuente #{})",
-                    sizes.len(),
-                    e.data.len() as f64 / 1024.0,
-                    best.0,
-                    best.1
-                );
-            }
-        }
-        let total: usize = sizes.iter().sum();
-        eprintln!(
-            "objetivo={mbps} Mbps · emitidos={} · total={} ({:.1} KB/frame)",
-            sizes.len(),
-            total,
-            total as f64 / sizes.len().max(1) as f64 / 1024.0
-        );
-    }
+    run("1080p", 1920, 1080, &src, 2);
+    run("1080p", 1920, 1080, &src, 6);
+    run("1080p", 1920, 1080, &src, 15);
+    run("nativa", 3840, 2160, &src, 25);
 }

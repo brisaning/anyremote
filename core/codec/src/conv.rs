@@ -47,6 +47,95 @@ pub fn bgra_to_i420(width: u32, height: u32, bgra: &[u8]) -> (Vec<u8>, Vec<u8>, 
     (y, u, v)
 }
 
+/// BGRA8 → NV12 **en una pasada** (C-35): Y por píxel y UV por bloque 2×2,
+/// escribiendo directamente en `out` (sin vectores intermedios ni allocs por
+/// frame). Medido: la cadena anterior (BGRA→I420 + I420→NV12) costaba 16 ms a
+/// 1080p y 52 ms a 4K — más que el propio encoder. Con una pasada: 7,6/29,8 ms;
+/// por bandas en paralelo baja otra vez (ver [`bgra_to_nv12_into`]).
+pub fn bgra_to_nv12_into(width: u32, height: u32, bgra: &[u8], out: &mut [u8]) {
+    let w = width as usize;
+    let h = height as usize;
+    debug_assert!(w.is_multiple_of(2) && h.is_multiple_of(2));
+    let y_len = w * h;
+    debug_assert!(out.len() >= y_len + y_len / 2);
+    debug_assert!(bgra.len() >= w * h * 4);
+
+    let (y_plane, uv_plane) = out.split_at_mut(y_len);
+    let pairs = h / 2;
+    // Hilos: solo compensa en frames grandes (el spawn cuesta ~0,1 ms).
+    let hilos = if h >= 720 {
+        std::thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(1)
+            .min(8)
+    } else {
+        1
+    };
+
+    if hilos <= 1 {
+        fill_nv12_band(w, bgra, 0, y_plane, uv_plane);
+        return;
+    }
+
+    // Reparto por filas de PARES: cada banda escribe sus filas Y y su fila UV.
+    let mut jobs = Vec::with_capacity(hilos);
+    let mut y_rest = y_plane;
+    let mut uv_rest = uv_plane;
+    for k in 0..hilos {
+        let p0 = pairs * k / hilos;
+        let p1 = pairs * (k + 1) / hilos;
+        let y_bytes = (p1 - p0) * 2 * w;
+        let uv_bytes = (p1 - p0) * w;
+        let (yb, y_next) = y_rest.split_at_mut(y_bytes);
+        let (ub, u_next) = uv_rest.split_at_mut(uv_bytes);
+        y_rest = y_next;
+        uv_rest = u_next;
+        jobs.push((p0, yb, ub));
+    }
+    std::thread::scope(|scope| {
+        for (p0, yb, ub) in jobs {
+            scope.spawn(move || fill_nv12_band(w, bgra, p0, yb, ub));
+        }
+    });
+}
+
+/// Rellena una banda de NV12: `pair0` es la primera fila de PARES (2 px).
+fn fill_nv12_band(w: usize, bgra: &[u8], pair0: usize, y: &mut [u8], uv: &mut [u8]) {
+    let rows = y.len() / w;
+    for r in 0..rows {
+        let row = pair0 * 2 + r;
+        let src = row * w * 4;
+        let dst = r * w;
+        for col in 0..w {
+            let i = src + col * 4;
+            let yy =
+                (77 * bgra[i + 2] as i32 + 150 * bgra[i + 1] as i32 + 29 * bgra[i] as i32) >> 8;
+            y[dst + col] = yy.clamp(0, 255) as u8;
+        }
+    }
+    // UV entrelazado: una fila por cada par de filas Y.
+    for p in 0..rows / 2 {
+        let row = (pair0 + p) * 2;
+        let uv_row = p * w;
+        for col in (0..w).step_by(2) {
+            let i = row * w * 4 + col * 4;
+            let j = i + w * 4;
+            let b =
+                (bgra[i] as i32 + bgra[i + 4] as i32 + bgra[j] as i32 + bgra[j + 4] as i32) >> 2;
+            let g =
+                (bgra[i + 1] as i32 + bgra[i + 5] as i32 + bgra[j + 1] as i32 + bgra[j + 5] as i32)
+                    >> 2;
+            let r =
+                (bgra[i + 2] as i32 + bgra[i + 6] as i32 + bgra[j + 2] as i32 + bgra[j + 6] as i32)
+                    >> 2;
+            uv[uv_row + col] =
+                (((-43 * r - 85 * g + 128 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+            uv[uv_row + col + 1] =
+                (((128 * r - 107 * g - 21 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
+        }
+    }
+}
+
 /// I420 → BGRA8 (BT.601; croma por muestreo simple).
 pub fn i420_to_bgra(
     width: usize,
