@@ -1644,16 +1644,26 @@ class _HomePageState extends State<HomePage> {
                                 img.width * _viewerZoom,
                                 img.height * _viewerZoom,
                               );
+                              // C-34: las DOS barras van SOBRE el viewport.
+                              // Antes la horizontal envolvía el contenido
+                              // dentro del scroll vertical: quedaba pintada
+                              // al final del frame (2.880 px abajo) y no se
+                              // veía nunca.
                               return ClipRect(
                                 child: Scrollbar(
                                   controller: _vScroll,
                                   thumbVisibility: true,
-                                  child: SingleChildScrollView(
-                                    controller: _vScroll,
-                                    child: Scrollbar(
-                                      controller: _hScroll,
-                                      thumbVisibility: true,
-                                      notificationPredicate: (n) => n.depth == 1,
+                                  thickness: 10,
+                                  child: Scrollbar(
+                                    controller: _hScroll,
+                                    thumbVisibility: true,
+                                    thickness: 10,
+                                    // Solo las notificaciones del eje
+                                    // horizontal (las verticales van arriba).
+                                    notificationPredicate: (n) =>
+                                        n.metrics.axis == Axis.horizontal,
+                                    child: SingleChildScrollView(
+                                      controller: _vScroll,
                                       child: SingleChildScrollView(
                                         controller: _hScroll,
                                         scrollDirection: Axis.horizontal,
