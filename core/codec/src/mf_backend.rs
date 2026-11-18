@@ -615,6 +615,10 @@ pub struct MfH264Encoder {
     /// C-35: el MFT provee sus propias muestras de salida
     /// (`MFT_OUTPUT_STREAM_PROVIDES_SAMPLES`: NVENC/DX12).
     out_provides: bool,
+    /// C-39: muestras enviadas y aún no consumidas. Un MFT asíncrono puede
+    /// retener la muestra: si se libera antes de la salida (a 4K tarda más),
+    /// el codificador se queda sin eventos. Tope: el propio pipeline.
+    in_flight: VecDeque<SampleSlot>,
 }
 
 // Los MFT son pointers COM sin `Send` (NonNull). Seguridad: ambos wrappers
@@ -645,6 +649,7 @@ impl MfH264Encoder {
             allow_async: std::env::var("ANYREMOTE_HW_ENCODER").ok().as_deref() != Some("0"),
             need_input: true,
             out_provides: false,
+            in_flight: VecDeque::new(),
         }
     }
 
@@ -659,19 +664,17 @@ impl MfH264Encoder {
         if self.transform.is_some() && (ew, eh) == (self.width, self.height) {
             return Ok(());
         }
-        // C-35: el camino asíncrono está validado hasta 1080p. A 4K NVENC deja
-        // de emitir eventos tras el primer frame (medido en este equipo), así
-        // que por encima de 1080p se usa el MFT síncrono de siempre.
-        let pixeles = (ew as u64) * (eh as u64);
-        let permitir_async = self.allow_async && pixeles <= 1920 * 1080;
-        if self.allow_async && !permitir_async {
-            eprintln!(
-                "[video] h264: {ew}x{eh} > 1080p → encoder de GPU desactivado (MFT síncrono)"
-            );
-        }
-        let (t, is_async) = find_encoder_mft(ew, eh, self.fps, self.bitrate, permitir_async)?;
+        // C-39: el 4K asíncrono funciona con cadencia real (15 fps); el
+        // "atasco" de C-35 era la sonda llamando en bucle cerrado.
+        let (t, is_async) = find_encoder_mft(ew, eh, self.fps, self.bitrate, self.allow_async)?;
         let nv12_len = (ew as usize) * (eh as usize) * 3 / 2;
-        let input = make_slot(nv12_len as u32)?;
+        // C-39: el camino asíncrono crea una muestra por envío; no se reserva
+        // 12 MB para un slot que no se usa.
+        let input = if is_async {
+            None
+        } else {
+            Some(make_slot(nv12_len as u32)?)
+        };
         // Tamaño de salida = cbSize DECLARADO por el MFT (no el nuestro):
         // a 720p el de Microsoft exige más que `raw+64k` y devuelve
         // MF_E_BUFFERTOOSMALL (reporte de campo en v0.9.0). Los MFT de GPU
@@ -692,7 +695,7 @@ impl MfH264Encoder {
         self.width = ew;
         self.height = eh;
         self.nv12.resize(nv12_len, 0);
-        self.input = Some(input);
+        self.input = input;
         self.output = output;
         self.seq_hdr.clear();
         Ok(())
@@ -852,6 +855,8 @@ impl MfH264Encoder {
         let _ = status;
         match res {
             Ok(()) => {
+                // C-39: la entrada correspondiente ya se consumió.
+                self.in_flight.pop_front();
                 let Some(s) = produced else {
                     return Ok(None);
                 };
@@ -901,6 +906,7 @@ impl MfH264Encoder {
         self.allow_async = false;
         self.transform = None;
         self.pending.clear();
+        self.in_flight.clear();
         self.seq_hdr.clear();
         self.framing_logged = false;
         eprintln!("[video] h264: MFT de GPU falló ({err:?}) → se usa el síncrono");
@@ -944,6 +950,15 @@ impl MfH264Encoder {
                 Ok(()) => {
                     submitted = true;
                     self.need_input = false;
+                    // C-39: la muestra se queda viva hasta que llegue su salida.
+                    // 4 entradas sin ninguna salida = MFT atascado (driver):
+                    // se cae al síncrono en vez de congelar el vídeo.
+                    if self.in_flight.len() >= 4 {
+                        return self.async_failed(CodecError::Encode(
+                            "4 entradas sin salida (MFT async atascado)".into(),
+                        ));
+                    }
+                    self.in_flight.push_back(input);
                 }
                 // El MFT aún no pidió entrada: se descarta este frame (el
                 // bucle de reenvío del daemon lo reintenta).

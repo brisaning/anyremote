@@ -75,17 +75,20 @@ fn target_for(key: Key) -> Result<Target, InputError> {
         Key::Enter => (VK_RETURN.0, false),
         Key::Backspace => (0x08, false),
         Key::Delete => (VK_DELETE.0, false),
-        Key::Left => (VK_LEFT.0, true),
-        Key::Right => (VK_RIGHT.0, true),
-        Key::Up => (VK_UP.0, true),
-        Key::Down => (VK_DOWN.0, true),
-        Key::Home => (VK_HOME.0, true),
-        Key::End => (VK_END.0, true),
-        Key::Insert => (VK_INSERT.0, true),
-        Key::PageUp => (VK_PRIOR.0, true),
-        Key::PageDown => (VK_NEXT.0, true),
+        // C-38: el segundo campo es "necesita Shift". Las teclas de
+        // navegación lo llevaban en `true` → cada flecha/RePág/AvPág se
+        // inyectaba con Shift y el anfitrión SELECCIONABA texto.
+        Key::Left => (VK_LEFT.0, false),
+        Key::Right => (VK_RIGHT.0, false),
+        Key::Up => (VK_UP.0, false),
+        Key::Down => (VK_DOWN.0, false),
+        Key::Home => (VK_HOME.0, false),
+        Key::End => (VK_END.0, false),
+        Key::Insert => (VK_INSERT.0, false),
+        Key::PageUp => (VK_PRIOR.0, false),
+        Key::PageDown => (VK_NEXT.0, false),
         Key::CapsLock => (VK_CAPITAL.0, false),
-        Key::NumLock => (VK_NUMLOCK.0, true),
+        Key::NumLock => (VK_NUMLOCK.0, false),
         Key::ScrollLock => (VK_SCROLL.0, false),
         Key::F1 => (VK_F1.0, false),
         Key::F2 => (VK_F2.0, false),
@@ -270,30 +273,26 @@ mod tests {
 
     /// C-37: teclas de edición y bloqueos nuevas.
     #[test]
-    fn editing_and_lock_keys_have_vk() {
-        assert!(matches!(
-            target_for(Key::Insert),
-            Ok(Target::Vk(0x2D, true))
-        ));
-        assert!(matches!(
-            target_for(Key::PageUp),
-            Ok(Target::Vk(0x21, true))
-        ));
-        assert!(matches!(
-            target_for(Key::PageDown),
-            Ok(Target::Vk(0x22, true))
-        ));
-        assert!(matches!(
-            target_for(Key::CapsLock),
-            Ok(Target::Vk(0x14, false))
-        ));
-        assert!(matches!(
-            target_for(Key::NumLock),
-            Ok(Target::Vk(0x90, true))
-        ));
-        assert!(matches!(
-            target_for(Key::ScrollLock),
-            Ok(Target::Vk(0x91, false))
-        ));
+    fn editing_and_lock_keys_have_vk_without_shift() {
+        for (key, vk) in [
+            (Key::Insert, 0x2D),
+            (Key::PageUp, 0x21),
+            (Key::PageDown, 0x22),
+            (Key::CapsLock, 0x14),
+            (Key::NumLock, 0x90),
+            (Key::ScrollLock, 0x91),
+            (Key::Left, 0x25),
+            (Key::Right, 0x27),
+            (Key::Up, 0x26),
+            (Key::Down, 0x28),
+            (Key::Home, 0x24),
+            (Key::End, 0x23),
+            (Key::Delete, 0x2E),
+        ] {
+            assert!(
+                matches!(target_for(key), Ok(Target::Vk(v, false)) if v == vk),
+                "{key:?} debe ir sin Shift (vk {vk:#x})"
+            );
+        }
     }
 }
