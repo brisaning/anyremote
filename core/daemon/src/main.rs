@@ -334,15 +334,19 @@ async fn main() {
 
     match result {
         Ok(out) => {
+            // C-40: los contadores de audio faltaban en el cierre y no se podía
+            // demostrar el camino del micrófono (el cliente decía «sin señal»).
             eprintln!(
-                "sesión cerrada: heartbeats={} rtt_min={} archivos={} bytes_sent={}",
+                "sesión cerrada: heartbeats={} rtt_min={} archivos={} bytes_sent={} audio_sent={} audio_recv={}",
                 out.report.heartbeats_ok,
                 out.report
                     .rtt_min_ms
                     .map(|v| format!("{v}ms"))
                     .unwrap_or_else(|| "-".into()),
                 out.report.files_transferred,
-                out.report.bytes_sent
+                out.report.bytes_sent,
+                out.report.audio_sent,
+                out.report.audio_recv
             );
         }
         Err(e) => {
