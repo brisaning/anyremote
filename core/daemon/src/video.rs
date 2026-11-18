@@ -790,6 +790,9 @@ pub fn spawn_video_task(
                             let _ = out.try_send(VideoMsg::Event(json!({
                                 "event": "video_adapt", "reason": dec.reason, "bps": bps,
                                 "size": format!("{}x{}", st.size.0, st.size.1),
+                                // C-40: RTT que disparó la decisión (sin él no
+                                // se distingue congestión real de un pico).
+                                "rtt": net_rtt,
                             })));
                         }
                     }

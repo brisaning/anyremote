@@ -372,6 +372,10 @@ class _HomePageState extends State<HomePage> {
   int _inputEvents = 0;
   /// Indicador de audio en la cabecera del visor (`audio ✓` / `sin señal`).
   String _audioHint = '';
+  /// C-40: `mic` / `system` / `mic,system` — el anfitrión lo anuncia en
+  /// `audio_start` y el visor lo usa para no decir «sonido del sistema»
+  /// cuando en realidad comparte el micrófono.
+  String _audioSource = '';
   /// Último motivo de rechazo acusado (para no repetirlo en cada evento).
   String _lastInputDenied = '';
 
@@ -692,6 +696,7 @@ class _HomePageState extends State<HomePage> {
               }
             }
           case 'audio_start':
+            _audioSource = (ev['source'] as String?) ?? '';
             _append(ev.containsKey('source')
                 ? '[daemon] audio compartido desde ${ev['source']} (${ev['rate']} Hz)'
                 : '[daemon] reproducción de audio activada (${ev['rate']} Hz)');
@@ -707,14 +712,19 @@ class _HomePageState extends State<HomePage> {
           case 'audio_stopped':
             _append('[daemon] audio detenido (permisos actualizados)');
           case 'audio_stats':
-            // Diagnóstico en la cabecera del visor: rms≈ 0 = silencio (el
-            // anfitrión no está reproduciendo nada o no está compartiendo).
+            // C-40: diagnóstico en la cabecera. Se distingue el micrófono del
+            // audio del sistema: antes, con el mic activo, decía «¿está
+            // reproduciendo sonido el anfitrión?» y confundía la validación.
             final rms = (ev['rms'] as num?)?.toDouble() ?? 0.0;
-            final hint = rms > 0.002 ? 'audio ✓' : 'audio: sin señal';
+            final soloMic = _audioSource == 'mic';
+            final etiqueta = soloMic ? 'mic' : 'audio';
+            final hint = rms > 0.002 ? '$etiqueta ✓' : '$etiqueta: sin señal';
             if (_audioHint != hint) {
               setState(() => _audioHint = hint);
-              if (hint != 'audio ✓') {
-                _append('[daemon] audio sin señal (rms 0): ¿está reproduciendo sonido el anfitrión?');
+              if (hint != '$etiqueta ✓') {
+                _append(soloMic
+                    ? '[daemon] micrófono sin señal (rms 0): el anfitrión no está captando voz'
+                    : '[daemon] audio sin señal (rms 0): ¿está reproduciendo sonido el anfitrión?');
               }
             }
           case 'audio_error':
@@ -729,6 +739,7 @@ class _HomePageState extends State<HomePage> {
             _heldChars.clear();
             _deadPending = null;
             _audioHint = '';
+            _audioSource = '';
             _cursor.value = const _CursorState();
             // v0.8.2: con el listener repetidor, cerrar una sesión (p. ej. el
             // invitado pulsa «Detener») vuelve a «Escuchando (red)»: sigue
@@ -1651,7 +1662,7 @@ class _HomePageState extends State<HomePage> {
                             Text(_audioHint,
                                 style: TextStyle(
                                     fontSize: 12,
-                                    color: _audioHint == 'audio ✓'
+                                    color: _audioHint.endsWith('✓')
                                         ? Colors.teal
                                         : Colors.orange)),
                           if (_audioHint.isNotEmpty) const SizedBox(width: 10),
