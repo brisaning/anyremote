@@ -20,5 +20,9 @@ shiguredo_libvpx = { version = "2026.2.0-canary.3", optional = true }
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",
+    # C-33: `ICodecAPI` recibe VARIANTs (VT_UI4) — el rate-control del MFT
+    # se configura por ahí, NO por `IMFTransform::GetAttributes`.
+    "Win32_System_Ole",
+    "Win32_System_Variant",
     "Win32_Media_MediaFoundation",
 ] }

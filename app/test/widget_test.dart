@@ -359,6 +359,42 @@ void main() {
     expect(find.byType(RawImage), findsOneWidget);
   });
 
+  testWidgets('C-33: zoom 100 % dibuja 1:1 (texto legible) y Ajustar expande',
+      (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+
+    // Frame de 64x64 por el MISMO camino que el preview real.
+    const w = 64;
+    const h = 64;
+    final payload = Uint8List(w * h * 4)..fillRange(0, w * h * 4, 0x40);
+    final bytes = Uint8List(16 + payload.length);
+    final bd = ByteData.sublistView(bytes);
+    bd.setUint32(0, w, Endian.little);
+    bd.setUint32(4, h, Endian.little);
+    bd.setUint32(8, 1, Endian.little);
+    bd.setUint32(12, payload.length, Endian.little);
+    bytes.setAll(16, payload);
+    await tester.runAsync(() async {
+      st.debugPushVideoBytes(bytes);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    });
+    await tester.pump();
+
+    // Ajustar (por defecto): el frame ocupa el marco disponible.
+    final fit = tester.getSize(find.byType(RawImage));
+    expect(fit.width, greaterThan(w.toDouble()),
+        reason: 'ajustar amplía el frame al tamaño de la ventana');
+
+    // 100 %: un píxel remoto = un píxel de la imagen (sin remuestreo).
+    await tester.tap(find.text('Ajustar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('100 %').last);
+    await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(RawImage)), const Size(64, 64));
+    expect(tester.takeException(), isNull);
+  });
+
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {
     // Cualquier calidad de vídeo (720p, 1080p, nativa) produce el mismo
     // resultado para la misma posición relativa (fix v0.6.2: a 720p/1080p el
