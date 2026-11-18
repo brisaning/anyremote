@@ -25,7 +25,7 @@ use windows::Win32::Media::MediaFoundation as mf;
 use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
 use windows::Win32::System::Variant::{VariantInit, VARIANT, VARIANT_0_0, VARIANT_0_0_0, VT_UI4};
 
-use crate::conv::{bgra_to_i420, crop_bgra, i420_to_nv12};
+use crate::conv::{bgra_to_nv12_into, crop_bgra};
 use crate::{CodecError, CodecFormat, EncodedFrame, VideoEncoder};
 
 /// `MFStartup` una vez por proceso; `CoInitializeEx` por hilo (idempotente).
@@ -346,12 +346,25 @@ fn output_slot_size(t: &mf::IMFTransform, nv12_len: usize) -> u32 {
 /// Busca el primer MFT codificador utilizable (hardware → software) y lo
 /// pone en modo streaming (la sonda síncrona descarta los MFT asíncronos:
 /// devuelven `MF_E_TRANSFORM_ASYNC_LOCKED`).
+/// C-35: ¿el MFT es asíncrono? (los de GPU — NVENC, DX12 — lo son).
+fn mft_is_async(t: &mf::IMFTransform) -> bool {
+    unsafe { t.GetAttributes() }
+        .ok()
+        .and_then(|a| unsafe { a.GetUINT32(&mf::MF_TRANSFORM_ASYNC) }.ok())
+        .unwrap_or(0)
+        != 0
+}
+
+/// Busca el primer MFT codificador utilizable: **GPU asíncrona primero**
+/// (NVENC/DX12, con `MF_TRANSFORM_ASYNC_UNLOCK`) y, si nada sirve, el de
+/// software síncrono de siempre. Devuelve `(MFT, es_asíncrono)`.
 fn find_encoder_mft(
     w: u32,
     h: u32,
     fps: u32,
     bitrate: u32,
-) -> Result<mf::IMFTransform, CodecError> {
+    allow_async: bool,
+) -> Result<(mf::IMFTransform, bool), CodecError> {
     mf_ready()?;
     let in_t = type_info(mf::MFVideoFormat_NV12);
     let out_t = type_info(mf::MFVideoFormat_H264);
@@ -364,6 +377,21 @@ fn find_encoder_mft(
                 continue;
             }
         };
+        let is_async = mft_is_async(&t);
+        if is_async {
+            if !allow_async {
+                last = "asíncrono descartado (unlock desactivado)".into();
+                continue;
+            }
+            // Desbloqueo OBLIGATORIO antes de fijar tipos (si no:
+            // MF_E_TRANSFORM_ASYNC_LOCKED).
+            if let Ok(a) = unsafe { t.GetAttributes() } {
+                if unsafe { a.SetUINT32(&mf::MF_TRANSFORM_ASYNC_UNLOCK, 1) }.is_err() {
+                    last = "ASYNC_UNLOCK rechazado".into();
+                    continue;
+                }
+            }
+        }
         if let Err(e) = unsafe { configure_encoder(&t, w, h, fps, bitrate) } {
             last = format!("{e:?}");
             continue;
@@ -373,7 +401,7 @@ fn find_encoder_mft(
             continue;
         }
         let _ = unsafe { t.ProcessMessage(mf::MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0) };
-        return Ok(t);
+        return Ok((t, is_async));
     }
     Err(CodecError::Encode(format!(
         "sin MFT H.264 utilizable ({last})"
@@ -578,6 +606,15 @@ pub struct MfH264Encoder {
     framing_logged: bool,
     /// C-28: salidas drenadas esperando turno (FIFO, tope [PENDING_CAP]).
     pending: VecDeque<Vec<u8>>,
+    /// C-35: MFT asíncrono (GPU) → hay que bombear eventos.
+    is_async: bool,
+    /// C-35: si el camino asíncrono falla, no reintentarlo en esta sesión.
+    allow_async: bool,
+    /// C-35: el MFT avisó que quiere otra entrada (`METransformNeedInput`).
+    need_input: bool,
+    /// C-35: el MFT provee sus propias muestras de salida
+    /// (`MFT_OUTPUT_STREAM_PROVIDES_SAMPLES`: NVENC/DX12).
+    out_provides: bool,
 }
 
 // Los MFT son pointers COM sin `Send` (NonNull). Seguridad: ambos wrappers
@@ -602,6 +639,12 @@ impl MfH264Encoder {
             last_rebuild: None,
             framing_logged: false,
             pending: VecDeque::new(),
+            is_async: false,
+            // C-35: `ANYREMOTE_HW_ENCODER=0` fuerza el MFT síncrono (útil en
+            // equipos con GPU problemática y para comparar en campo).
+            allow_async: std::env::var("ANYREMOTE_HW_ENCODER").ok().as_deref() != Some("0"),
+            need_input: true,
+            out_provides: false,
         }
     }
 
@@ -616,21 +659,41 @@ impl MfH264Encoder {
         if self.transform.is_some() && (ew, eh) == (self.width, self.height) {
             return Ok(());
         }
-        let t = find_encoder_mft(ew, eh, self.fps, self.bitrate)?;
+        // C-35: el camino asíncrono está validado hasta 1080p. A 4K NVENC deja
+        // de emitir eventos tras el primer frame (medido en este equipo), así
+        // que por encima de 1080p se usa el MFT síncrono de siempre.
+        let pixeles = (ew as u64) * (eh as u64);
+        let permitir_async = self.allow_async && pixeles <= 1920 * 1080;
+        if self.allow_async && !permitir_async {
+            eprintln!(
+                "[video] h264: {ew}x{eh} > 1080p → encoder de GPU desactivado (MFT síncrono)"
+            );
+        }
+        let (t, is_async) = find_encoder_mft(ew, eh, self.fps, self.bitrate, permitir_async)?;
         let nv12_len = (ew as usize) * (eh as usize) * 3 / 2;
         let input = make_slot(nv12_len as u32)?;
         // Tamaño de salida = cbSize DECLARADO por el MFT (no el nuestro):
         // a 720p el de Microsoft exige más que `raw+64k` y devuelve
-        // MF_E_BUFFERTOOSMALL (reporte de campo en v0.9.0).
-        let out_max = output_slot_size(&t, nv12_len);
-        let output = make_slot(out_max)?;
+        // MF_E_BUFFERTOOSMALL (reporte de campo en v0.9.0). Los MFT de GPU
+        // proveen la muestra (cbSize=0): no se reserva slot.
+        let out_provides = unsafe { t.GetOutputStreamInfo(0) }
+            .map(|i| i.dwFlags & mf::MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0)
+            .unwrap_or(false);
+        let output = if out_provides {
+            None
+        } else {
+            Some(make_slot(output_slot_size(&t, nv12_len))?)
+        };
+        self.is_async = is_async;
+        self.out_provides = out_provides;
+        self.need_input = true;
         self.transform = Some(t);
         self.last_rebuild = Some(std::time::Instant::now());
         self.width = ew;
         self.height = eh;
         self.nv12.resize(nv12_len, 0);
         self.input = Some(input);
-        self.output = Some(output);
+        self.output = output;
         self.seq_hdr.clear();
         Ok(())
     }
@@ -670,8 +733,11 @@ impl MfH264Encoder {
             cropped = crop_bgra(&frame.data, frame.width, ew, eh);
             &cropped
         };
-        let (y, u, v) = bgra_to_i420(ew, eh, bgra);
-        self.nv12 = i420_to_nv12(&y, &u, &v);
+        let len = (ew as usize) * (eh as usize) * 3 / 2;
+        if self.nv12.len() != len {
+            self.nv12.resize(len, 0);
+        }
+        bgra_to_nv12_into(ew, eh, bgra, &mut self.nv12);
         Ok(())
     }
 
@@ -716,6 +782,219 @@ impl MfH264Encoder {
     }
 }
 
+impl MfH264Encoder {
+    /// C-35: cierra el frame (diagnóstico de framing, prepend de SPS/PPS y
+    /// secuencia) — común a los caminos síncrono y asíncrono.
+    fn finish(&mut self, t: &mf::IMFTransform, payload: Vec<u8>) -> EncodedFrame {
+        let mut payload = payload;
+        // C-35: `GetOutputCurrentType`/`GetBlob` en un MFT asíncrono cuesta
+        // ~40 ms por frame. La cabecera solo se necesita si el payload NO
+        // trae SPS in-band: se carga bajo demanda (y se cachea).
+        if !payload.is_empty() && !contains_sps(&payload) && self.seq_hdr.is_empty() {
+            self.load_seq_header(t);
+        }
+        // C-26: diagnóstico de framing (una vez por sesión).
+        if !self.framing_logged && !payload.is_empty() {
+            self.framing_logged = true;
+            eprintln!(
+                "[video] h264 framing: seq_hdr[{}]={:02x?} payload[0..{}]={:02x?} con_sps={}",
+                self.seq_hdr.len(),
+                &self.seq_hdr[..self.seq_hdr.len().min(16)],
+                payload.len().min(16),
+                &payload[..payload.len().min(16)],
+                contains_sps(&payload),
+            );
+        }
+        // C-26: prepend SOLO si el payload no trae ya los parámetros
+        // in-band (si los trae, duplicarlos/enredarlos envenena el stream).
+        if !payload.is_empty()
+            && !self.seq_hdr.is_empty()
+            && !payload.starts_with(&self.seq_hdr)
+            && !contains_sps(&payload)
+        {
+            let mut with_hdr = self.seq_hdr.clone();
+            with_hdr.extend_from_slice(&payload);
+            payload = with_hdr;
+        }
+        let seq = self.seq;
+        self.seq += 1;
+        EncodedFrame {
+            format: CodecFormat::H264,
+            seq,
+            width: self.width,
+            height: self.height,
+            data: payload,
+        }
+    }
+
+    /// C-35: saca la muestra que el MFT provee (NVENC/DX12) o reutiliza
+    /// nuestro slot (MFT que no provee muestras).
+    fn process_output_async(
+        &mut self,
+        t: &mf::IMFTransform,
+    ) -> Result<Option<Vec<u8>>, CodecError> {
+        let supplied = if self.out_provides {
+            None
+        } else {
+            self.output.as_ref().map(|s| s.sample.clone())
+        };
+        let mut data = mf::MFT_OUTPUT_DATA_BUFFER {
+            dwStreamID: 0,
+            pSample: core::mem::ManuallyDrop::new(supplied),
+            dwStatus: 0,
+            pEvents: core::mem::ManuallyDrop::new(None),
+        };
+        let mut status = 0u32;
+        let res = unsafe { t.ProcessOutput(0, std::slice::from_mut(&mut data), &mut status) };
+        let produced: Option<mf::IMFSample> =
+            unsafe { core::mem::ManuallyDrop::take(&mut data.pSample) };
+        let _events = unsafe { core::mem::ManuallyDrop::take(&mut data.pEvents) };
+        let _ = status;
+        match res {
+            Ok(()) => {
+                let Some(s) = produced else {
+                    return Ok(None);
+                };
+                let bytes = read_sample(&s)?;
+                Ok(if bytes.is_empty() { None } else { Some(bytes) })
+            }
+            Err(e) if e.code() == mf::MF_E_TRANSFORM_NEED_MORE_INPUT => Ok(None),
+            Err(e) => Err(CodecError::Encode(format!("ProcessOutput async: {e}"))),
+        }
+    }
+
+    /// C-35: consume los eventos del MFT asíncrono y recoge las salidas.
+    fn pump_async(
+        &mut self,
+        t: &mf::IMFTransform,
+        outs: &mut Vec<Vec<u8>>,
+    ) -> Result<(), CodecError> {
+        let gen: mf::IMFMediaEventGenerator = t
+            .cast()
+            .map_err(|e| CodecError::Encode(format!("IMFMediaEventGenerator: {e}")))?;
+        loop {
+            let ev = match unsafe { gen.GetEvent(mf::MF_EVENT_FLAG_NO_WAIT) } {
+                Ok(e) => e,
+                Err(e) if e.code() == mf::MF_E_NO_EVENTS_AVAILABLE => break,
+                Err(e) => return Err(CodecError::Encode(format!("GetEvent: {e}"))),
+            };
+            let ty = unsafe { ev.GetType() }.unwrap_or(0);
+            match ty {
+                ty if ty == mf::METransformNeedInput.0 as u32 => self.need_input = true,
+                ty if ty == mf::METransformHaveOutput.0 as u32 => {
+                    if let Some(bytes) = self.process_output_async(t)? {
+                        outs.push(bytes);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// C-35: fallo del camino asíncrono → se descarta el MFT de GPU y el
+    /// siguiente frame reconstruye con el síncrono. Nunca tumba la sesión.
+    fn async_failed(&mut self, err: CodecError) -> Result<EncodedFrame, CodecError> {
+        if !self.allow_async {
+            return Err(err);
+        }
+        self.allow_async = false;
+        self.transform = None;
+        self.pending.clear();
+        self.seq_hdr.clear();
+        self.framing_logged = false;
+        eprintln!("[video] h264: MFT de GPU falló ({err:?}) → se usa el síncrono");
+        let seq = self.seq;
+        self.seq += 1;
+        Ok(EncodedFrame {
+            format: CodecFormat::H264,
+            seq,
+            width: self.width,
+            height: self.height,
+            data: Vec::new(),
+        })
+    }
+
+    /// C-35: un frame por el camino asíncrono (NVENC/DX12): bombea eventos,
+    /// envía la entrada cuando el MFT la pide y recoge lo que haya.
+    fn encode_async(
+        &mut self,
+        frame: &Frame,
+        t: &mf::IMFTransform,
+    ) -> Result<EncodedFrame, CodecError> {
+        let mut outs = Vec::new();
+        if let Err(e) = self.pump_async(t, &mut outs) {
+            return self.async_failed(e);
+        }
+        let mut submitted = false;
+        if self.need_input {
+            if let Err(e) = self.pack_nv12(frame) {
+                return self.async_failed(e);
+            }
+            let fps = self.fps.max(1) as i64;
+            let time = (self.seq as i64) * 10_000_000 / fps;
+            let dur = 10_000_000 / fps;
+            // C-35: un MFT asíncrono RETIENE la muestra hasta que la codifica
+            // (a 4K son ~25 ms). Reutilizar el mismo `IMFSample` mientras está
+            // en vuelo dejaba al encoder sin eventos tras el primer frame: se
+            // crea una muestra por envío.
+            let input = make_slot(self.nv12.len() as u32)?;
+            input.fill(&self.nv12, time, dur)?;
+            match unsafe { t.ProcessInput(0, &input.sample, 0) } {
+                Ok(()) => {
+                    submitted = true;
+                    self.need_input = false;
+                }
+                // El MFT aún no pidió entrada: se descarta este frame (el
+                // bucle de reenvío del daemon lo reintenta).
+                Err(e) if e.code() == mf::MF_E_NOTACCEPTING => {}
+                Err(e) => {
+                    return self
+                        .async_failed(CodecError::Encode(format!("ProcessInput async: {e}")))
+                }
+            }
+        }
+        if submitted {
+            // C-35: algunos MFT (NVENC a 4K) dejan la salida lista SIN emitir
+            // `METransformHaveOutput`: se prueba un `ProcessOutput` directo
+            // antes de esperar eventos.
+            if let Ok(Some(bytes)) = self.process_output_async(t) {
+                outs.push(bytes);
+            }
+            // C-35: el MFT de GPU es asíncrono — la salida llega en milisegundos.
+            // Se espera un presupuesto corto (el mismo hilo de vídeo duerme
+            // después) en vez de devolver vacío y perder el frame: con la
+            // pantalla estática el reenvío es a 1 Hz y el frame llegaría 1 s
+            // tarde.
+            // OJO: `sleep(1ms)` en Windows se redondea a ~15,6 ms (resolución
+            // del temporizador) y multiplicaba el coste por frame. Se sondea
+            // con `yield_now` y un presupuesto corto: NVENC responde en ~4 ms.
+            const ASYNC_WAIT_MS: u64 = 10;
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(ASYNC_WAIT_MS);
+            loop {
+                if let Err(e) = self.pump_async(t, &mut outs) {
+                    return self.async_failed(e);
+                }
+                if !outs.is_empty() || std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        }
+        let mut payload = Vec::new();
+        for out in outs {
+            if payload.is_empty() {
+                payload = out;
+            } else if self.pending.len() < PENDING_CAP {
+                self.pending.push_back(out);
+            }
+        }
+        let payload = pick_output(&mut self.pending, payload, PENDING_CAP);
+        Ok(self.finish(t, payload))
+    }
+}
+
 impl VideoEncoder for MfH264Encoder {
     fn encode(&mut self, frame: &Frame) -> Result<EncodedFrame, CodecError> {
         self.ensure(frame.width, frame.height)?;
@@ -723,6 +1002,9 @@ impl VideoEncoder for MfH264Encoder {
             .transform
             .clone()
             .ok_or_else(|| CodecError::Encode("sin MFT".into()))?;
+        if self.is_async {
+            return self.encode_async(frame, &t);
+        }
         // Si la entrada no está libre, drena antes (evita MF_E_NOTACCEPTING).
         // C-28: ese drenaje traía la salida PENDIENTE del frame ANTERIOR —
         // antes se TIRABA (`let _ =`) y se perdían frames sistemáticamente
@@ -782,41 +1064,8 @@ impl VideoEncoder for MfH264Encoder {
                 self.pending.push_back(raw);
             }
         }
-        let mut payload = pick_output(&mut self.pending, payload, PENDING_CAP);
-        self.load_seq_header(&t);
-        // C-26: diagnóstico de framing (una vez por sesión) — en el campo se
-        // ve qué dio exactamente el MFT y si hizo falta el prepend.
-        if !self.framing_logged && !payload.is_empty() {
-            self.framing_logged = true;
-            eprintln!(
-                "[video] h264 framing: seq_hdr[{}]={:02x?} payload[0..{}]={:02x?} con_sps={}",
-                self.seq_hdr.len(),
-                &self.seq_hdr[..self.seq_hdr.len().min(16)],
-                payload.len().min(16),
-                &payload[..payload.len().min(16)],
-                contains_sps(&payload),
-            );
-        }
-        // C-26: prepend SOLO si el payload no trae ya los parámetros
-        // in-band (si los trae, duplicarlos/enredarlos envenena el stream).
-        if !payload.is_empty()
-            && !self.seq_hdr.is_empty()
-            && !payload.starts_with(&self.seq_hdr)
-            && !contains_sps(&payload)
-        {
-            let mut with_hdr = self.seq_hdr.clone();
-            with_hdr.extend_from_slice(&payload);
-            payload = with_hdr;
-        }
-        let seq = self.seq;
-        self.seq += 1;
-        Ok(EncodedFrame {
-            format: CodecFormat::H264,
-            seq,
-            width: self.width,
-            height: self.height,
-            data: payload,
-        })
+        let payload = pick_output(&mut self.pending, payload, PENDING_CAP);
+        Ok(self.finish(&t, payload))
     }
 
     fn format(&self) -> CodecFormat {
