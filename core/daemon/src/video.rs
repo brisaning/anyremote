@@ -62,36 +62,143 @@ impl VideoMode {
 /// dispersas y 3 canales en `f32`; con escritorio 4K→720p el bucle de vídeo
 /// (serie) bajaba a 1–5 fps en el anfitrión. Misma semántica: bilineal,
 /// alfa = 255.
+///
+/// C-36 (campo 18/11): con el encoder en 8 ms, el escalado 4K→1080p pasó a ser
+/// el cuello (**32–48 ms** por frame). Ahora las dos pasadas se reparten por
+/// bandas entre hilos y el `scratch` se reutiliza entre frames
+/// ([`FrameScaler`]).
+pub struct FrameScaler {
+    /// dw × sh × 4 — resultado de la pasada horizontal.
+    scratch: Vec<u8>,
+    xtab: Vec<(usize, usize, u32)>,
+    ytab: Vec<(usize, usize, u32)>,
+    /// (sw, sh, dw, dh) de las tablas vigentes.
+    key: Option<(usize, usize, usize, usize)>,
+}
+
+impl Default for FrameScaler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Tabla de una eje: (índice0, índice1, peso 16.16) por píxel de salida.
+fn axis_table(src_len: usize, dst_len: usize) -> Vec<(usize, usize, u32)> {
+    let src = src_len.max(1) as f64;
+    let dst = dst_len.max(1) as f64;
+    let last = src_len.max(1) - 1;
+    (0..dst_len)
+        .map(|i| {
+            let f = (i as f64 + 0.5) * src / dst - 0.5;
+            let i0 = f.floor().max(0.0) as usize;
+            let i1 = (i0 + 1).min(last);
+            let w = ((f - i0 as f64).clamp(0.0, 1.0) * 65536.0).round() as u32;
+            (i0, i1, w)
+        })
+        .collect()
+}
+
+impl FrameScaler {
+    pub fn new() -> Self {
+        Self {
+            scratch: Vec::new(),
+            xtab: Vec::new(),
+            ytab: Vec::new(),
+            key: None,
+        }
+    }
+
+    fn tables(&mut self, sw: usize, sh: usize, dw: usize, dh: usize) {
+        if self.key == Some((sw, sh, dw, dh)) {
+            return;
+        }
+        self.xtab = axis_table(sw, dw);
+        self.ytab = axis_table(sh, dh);
+        self.key = Some((sw, sh, dw, dh));
+    }
+
+    /// Escala `src` a `w`×`h` (misma semántica que [`scale_frame`]).
+    pub fn scale(&mut self, src: &Frame, w: u32, h: u32) -> Frame {
+        if src.width == w && src.height == h {
+            return src.clone();
+        }
+        let (sw, sh) = (src.width.max(1) as usize, src.height.max(1) as usize);
+        let (dw, dh) = (w as usize, h as usize);
+        self.tables(sw, sh, dw, dh);
+        let need = dw * sh * 4;
+        if self.scratch.len() < need {
+            self.scratch.resize(need, 0);
+        }
+        let mut data = vec![0u8; dw * dh * 4];
+        let Self {
+            scratch,
+            xtab,
+            ytab,
+            ..
+        } = self;
+        h_pass(&src.data, sw, dw, sh, xtab, &mut scratch[..need]);
+        v_pass(&scratch[..need], dw, dh, ytab, &mut data);
+        Frame {
+            width: w,
+            height: h,
+            format: PixelFormat::Bgra8,
+            data,
+        }
+    }
+}
+
+/// Escalado puntual (crea un [`FrameScaler`] de un solo uso).
 pub fn scale_frame(src: &Frame, w: u32, h: u32) -> Frame {
-    if src.width == w && src.height == h {
-        return src.clone();
-    }
-    let (sw, sh) = (src.width.max(1) as usize, src.height.max(1) as usize);
-    let (dw, dh) = (w as usize, h as usize);
+    FrameScaler::new().scale(src, w, h)
+}
 
-    // Tablas fijas (16.16): (x0, x1, peso) por columna/fila de salida.
-    let mut xtab: Vec<(usize, usize, u32)> = Vec::with_capacity(dw);
-    for x in 0..dw {
-        let fx = (x as f64 + 0.5) * sw as f64 / dw as f64 - 0.5;
-        let x0 = fx.floor().max(0.0) as usize;
-        let x1 = (x0 + 1).min(sw - 1);
-        let wx = ((fx - x0 as f64).clamp(0.0, 1.0) * 65536.0).round() as u32;
-        xtab.push((x0, x1, wx));
+/// Hilos útiles para repartir filas (0/1 = serie).
+fn scale_threads(rows: usize) -> usize {
+    if rows < 480 {
+        return 1;
     }
-    let mut ytab: Vec<(usize, usize, u32)> = Vec::with_capacity(dh);
-    for y in 0..dh {
-        let fy = (y as f64 + 0.5) * sh as f64 / dh as f64 - 0.5;
-        let y0 = fy.floor().max(0.0) as usize;
-        let y1 = (y0 + 1).min(sh - 1);
-        let wy = ((fy - y0 as f64).clamp(0.0, 1.0) * 65536.0).round() as u32;
-        ytab.push((y0, y1, wy));
-    }
+    std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1)
+        .min(8)
+}
 
-    // Pasada horizontal: src (sw×sh) → scratch (dw×sh), filas contiguas.
-    let mut scratch = vec![0u8; dw * sh * 4];
-    for y in 0..sh {
-        let row = &src.data[y * sw * 4..(y + 1) * sw * 4];
-        let out_row = &mut scratch[y * dw * 4..(y + 1) * dw * 4];
+/// Pasada horizontal: `src` (sw×sh) → `out` (dw×sh), filas contiguas.
+fn h_pass(
+    src: &[u8],
+    sw: usize,
+    dw: usize,
+    rows: usize,
+    xtab: &[(usize, usize, u32)],
+    out: &mut [u8],
+) {
+    let threads = scale_threads(rows);
+    if threads <= 1 {
+        h_rows(src, sw, dw, rows, xtab, out);
+        return;
+    }
+    let band = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        for (k, chunk) in out.chunks_mut(band * dw * 4).enumerate() {
+            let r0 = k * band;
+            let r1 = (r0 + band).min(rows);
+            let part = &src[r0 * sw * 4..r1 * sw * 4];
+            scope.spawn(move || h_rows(part, sw, dw, r1 - r0, xtab, chunk));
+        }
+    });
+}
+
+fn h_rows(
+    src: &[u8],
+    sw: usize,
+    dw: usize,
+    rows: usize,
+    xtab: &[(usize, usize, u32)],
+    out: &mut [u8],
+) {
+    for y in 0..rows {
+        let row = &src[y * sw * 4..(y + 1) * sw * 4];
+        let out_row = &mut out[y * dw * 4..(y + 1) * dw * 4];
         for (x, &(x0, x1, wx)) in xtab.iter().enumerate() {
             let (i0, i1, o) = (x0 * 4, x1 * 4, x * 4);
             for c in 0..3 {
@@ -102,9 +209,27 @@ pub fn scale_frame(src: &Frame, w: u32, h: u32) -> Frame {
             out_row[o + 3] = 255;
         }
     }
+}
 
-    // Pasada vertical: scratch (dw×sh) → salida (dw×dh).
-    let mut data = vec![0u8; dw * dh * 4];
+/// Pasada vertical: `scratch` (dw×sh) → `out` (dw×dh).
+fn v_pass(scratch: &[u8], dw: usize, dh: usize, ytab: &[(usize, usize, u32)], out: &mut [u8]) {
+    let threads = scale_threads(dh);
+    if threads <= 1 {
+        v_rows(scratch, dw, dh, ytab, out);
+        return;
+    }
+    let band = dh.div_ceil(threads);
+    std::thread::scope(|scope| {
+        for (k, chunk) in out.chunks_mut(band * dw * 4).enumerate() {
+            let y0 = k * band;
+            let y1 = (y0 + band).min(dh);
+            let tab = &ytab[y0..y1];
+            scope.spawn(move || v_rows(scratch, dw, y1 - y0, tab, chunk));
+        }
+    });
+}
+
+fn v_rows(scratch: &[u8], dw: usize, _rows: usize, ytab: &[(usize, usize, u32)], out: &mut [u8]) {
     for (y, &(y0, y1, wy)) in ytab.iter().enumerate() {
         let r0 = &scratch[y0 * dw * 4..(y0 + 1) * dw * 4];
         let r1 = &scratch[y1 * dw * 4..(y1 + 1) * dw * 4];
@@ -114,16 +239,10 @@ pub fn scale_frame(src: &Frame, w: u32, h: u32) -> Frame {
             for c in 0..3 {
                 let a = r0[i + c] as u32;
                 let b = r1[i + c] as u32;
-                data[o + i + c] = ((a * (65536 - wy) + b * wy) >> 16).min(255) as u8;
+                out[o + i + c] = ((a * (65536 - wy) + b * wy) >> 16).min(255) as u8;
             }
-            data[o + i + 3] = 255;
+            out[o + i + 3] = 255;
         }
-    }
-    Frame {
-        width: w,
-        height: h,
-        format: PixelFormat::Bgra8,
-        data,
     }
 }
 
@@ -464,6 +583,7 @@ pub fn spawn_video_task(
             "event": "video_backend", "encoder": backend,
         })));
         let mut adapt: Option<AdaptState> = None;
+        let mut scaler = FrameScaler::new();
         let budget_ms = 1000.0 / fps.max(1) as f64;
         let period = Duration::from_millis(1000 / fps.max(1).max(1));
         let mut seq: u32 = 0;
@@ -579,7 +699,9 @@ pub fn spawn_video_task(
                 h = captured.height;
             }
             let t_scale = std::time::Instant::now();
-            let frame = scale_frame(&captured, w, h);
+            // C-36: scaler reutilizable (tablas + scratch) — el escalado 4K→1080p
+            // era el cuello (32–48 ms) con el encoder ya en 8 ms.
+            let frame = scaler.scale(&captured, w, h);
             t_scale_ms += t_scale.elapsed().as_secs_f64() * 1000.0;
             if adapt.is_none() {
                 adapt = Some(AdaptState::new((w, h), max_bps));
