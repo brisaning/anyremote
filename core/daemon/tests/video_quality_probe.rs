@@ -55,7 +55,13 @@ fn scroll(src: &Frame, dx: u32) -> Frame {
 }
 
 fn run(label: &str, w: u32, h: u32, src: &Frame, mbps: u64) {
-    let base = scale_frame(src, w, h);
+    let base = if std::env::var("PROBE_FLAT").is_ok() {
+        let mut f = scale_frame(src, w, h);
+        f.data.fill(0x40);
+        f
+    } else {
+        scale_frame(src, w, h)
+    };
     let frames: Vec<Frame> = (0..30).map(|i| scroll(&base, i * 3)).collect();
     let luma_src: Vec<Vec<u8>> = frames.iter().map(luma).collect();
     let mut enc = encoder_for(CodecFormat::H264);
@@ -65,6 +71,8 @@ fn run(label: &str, w: u32, h: u32, src: &Frame, mbps: u64) {
     // Calentamiento (creación del MFT + primeros frames), fuera de la medida.
     for f in frames.iter().take(6) {
         let _ = enc.encode(f);
+        // Cadencia real (15 fps): el MFT asíncrono necesita tiempo de pared.
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let mut sizes = Vec::new();
     let mut best_psnr = 0.0f64;
@@ -73,6 +81,7 @@ fn run(label: &str, w: u32, h: u32, src: &Frame, mbps: u64) {
         let t = std::time::Instant::now();
         let e = enc.encode(f).expect("encode");
         total_ms += t.elapsed().as_secs_f64() * 1000.0;
+        std::thread::sleep(std::time::Duration::from_millis(20));
         if e.data.is_empty() {
             continue;
         }

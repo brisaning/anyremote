@@ -459,6 +459,19 @@ void main() {
     expect(isDeadAccent("'"), isFalse);
   });
 
+  test('C-38: el SO ya compone → no se duplica el acento (´ó)', () {
+    // El caso del campo: Windows compone y entrega 'ó' con la dead key pendiente.
+    expect(resolveDeadKey('´', 'ó'), (null, 'ó'));
+    expect(resolveDeadKey('~', 'ñ'), (null, 'ñ'));
+    expect(resolveDeadKey('¨', 'ü'), (null, 'ü'));
+    // Si llega la vocal SIN componer, se compone aquí.
+    expect(resolveDeadKey('´', 'o'), (null, 'ó'));
+    expect(resolveDeadKey('~', 'n'), (null, 'ñ'));
+    // No compone y es ASCII → acento suelto + carácter.
+    expect(resolveDeadKey('´', 'x'), ('´', 'x'));
+    expect(resolveDeadKey('~', 'e'), ('~', 'e'));
+  });
+
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {
     // Cualquier calidad de vídeo (720p, 1080p, nativa) produce el mismo
     // resultado para la misma posición relativa (fix v0.6.2: a 720p/1080p el

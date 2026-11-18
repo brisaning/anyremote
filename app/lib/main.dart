@@ -176,6 +176,21 @@ String? composeDeadAccent(String dead, String base) {
   return tabla[base];
 }
 
+/// C-38: resuelve una dead key pendiente con el carácter que llega.
+///
+/// Devuelve `(acentoSuelto, caracterAEnviar)`:
+/// - Si la pareja compone (`´`+`o`) → `(null, 'ó')`.
+/// - Si el Sistema Operativo **ya compuso** el carácter y llega compuesto
+///   (`´`+`o` → `ó`) → `(null, 'ó')`: antes se enviaba el acento suelto y
+///   quedaba `´ó` en el anfitrión.
+/// - Si no compone y el carácter es ASCII (`´`+`x`) → `('´', 'x')`, como el SO.
+(String?, String) resolveDeadKey(String dead, String base) {
+  final compuesto = composeDeadAccent(dead, base);
+  if (compuesto != null) return (null, compuesto);
+  if (base.codeUnitAt(0) > 0x7F) return (null, base); // ya venía compuesto
+  return (dead, base);
+}
+
 /// Flecha del cursor remoto (C-11) — dibujo propio en canvas, sin assets.
 /// La punta en (0,0) coincide con la posición exacta del cursor (hotspot).
 class _RemoteCursorPainter extends CustomPainter {
@@ -995,13 +1010,12 @@ class _HomePageState extends State<HomePage> {
           // Doble pulsación (`´´`) → el acento suelto.
           ch = dead;
         } else {
-          final compuesto = composeDeadAccent(dead, ch);
-          if (compuesto != null) {
-            ch = compuesto;
-          } else {
-            // No componen: se envía el acento suelto y luego el carácter.
-            _sendInput({'key': {'code': 0, 'ch': dead, 'down': true}});
-            _sendInput({'key': {'code': 0, 'ch': dead, 'down': false}});
+          final (suelto, enviar) = resolveDeadKey(dead, ch);
+          ch = enviar;
+          if (suelto != null) {
+            // No componen (`´x`): se envía el acento suelto y luego el carácter.
+            _sendInput({'key': {'code': 0, 'ch': suelto, 'down': true}});
+            _sendInput({'key': {'code': 0, 'ch': suelto, 'down': false}});
           }
         }
       }
