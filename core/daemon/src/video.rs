@@ -481,6 +481,10 @@ pub fn spawn_video_task(
         let mut c_in: u64 = 0;
         let mut c_emit: u64 = 0;
         let mut c_queued: u64 = 0;
+        // C-33: bytes emitidos en la ventana → tasa REAL por frame y bits por
+        // píxel (el objetivo del encoder decía 15 Mbps y en campo llegaban
+        // 265 kbps sin que el log lo delatara).
+        let mut c_bytes: u64 = 0;
         // C-31: tiempos por etapa (ms) para localizar el cuello del bucle.
         let mut t_cap_ms: f64 = 0.0;
         let mut t_scale_ms: f64 = 0.0;
@@ -492,21 +496,36 @@ pub fn spawn_video_task(
             }
             // C-28: log de tasa (stderr → `[listener-err]` en el ui.log).
             if fps_log_at.elapsed() >= Duration::from_secs(5) {
+                let secs = fps_log_at.elapsed().as_secs().max(1) as f64;
+                let kb_frame = if c_emit > 0 {
+                    c_bytes as f64 / c_emit as f64 / 1024.0
+                } else {
+                    0.0
+                };
+                // bpp = bits por píxel y frame con los frames EMITIDOS.
+                let bpp = if c_emit > 0 && w > 0 && h > 0 {
+                    c_bytes as f64 * 8.0 / (c_emit as f64 * w as f64 * h as f64)
+                } else {
+                    0.0
+                };
                 eprintln!(
-                    "[video] fps ({} s): captura={} entraron={} emitidos={} entregados={} · captura_ms={:.1} escala_ms={:.1} encode_ms={:.1}",
+                    "[video] fps ({} s): captura={} entraron={} emitidos={} entregados={} · captura_ms={:.1} escala_ms={:.1} encode_ms={:.1} · {:.0} kbps {:.1} KB/frame {:.3} bpp ({width}x{height})",
                     fps_log_at.elapsed().as_secs(),
-                    c_cap,
-                    c_in,
-                    c_emit,
-                    c_queued,
+                    c_cap, c_in, c_emit, c_queued,
                     if c_cap > 0 { t_cap_ms / c_cap as f64 } else { 0.0 },
                     if c_in > 0 { t_scale_ms / c_in as f64 } else { 0.0 },
                     if c_in > 0 { t_enc_ms / c_in as f64 } else { 0.0 },
+                    c_bytes as f64 * 8.0 / secs / 1000.0,
+                    kb_frame,
+                    bpp,
+                    width = w,
+                    height = h,
                 );
                 c_cap = 0;
                 c_in = 0;
                 c_emit = 0;
                 c_queued = 0;
+                c_bytes = 0;
                 t_cap_ms = 0.0;
                 t_scale_ms = 0.0;
                 t_enc_ms = 0.0;
@@ -622,6 +641,7 @@ pub fn spawn_video_task(
             } else {
                 empty_run = 0;
                 c_emit += 1;
+                c_bytes += enc.data.len() as u64;
                 // backpressure: descarte (contado como emitido≠entregado)
                 if out.try_send(VideoMsg::Frame(enc)).is_ok() {
                     c_queued += 1;

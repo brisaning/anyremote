@@ -20,9 +20,10 @@ use std::collections::VecDeque;
 use std::sync::OnceLock;
 
 use anyremote_capture::Frame;
-use windows::core::GUID;
+use windows::core::{Interface, GUID};
 use windows::Win32::Media::MediaFoundation as mf;
 use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
+use windows::Win32::System::Variant::{VariantInit, VARIANT, VARIANT_0_0, VARIANT_0_0_0, VT_UI4};
 
 use crate::conv::{bgra_to_i420, crop_bgra, i420_to_nv12};
 use crate::{CodecError, CodecFormat, EncodedFrame, VideoEncoder};
@@ -169,35 +170,86 @@ unsafe fn try_available_type(
     Ok(false)
 }
 
-/// Configura un MFT codificador: **salida H.264 primero** (orden exigido por
-/// el MFT de Microsoft — observado en desarrollo), luego entrada NV12.
-unsafe fn configure_encoder(
+/// C-33: fija un parámetro `CODECAPI_*` del MFT.
+///
+/// **Este es el camino correcto**: `IMFTransform::GetAttributes` expone los
+/// atributos del transform (p. ej. `MF_TRANSFORM_ASYNC`), NO el almacén de
+/// códecs. Los `CODECAPI_*` escritos ahí se ignoraban (campo 18/11: objetivo
+/// de 15 Mbps y ~265 kbps reales, texto borroso en las tres calidades).
+fn codec_api_u32(t: &mf::IMFTransform, api: &GUID, value: u32) -> bool {
+    let Ok(capi) = t.cast::<mf::ICodecAPI>() else {
+        return false;
+    };
+    let mut v: VARIANT = unsafe { VariantInit() };
+    v.Anonymous.Anonymous = core::mem::ManuallyDrop::new(VARIANT_0_0 {
+        vt: VT_UI4,
+        wReserved1: 0,
+        wReserved2: 0,
+        wReserved3: 0,
+        Anonymous: VARIANT_0_0_0 { ulVal: value },
+    });
+    unsafe { capi.IsSupported(api).is_ok() && capi.SetValue(api, &v).is_ok() }
+}
+
+/// Lectura de un `CODECAPI_*` (diagnóstico: confirma que el MFT lo aplicó).
+fn codec_api_get_u32(t: &mf::IMFTransform, api: &GUID) -> Option<u32> {
+    let capi = t.cast::<mf::ICodecAPI>().ok()?;
+    let v = unsafe { capi.GetValue(api) }.ok()?;
+    unsafe {
+        if v.Anonymous.Anonymous.vt == VT_UI4 {
+            Some(v.Anonymous.Anonymous.Anonymous.ulVal)
+        } else {
+            None
+        }
+    }
+}
+
+/// Configura tipos del MFT codificador: **salida H.264 primero** (orden
+/// exigido por el MFT de Microsoft — observado en desarrollo), luego entrada
+/// NV12. Devuelve el `profile_idc` aceptado (0 si hubo que adoptar un tipo
+/// disponible del MFT).
+unsafe fn configure_types(
     t: &mf::IMFTransform,
     w: u32,
     h: u32,
     fps: u32,
     bitrate: u32,
-) -> Result<(), CodecError> {
-    let outmt = video_type(mf::MFVideoFormat_H264)?;
-    frame_size_attr(&outmt, w, h)?;
-    common_video_attrs(&outmt, w, h, fps)?;
-    outmt
-        .SetUINT32(&mf::MF_MT_AVG_BITRATE, bitrate)
-        .map_err(|e| CodecError::Encode(format!("MF_MT_AVG_BITRATE: {e}")))?;
-    // Perfil Baseline (66): sin B-frames → retardo mínimo. Sin nivel fijo
-    // (lo negocia el MFT por resolución/bitrate).
-    outmt
-        .SetUINT32(
-            &mf::MF_MT_MPEG2_PROFILE,
-            mf::eAVEncH264VProfile_Base.0 as u32,
-        )
-        .map_err(|e| CodecError::Encode(format!("MF_MT_MPEG2_PROFILE: {e}")))?;
-    outmt
-        .SetUINT32(&mf::MF_LOW_LATENCY, 1)
-        .map_err(|e| CodecError::Encode(format!("MF_LOW_LATENCY: {e}")))?;
-    if t.SetOutputType(0, &outmt, 0).is_err()
-        && !try_available_type(t, false, mf::MFVideoFormat_H264, Some((w, h)))?
-    {
+) -> Result<u32, CodecError> {
+    // C-33: **Main (77, CABAC)** primero: ~10–15 % más eficiencia que
+    // Baseline al mismo bitrate (CABAC + 8×8). Si el MFT no lo acepta, se
+    // conserva el perfil Base (66) de antes (sin B-frames).
+    let mut profile = 0u32;
+    let mut accepted = false;
+    for candidate in [mf::eAVEncH264VProfile_Main, mf::eAVEncH264VProfile_Base] {
+        let outmt = video_type(mf::MFVideoFormat_H264)?;
+        frame_size_attr(&outmt, w, h)?;
+        common_video_attrs(&outmt, w, h, fps)?;
+        outmt
+            .SetUINT32(&mf::MF_MT_AVG_BITRATE, bitrate)
+            .map_err(|e| CodecError::Encode(format!("MF_MT_AVG_BITRATE: {e}")))?;
+        outmt
+            .SetUINT32(&mf::MF_MT_MPEG2_PROFILE, candidate.0 as u32)
+            .map_err(|e| CodecError::Encode(format!("MF_MT_MPEG2_PROFILE: {e}")))?;
+        outmt
+            .SetUINT32(&mf::MF_LOW_LATENCY, 1)
+            .map_err(|e| CodecError::Encode(format!("MF_LOW_LATENCY: {e}")))?;
+        // C-33: `conv.rs` entrega YUV de **rango completo** (0–255, sin
+        // offset). Sin declararlo, el MFT lo trata como 16–235 y el
+        // decodificador expande otra vez: medido en campo, el frame vuelve
+        // como `1,108·fuente − 12,8` (contraste lavado, negros recortados).
+        outmt
+            .SetUINT32(
+                &mf::MF_MT_VIDEO_NOMINAL_RANGE,
+                mf::MFNominalRange_0_255.0 as u32,
+            )
+            .map_err(|e| CodecError::Encode(format!("MF_MT_VIDEO_NOMINAL_RANGE: {e}")))?;
+        if t.SetOutputType(0, &outmt, 0).is_ok() {
+            profile = candidate.0 as u32;
+            accepted = true;
+            break;
+        }
+    }
+    if !accepted && !try_available_type(t, false, mf::MFVideoFormat_H264, Some((w, h)))? {
         return Err(CodecError::Encode(
             "SetOutputType rechazado (ni el tipo propio ni uno disponible)".into(),
         ));
@@ -214,13 +266,71 @@ unsafe fn configure_encoder(
             "SetInputType rechazado (ni el tipo propio ni uno disponible)".into(),
         ));
     }
+    Ok(profile)
+}
 
-    // Rate-control CBR (atributos CODECAPI del MFT): el VBR por defecto usa
-    // lookahead y retiene frames. NOTA: `AVEncCommonQualityVsSpeed=0` se
-    // probó y PEORÓ (dejó de emitir incluso en flush) — no se usa.
-    if let Ok(attrs) = t.GetAttributes() {
-        let _ = attrs.SetUINT32(&mf::CODECAPI_AVEncCommonRateControlMode, 0);
-    }
+/// C-33: política de rate-control por `ICodecAPI` (CBR con media = pico =
+/// tope). `AVEncCommonQualityVsSpeed=0` se probó y PEORÓ — no se usa.
+///
+/// Devuelve qué parámetros aceptó el MFT (diagnóstico de campo).
+fn apply_rate_control(
+    t: &mf::IMFTransform,
+    fps: u32,
+    profile: u32,
+    bitrate: u32,
+) -> [(&'static str, bool); 6] {
+    let rc = codec_api_u32(t, &mf::CODECAPI_AVEncCommonRateControlMode, 0); // CBR
+    let mean = codec_api_u32(t, &mf::CODECAPI_AVEncCommonMeanBitRate, bitrate);
+    let max = codec_api_u32(t, &mf::CODECAPI_AVEncCommonMaxBitRate, bitrate);
+    // GOP de 2 s: refresco de imagen periódico sin disparar el bitrate.
+    let gop_n = fps.saturating_mul(2).max(8);
+    let gop = codec_api_u32(t, &mf::CODECAPI_AVEncMPVGOPSize, gop_n);
+    // Sin B-frames (retardo mínimo; Main los permitiría).
+    let bframes = codec_api_u32(t, &mf::CODECAPI_AVEncMPVDefaultBPictureCount, 0);
+    let cabac = profile == mf::eAVEncH264VProfile_Main.0 as u32
+        && codec_api_u32(t, &mf::CODECAPI_AVEncH264CABACEnable, 1);
+    [
+        ("rc_cbr", rc),
+        ("mean", mean),
+        ("max", max),
+        ("gop", gop),
+        ("bframes0", bframes),
+        ("cabac", cabac),
+    ]
+}
+
+/// Configura un MFT codificador completo (tipos + rate-control).
+unsafe fn configure_encoder(
+    t: &mf::IMFTransform,
+    w: u32,
+    h: u32,
+    fps: u32,
+    bitrate: u32,
+) -> Result<(), CodecError> {
+    let profile = configure_types(t, w, h, fps, bitrate)?;
+    let applied = apply_rate_control(t, fps, profile, bitrate);
+    let effective = codec_api_get_u32(t, &mf::CODECAPI_AVEncCommonMeanBitRate);
+    let cur = unsafe { t.GetOutputCurrentType(0) }.ok();
+    let cur_avg = cur
+        .as_ref()
+        .and_then(|m| unsafe { m.GetUINT32(&mf::MF_MT_AVG_BITRATE) }.ok());
+    let cur_prof = cur
+        .as_ref()
+        .and_then(|m| unsafe { m.GetUINT32(&mf::MF_MT_MPEG2_PROFILE) }.ok());
+    let name = unsafe { t.GetAttributes() }
+        .ok()
+        .and_then(|a| {
+            let mut p = windows::core::PWSTR::null();
+            let mut len = 0u32;
+            a.GetAllocatedString(&mf::MFT_FRIENDLY_NAME_Attribute, &mut p, &mut len)
+                .ok()
+                .map(|_| p.to_string().unwrap_or_default())
+        })
+        .unwrap_or_default();
+    eprintln!(
+        "[video] h264 cfg: {w}x{h}@{fps} '{name}' profile={profile} bitrate={bitrate} \
+         {applied:?} mean_efectivo={effective:?} tipo_actual=avg:{cur_avg:?}/prof:{cur_prof:?}"
+    );
     Ok(())
 }
 
@@ -719,6 +829,16 @@ impl VideoEncoder for MfH264Encoder {
             return true;
         }
         self.bitrate = bps;
+        // C-33: si el MFT está vivo, aplica la tasa EN CALIENTE por
+        // `ICodecAPI` — sin reconstruir. La reconstrucción reinicia el
+        // calentamiento del MFT y en campo (C-24) dejó al visor sin vídeo.
+        if let Some(t) = self.transform.as_ref() {
+            let ok = codec_api_u32(t, &mf::CODECAPI_AVEncCommonMeanBitRate, bps)
+                && codec_api_u32(t, &mf::CODECAPI_AVEncCommonMaxBitRate, bps);
+            if ok {
+                return true;
+            }
+        }
         // Reasignación DIFERIDA (v0.9.1): un `SetOutputType` en caliente
         // (con entradas ya en cola) dejó al MFT sin emitir — observado a
         // 720p en campo. Se marca reconstrucción y el PRÓXIMO frame rehace
@@ -952,37 +1072,36 @@ mod tests {
         assert!(!contains_sps(&[0x67, 0x42]), "sin start codes no cuenta");
     }
 
-    /// C-24: las reconstrucciones del MFT por bitrate se COALESCENC (cada
-    /// una reinicia el calentamiento; con la cascada de adaptación a ~3 s y
-    /// pantalla estática a ~1 Hz el MFT nunca emitía → sesión sin vídeo).
+    /// C-33: un cambio de tasa sobre un MFT vivo se aplica **en vivo** por
+    /// `ICodecAPI` (sin reconstruir: cada reconstrucción reinicia el
+    /// calentamiento y en campo —C-24— dejó al visor sin vídeo). Si el MFT no
+    /// admite el cambio en vivo, cae a la reconstrucción diferida de siempre.
     #[test]
-    fn bitrate_rebuilds_are_coalesced() {
+    fn bitrate_change_is_applied_live_or_rebuilt() {
         if mf_ready().is_err() {
             eprintln!("MF no disponible en esta máquina: se omite");
             return;
         }
         let mut enc = MfH264Encoder::new(15, 1_000_000);
         enc.ensure(320, 180).expect("ensure inicial");
-        assert!(enc.transform.is_some());
-        enc.set_target_bitrate(700_000);
+        let t = enc.transform.clone().expect("MFT vivo");
+        assert!(enc.set_target_bitrate(700_000));
+        assert_eq!(enc.bitrate, 700_000);
+        let live = codec_api_get_u32(&t, &mf::CODECAPI_AVEncCommonMeanBitRate);
+        let rebuilt = enc.transform.is_none();
         assert!(
-            enc.transform.is_some(),
-            "dentro de la ventana NO se reconstruye (coalescado)"
+            live == Some(700_000) || rebuilt,
+            "la tasa debe quedar aplicada (viva o reconstruyendo): {live:?}"
         );
-        assert_eq!(enc.bitrate, 700_000, "el bitrate pendiente sí se guarda");
-        // Fuera de ventana (viaje en el tiempo): sí se marca reconstrucción.
-        enc.last_rebuild =
-            Some(std::time::Instant::now() - REBUILD_COALESCE - std::time::Duration::from_secs(1));
-        enc.set_target_bitrate(500_000);
-        assert!(
-            enc.transform.is_none(),
-            "fuera de la ventana SÍ se reconstruye"
-        );
-        // La próxima codificación reconstruye con el ÚLTIMO bitrate pendiente.
-        let frame = TestPatternCapturer::render(320, 180, 1);
-        let _ = enc.encode(&frame).expect("encode tras reconstrucción");
-        assert!(enc.transform.is_some());
-        assert_eq!(enc.bitrate, 500_000);
+        // Un segundo cambio tampoco puede perder la tasa.
+        assert!(enc.set_target_bitrate(400_000));
+        assert_eq!(enc.bitrate, 400_000);
+        if let Some(t) = enc.transform.as_ref() {
+            assert_eq!(
+                codec_api_get_u32(t, &mf::CODECAPI_AVEncCommonMeanBitRate),
+                Some(400_000)
+            );
+        }
     }
 
     /// Recorte a dims pares: un frame impar se recorta (1 px) sin error.

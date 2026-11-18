@@ -337,6 +337,15 @@ class _HomePageState extends State<HomePage> {
   late final Listenable _viewerPaint = Listenable.merge([_frame, _cursor]);
   int _videoFrames = 0;
   double _renderFps = 0;
+  /// C-33: zoom del visor. `0` = ajustar a la ventana; `1.0` = 1:1 (un píxel
+  /// remoto = un píxel físico). Con un anfitrión 4K y un cliente 1080p,
+  /// «ajustar» reduce el texto a la mitad (8 px) y no se lee: 100 % es la
+  /// forma de leerlo (se desplaza con las barras).
+  double _viewerZoom = 0;
+  /// C-33: tamaño dibujado del último frame (para el log de escala).
+  Size _viewerBox = Size.zero;
+  final ScrollController _hScroll = ScrollController();
+  final ScrollController _vScroll = ScrollController();
   int _lastRenderMs = 0;
   /// Última actualización del texto de cabecera (C-19: tope de 2 Hz).
   int _lastStatusMs = 0;
@@ -950,8 +959,18 @@ class _HomePageState extends State<HomePage> {
       _fpsLogTimer?.cancel();
       _fpsLogTimer = Timer.periodic(const Duration(seconds: 5), (_) {
         if (!mounted || _preview == null) return;
-        _appendQuiet(
-            '[ui] visor: fps render=${_renderFps.toStringAsFixed(1)} · $_videoFrames frames');
+        final img = _frame.value;
+        if (img != null) {
+          final escala = _viewerBox.width / img.width * 100;
+          _appendQuiet('[ui] visor: fps render=${_renderFps.toStringAsFixed(1)} · '
+              '$_videoFrames frames · ${img.width}x${img.height} '
+              '· caja=${_viewerBox.width.round()}x${_viewerBox.height.round()} '
+              '· escala=${escala.toStringAsFixed(0)}% '
+              '(${_viewerZoom == 0 ? 'ajustar' : '${(_viewerZoom * 100).round()}%'})');
+        } else {
+          _appendQuiet(
+              '[ui] visor: fps render=${_renderFps.toStringAsFixed(1)} · $_videoFrames frames');
+        }
       });
       Timer(const Duration(seconds: 5), () {
         if (mounted && _frame.value == null && _preview != null) {
@@ -987,6 +1006,7 @@ class _HomePageState extends State<HomePage> {
     _preview?.destroy();
     _preview = null;
     _cursor.value = const _CursorState();
+    _viewerBox = Size.zero;
     _assembler.reset();
     final img = _frame.value;
     _frame.value = null;
@@ -1006,6 +1026,87 @@ class _HomePageState extends State<HomePage> {
     for (final f in _assembler.push(chunk)) {
       unawaited(_renderFrame(f.bgra, f.width, f.height));
     }
+  }
+
+  /// C-33: superficie interactiva del vídeo. `box` es el tamaño DIBUJADO del
+  /// frame: la normalización del puntero y el overlay del cursor usan la
+  /// misma referencia, también con zoom 1:1.
+  Widget _viewerSurface(ui.Image? img, _CursorState cur, Size box) {
+    _viewerBox = box;
+    return Listener(
+      // Ratón: cualquier movimiento (arrastrando o pasando por encima) →
+      // cursor remoto. El botón se mantiene mientras el puntero esté
+      // pulsado (arrastrar = down…moves…up).
+      onPointerDown: (e) {
+        _inputFocus.requestFocus();
+        _sendPointer(e.localPosition, box);
+        final b = e.buttons;
+        if (b & kPrimaryMouseButton != 0) {
+          _heldButton = 0;
+        } else if (b & kSecondaryMouseButton != 0) {
+          _heldButton = 1;
+        } else if (b & kMiddleMouseButton != 0) {
+          _heldButton = 2;
+        }
+        if (_heldButton != null) {
+          _sendButton(_heldButton!, true);
+        }
+      },
+      onPointerMove: (e) => _sendPointer(e.localPosition, box),
+      onPointerUp: (_) => _releaseButton(),
+      onPointerCancel: (_) => _releaseButton(),
+      onPointerSignal: (sig) {
+        if (sig is PointerScrollEvent) {
+          // C-33: la rueda es del REMOTO también a 100 % (si no, haría
+          // scroll de las barras locales); se reclama el evento para que el
+          // `SingleChildScrollView` no lo consuma.
+          GestureBinding.instance.pointerSignalResolver.register(sig, (event) {
+            if (event is PointerScrollEvent) {
+              _sendScroll(event.scrollDelta.dy);
+            }
+          });
+        }
+      },
+      child: Focus(
+        focusNode: _inputFocus,
+        autofocus: true,
+        onKeyEvent: _onViewerKey,
+        // C-11: vídeo + overlay del cursor remoto. `StackFit.expand` conserva
+        // las restricciones ajustadas de antes (RawImage rellena la caja).
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (img != null)
+              RawImage(
+                image: img,
+                fit: BoxFit.contain,
+                // C-33: a 1:1 sin remuestreo (texto nítido); al ajustar,
+                // filtrado de calidad para reducir sin aliasing.
+                filterQuality: _viewerZoom == 1
+                    ? FilterQuality.none
+                    : FilterQuality.medium,
+              )
+            else
+              // C-23: el placeholder vive ya DENTRO del Listener/Focus.
+              const Center(
+                child: Text('conectado… esperando primer frame',
+                    style: TextStyle(color: Colors.grey)),
+              ),
+            if (img != null && cur.visible && cur.nx != null && cur.ny != null)
+              Positioned(
+                // Normalizado del anfitrión → caja de la imagen (0..65535).
+                left: cur.nx! / 65535 * box.width,
+                top: cur.ny! / 65535 * box.height,
+                child: const CustomPaint(
+                  key: Key('remote-cursor'),
+                  size: Size(16, 24),
+                  painter: _RemoteCursorPainter(),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _renderFrame(Uint8List bgra, int w, int h) async {
@@ -1163,6 +1264,8 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _disposed = true;
     _fpsLogTimer?.cancel();
+    _hScroll.dispose();
+    _vScroll.dispose();
     _daemon?.kill(ProcessSignal.sigkill);
     _listener?.kill(ProcessSignal.sigkill);
     _preview?.destroy();
@@ -1463,10 +1566,14 @@ class _HomePageState extends State<HomePage> {
                           if (_inputEvents > 0) const SizedBox(width: 10),
                           // C-19: la cabecera escucha SU notifier: los
                           // cambios de estado no reconstruyen la página.
-                          ValueListenableBuilder<String>(
-                            valueListenable: _videoStatus,
-                            builder: (_, status, _) => Text(status,
-                                style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                          Flexible(
+                            child: ValueListenableBuilder<String>(
+                              valueListenable: _videoStatus,
+                              builder: (_, status, _) => Text(status,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 12, color: Colors.grey)),
+                            ),
                           ),
                         ],
                       ),
@@ -1474,7 +1581,30 @@ class _HomePageState extends State<HomePage> {
                       // C-10: los toggles dinámicos (C-2) viajan a la cabecera
                       // del visor: en modo visor la sección Conexión queda
                       // oculta, pero los permisos siguen cambiando en caliente.
-                      Row(children: _permToggles(fontSize: 11)),
+                      Row(
+                        children: [
+                          ..._permToggles(fontSize: 11),
+                          const Spacer(),
+                          // C-33: «Ajustar» reduce la pantalla completa a la
+                          // ventana (texto pequeño si el anfitrión es 4K);
+                          // «100 %» es 1:1 y se desplaza con las barras.
+                          const Icon(Icons.zoom_in, size: 15),
+                          const SizedBox(width: 4),
+                          DropdownButton<double>(
+                            value: _viewerZoom,
+                            isDense: true,
+                            underline: const SizedBox.shrink(),
+                            style: const TextStyle(fontSize: 12),
+                            items: const [
+                              DropdownMenuItem(value: 0, child: Text('Ajustar')),
+                              DropdownMenuItem(value: 1, child: Text('100 %')),
+                              DropdownMenuItem(value: 1.5, child: Text('150 %')),
+                            ],
+                            onChanged: (v) =>
+                                setState(() => _viewerZoom = v ?? 0),
+                          ),
+                        ],
+                      ),
                       const SizedBox(height: 6),
                       // C-9: el marco reparte el alto restante de la tarjeta
                       // y se centra → la pantalla del anfitrión se ve COMPLETA
@@ -1489,88 +1619,53 @@ class _HomePageState extends State<HomePage> {
                             builder: (context, _) {
                               final img = _frame.value;
                               final cur = _cursor.value;
-                              return AspectRatio(
-                        aspectRatio: img != null
-                            ? img.width / img.height
-                            : 16 / 9,
-                        // C-23 (A): el input se captura SIEMPRE, también en
-                        // «esperando primer frame» — sin frame el usuario no
-                        // podía ni mover el ratón, la pantalla del anfitrión
-                        // seguía estática y el vídeo no arrancaba (deadlock).
-                        child: LayoutBuilder(
-                                builder: (context, constraints) {
-                                  final box = Size(
-                                      constraints.maxWidth, constraints.maxHeight);
-                                  return Listener(
-                                    // Ratón: cualquier movimiento (arrastrando o
-                                    // pasando por encima) → cursor remoto. El
-                                    // botón se mantiene mientras el puntero esté
-                                    // pulsado (arrastrar = down…moves…up).
-                                    onPointerDown: (e) {
-                                      _inputFocus.requestFocus();
-                                      _sendPointer(e.localPosition, box);
-                                      final b = e.buttons;
-                                      if (b & kPrimaryMouseButton != 0) {
-                                        _heldButton = 0;
-                                      } else if (b & kSecondaryMouseButton != 0) {
-                                        _heldButton = 1;
-                                      } else if (b & kMiddleMouseButton != 0) {
-                                        _heldButton = 2;
-                                      }
-                                      if (_heldButton != null) {
-                                        _sendButton(_heldButton!, true);
-                                      }
-                                    },
-                                    onPointerMove: (e) =>
-                                        _sendPointer(e.localPosition, box),
-                                    onPointerUp: (_) => _releaseButton(),
-                                    onPointerCancel: (_) => _releaseButton(),
-                                    onPointerSignal: (sig) {
-                                      if (sig is PointerScrollEvent) {
-                                        _sendScroll(sig.scrollDelta.dy);
-                                      }
-                                    },
-                                    child: Focus(
-                                      focusNode: _inputFocus,
-                                      autofocus: true,
-                                      onKeyEvent: _onViewerKey,
-                                      // C-11: vídeo + overlay del cursor
-                                      // remoto. `StackFit.expand` conserva
-                                      // las restricciones ajustadas de antes
-                                      // (RawImage sigue rellenando la caja).
-                                      child: Stack(
-                                        fit: StackFit.expand,
-                                        children: [
-                                          if (img != null)
-                                            RawImage(image: img, fit: BoxFit.contain)
-                                          else
-                                            // C-23: el placeholder vive ya
-                                            // DENTRO del Listener/Focus.
-                                            const Center(
-                                              child: Text('conectado… esperando primer frame',
-                                                  style: TextStyle(color: Colors.grey)),
-                                            ),
-                                          if (img != null &&
-                                              cur.visible &&
-                                              cur.nx != null &&
-                                              cur.ny != null)
-                                            Positioned(
-                                              // Normalizado del anfitrión →
-                                              // caja de la imagen (0..65535).
-                                              left: cur.nx! / 65535 * box.width,
-                                              top: cur.ny! / 65535 * box.height,
-                                              child: const CustomPaint(
-                                                key: Key('remote-cursor'),
-                                                size: Size(16, 24),
-                                                painter: _RemoteCursorPainter(),
-                                              ),
-                                            ),
-                                        ],
+                              // C-23 (A): el input se captura SIEMPRE,
+                              // también sin frame (si no, la pantalla del
+                              // anfitrión no despierta y el vídeo no arranca).
+                              if (img == null) {
+                                return LayoutBuilder(
+                                  builder: (context, c) =>
+                                      _viewerSurface(null, cur, c.biggest),
+                                );
+                              }
+                              // C-33: «ajustar» (por defecto) o 1:1. Con un
+                              // anfitrión 4K al 125 % y un cliente 1080p, el
+                              // texto llega a 8 px: sólo se lee a 100 %.
+                              if (_viewerZoom <= 0) {
+                                return AspectRatio(
+                                  aspectRatio: img.width / img.height,
+                                  child: LayoutBuilder(
+                                    builder: (context, c) => _viewerSurface(
+                                        img, cur, c.biggest),
+                                  ),
+                                );
+                              }
+                              final box = Size(
+                                img.width * _viewerZoom,
+                                img.height * _viewerZoom,
+                              );
+                              return ClipRect(
+                                child: Scrollbar(
+                                  controller: _vScroll,
+                                  thumbVisibility: true,
+                                  child: SingleChildScrollView(
+                                    controller: _vScroll,
+                                    child: Scrollbar(
+                                      controller: _hScroll,
+                                      thumbVisibility: true,
+                                      notificationPredicate: (n) => n.depth == 1,
+                                      child: SingleChildScrollView(
+                                        controller: _hScroll,
+                                        scrollDirection: Axis.horizontal,
+                                        child: SizedBox(
+                                          width: box.width,
+                                          height: box.height,
+                                          child: _viewerSurface(img, cur, box),
+                                        ),
                                       ),
                                     ),
-                                  );
-                                },
-                              ),
+                                  ),
+                                ),
                               );
                             },
                           ),

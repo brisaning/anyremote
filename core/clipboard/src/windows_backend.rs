@@ -107,7 +107,6 @@ fn windows_clipboard_read_probe() {
 }
 
 #[test]
-#[cfg_attr(not(any(test)), allow(dead_code))]
 fn windows_clipboard_roundtrip_only_when_opted_in() {
     if std::env::var("ANYREMOTE_TEST_CLIPBOARD").ok().as_deref() != Some("1") {
         eprintln!("omitido: define ANYREMOTE_TEST_CLIPBOARD=1 para el roundtrip real");
