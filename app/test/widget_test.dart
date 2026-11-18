@@ -395,6 +395,49 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('C-34: las dos barras viven en el viewport (no dentro del frame)',
+      (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+
+    // Frame MAYOR que la ventana de test (800x600) para que haya recorrido.
+    const w = 1200;
+    const h = 800;
+    final payload = Uint8List(w * h * 4)..fillRange(0, w * h * 4, 0x50);
+    final bytes = Uint8List(16 + payload.length);
+    final bd = ByteData.sublistView(bytes);
+    bd.setUint32(0, w, Endian.little);
+    bd.setUint32(4, h, Endian.little);
+    bd.setUint32(8, 1, Endian.little);
+    bd.setUint32(12, payload.length, Endian.little);
+    bytes.setAll(16, payload);
+    await tester.runAsync(() async {
+      st.debugPushVideoBytes(bytes);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    });
+    await tester.pump();
+
+    await tester.tap(find.text('Ajustar'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('100 %').last);
+    await tester.pumpAndSettle();
+
+    final bars = find.byType(Scrollbar);
+    expect(bars, findsNWidgets(2), reason: 'barra vertical + horizontal');
+    // C-34: antes la horizontal se pintaba al final del contenido (y=800)
+    // y quedaba fuera de la pantalla. Ahora ambas caben en la ventana.
+    final screen = tester.view.physicalSize / tester.view.devicePixelRatio;
+    for (var i = 0; i < 2; i++) {
+      final r = tester.getRect(bars.at(i));
+      expect(r.top, greaterThanOrEqualTo(0));
+      expect(r.left, greaterThanOrEqualTo(0));
+      expect(r.bottom, lessThanOrEqualTo(screen.height + 1),
+          reason: 'la barra $i debe verse dentro de la ventana');
+      expect(r.right, lessThanOrEqualTo(screen.width + 1));
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {
     // Cualquier calidad de vídeo (720p, 1080p, nativa) produce el mismo
     // resultado para la misma posición relativa (fix v0.6.2: a 720p/1080p el
