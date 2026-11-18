@@ -21,6 +21,14 @@ pub enum Key {
     Down,
     Home,
     End,
+    /// C-37: teclas de edición/navegación que faltaban en el wire.
+    Insert,
+    PageUp,
+    PageDown,
+    /// C-37: bloqueos (toggle del sistema remoto).
+    CapsLock,
+    NumLock,
+    ScrollLock,
     F1,
     F2,
     F3,

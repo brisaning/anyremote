@@ -438,6 +438,27 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  test('C-37: dead key + vocal compone el carácter (ó, ü, ñ, Ó)', () {
+    expect(composeDeadAccent('´', 'o'), 'ó');
+    expect(composeDeadAccent('´', 'a'), 'á');
+    expect(composeDeadAccent('´', 'O'), 'Ó');
+    expect(composeDeadAccent('¨', 'u'), 'ü');
+    expect(composeDeadAccent('~', 'n'), 'ñ');
+    expect(composeDeadAccent('~', 'N'), 'Ñ');
+    expect(composeDeadAccent('`', 'e'), 'è');
+    expect(composeDeadAccent('^', 'i'), 'î');
+    // Parejas que no componen → null (se envían por separado).
+    expect(composeDeadAccent('´', 'x'), isNull);
+    expect(composeDeadAccent('~', 'e'), isNull);
+    expect(composeDeadAccent('a', 'b'), isNull);
+    // Detección de dead keys.
+    for (final d in ['´', '`', '^', '¨', '~']) {
+      expect(isDeadAccent(d), isTrue, reason: d);
+    }
+    expect(isDeadAccent('a'), isFalse);
+    expect(isDeadAccent("'"), isFalse);
+  });
+
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {
     // Cualquier calidad de vídeo (720p, 1080p, nativa) produce el mismo
     // resultado para la misma posición relativa (fix v0.6.2: a 720p/1080p el
