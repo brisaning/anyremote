@@ -436,6 +436,13 @@ class _HomePageState extends State<HomePage> {
   /// MFT con SPS in-band inundó el log con735 líneas/sesión).
   int _videoDecodeErrors = 0;
   bool _rendering = false;
+  /// C-42: contadores del visor para decidir si hace falta una `Texture`
+  /// nativa: frames RECIBIDOS, RENDERIZADOS, DESCARTADOS por el guard de
+  /// reentrada y coste medio del render (ms).
+  int _framesRecv = 0;
+  int _framesRendered = 0;
+  int _framesDropped = 0;
+  double _renderCostMs = 0;
   final List<String> _log = [
     '[build] anyremote $kVersion · rev $kGitRev',
     '[build] Flutter $kFlutterBuild · windows-x64',
@@ -478,6 +485,10 @@ class _HomePageState extends State<HomePage> {
   /// Costura de test (C-19): empuja bytes crudos por el mismo camino que el
   /// preview (ensamblador → render) sin socket.
   void debugPushVideoBytes(Uint8List chunk) => _onVideoBytes(chunk);
+
+  /// Costura de test (C-42): contadores del visor.
+  (int, int, int, double) get debugRenderStats =>
+      (_framesRecv, _framesRendered, _framesDropped, _renderCostMs);
 
   /// Costura de test (C-23): abre el visor contra un puerto local para
   /// verificar el estado «esperando primer frame» con input activo.
@@ -1103,7 +1114,9 @@ class _HomePageState extends State<HomePage> {
               '$_videoFrames frames · ${img.width}x${img.height} '
               '· caja=${_viewerBox.width.round()}x${_viewerBox.height.round()} '
               '· escala=${escala.toStringAsFixed(0)}% '
-              '(${_viewerZoom == 0 ? 'ajustar' : '${(_viewerZoom * 100).round()}%'})');
+              '(${_viewerZoom == 0 ? 'ajustar' : '${(_viewerZoom * 100).round()}%'}) '
+              '· recv=$_framesRecv render=$_framesRendered drop=$_framesDropped '
+              'coste=${_renderCostMs.toStringAsFixed(1)}ms');
         } else {
           _appendQuiet(
               '[ui] visor: fps render=${_renderFps.toStringAsFixed(1)} · $_videoFrames frames');
@@ -1149,6 +1162,10 @@ class _HomePageState extends State<HomePage> {
     _frame.value = null;
     img?.dispose();
     _videoFrames = 0;
+    _framesRecv = 0;
+    _framesRendered = 0;
+    _framesDropped = 0;
+    _renderCostMs = 0;
     _videoDecodeErrors = 0;
     _lastFrameMs = 0;
     _stallLogged = false;
@@ -1163,6 +1180,7 @@ class _HomePageState extends State<HomePage> {
     // COMPLETO en cada chunk → cuadrático en bytes por frame) y devuelve
     // los frames completos con una sola copia de payload por frame.
     for (final f in _assembler.push(chunk)) {
+      _framesRecv += 1;
       unawaited(_renderFrame(f.bgra, f.width, f.height));
     }
   }
@@ -1249,8 +1267,13 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _renderFrame(Uint8List bgra, int w, int h) async {
-    if (_rendering) return; // bajo carga: descarta en lugar de encolar
+    if (_rendering) {
+      // Bajo carga se descarta en vez de encolar (latencia); se CUENTA.
+      _framesDropped += 1;
+      return;
+    }
     _rendering = true;
+    final tRender = DateTime.now();
     try {
       final buf = await ui.ImmutableBuffer.fromUint8List(bgra);
       final desc = ui.ImageDescriptor.raw(
@@ -1279,6 +1302,9 @@ class _HomePageState extends State<HomePage> {
       }
       _lastRenderMs = now;
       _videoFrames += 1;
+      _framesRendered += 1;
+      final cost = DateTime.now().difference(tRender).inMicroseconds / 1000.0;
+      _renderCostMs = _renderCostMs == 0 ? cost : 0.8 * _renderCostMs + 0.2 * cost;
       _lastFrameMs = now;
       _stallLogged = false;
       // C-19: la cabecera se actualiza como máximo a 2 Hz (contador/fps no
