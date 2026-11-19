@@ -17,7 +17,7 @@ use anyremote_audio::{AudioCapture, AudioMode, AudioPlayback, AudioSource, OpusC
 use anyremote_clipboard::{ClipboardSyncEngine, MemoryClipboard};
 use anyremote_codec::{CodecError, VideoDecoder};
 use anyremote_filexfer::{sha256_hex, FileReceiver, FileSender};
-use anyremote_identity::{Identity, NodeId, TrustStore};
+use anyremote_identity::{Identity, NodeId, TrustOrigin, TrustStore};
 use anyremote_input::cursor::{CursorBackend, CursorPos};
 use anyremote_input::InputInjector;
 use anyremote_session::{LinkStats, SessionEvent, SessionState};
@@ -839,18 +839,32 @@ fn parse_decision(line: &str, expected_id: &str) -> Option<AdmissionDecision> {
     }
 }
 
-/// Resultado de la autorización del par (C-44). `remember` = persistir en TOFU.
+/// Qué persistir en `trusted.ids` al aceptar (C-44 fix): una autorización
+/// explícita (`User`) o solo el recuerdo de haberlo visto (`Seen`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Persist {
+    None,
+    User,
+    Seen,
+}
+
+/// Resultado de la autorización del par (C-44).
 enum Admission {
-    Accept { remember: bool },
+    Accept { persist: Persist },
     Deny { reason: &'static str },
 }
 
 /// Autoriza al par autenticado según `--accept` (F-01/RNF-07). El anfitrión
 /// decide; un par desconocido **no** obtiene sesión por defecto.
+///
+/// Fix de campo 19/11: en `ask`/`trusted` solo autoriza una entrada **`user`**
+/// (decisión explícita). Las entradas heredadas del TOFU previo son `seen` y
+/// vuelven a preguntar.
 #[allow(clippy::too_many_arguments)] // capas de sesión: cada parámetro tiene dueño claro.
 async fn admit_peer(
     peer_id: &auth::PeerIdentity,
     cfg: &DaemonConfig,
+    trust: &TrustStore,
     ctl: &mut StdinCtl,
     session_id: &str,
     peer: std::net::SocketAddr,
@@ -858,29 +872,39 @@ async fn admit_peer(
     emit: &mut Emit,
 ) -> Result<Admission, DaemonError> {
     let id = peer_id.node_id.to_string();
+    let user_trusted = trust.is_user_trusted(&peer_id.node_id, &peer_id.pubkey);
     match cfg.accept {
-        // Legado/tests: cualquier par autenticado (documentado como inseguro).
-        AcceptPolicy::Any => Ok(Admission::Accept { remember: true }),
+        // Legado/tests: cualquier par autenticado. Se recuerda solo como
+        // «visto» para que no se convierta en autorización en `ask`/`trusted`.
+        AcceptPolicy::Any => Ok(Admission::Accept {
+            persist: Persist::Seen,
+        }),
         AcceptPolicy::Trusted => {
-            if peer_id.trusted {
-                return Ok(Admission::Accept { remember: false });
+            if user_trusted {
+                return Ok(Admission::Accept {
+                    persist: Persist::None,
+                });
             }
             if cfg
                 .trusted_ids
                 .iter()
                 .any(|t| t.eq_ignore_ascii_case(id.as_str()))
             {
-                return Ok(Admission::Accept { remember: true });
+                return Ok(Admission::Accept {
+                    persist: Persist::User,
+                });
             }
             Ok(Admission::Deny {
                 reason: "peer_unknown",
             })
         }
         AcceptPolicy::Ask => {
-            // Ya autorizado por el anfitrión en una sesión anterior: entra sin
-            // volver a preguntar (la decisión quedó en `trusted.ids`).
-            if peer_id.trusted {
-                return Ok(Admission::Accept { remember: false });
+            // Ya autorizado explícitamente en una sesión anterior: entra sin
+            // volver a preguntar. (Una entrada `seen` NO basta.)
+            if user_trusted {
+                return Ok(Admission::Accept {
+                    persist: Persist::None,
+                });
             }
             emit.emit(ev(
                 "session_pending",
@@ -904,9 +928,9 @@ async fn admit_peer(
                     Ok(Some(line)) => {
                         if let Some(dec) = parse_decision(&line, id.as_str()) {
                             return Ok(match dec {
-                                AdmissionDecision::Accept { trust } => {
-                                    Admission::Accept { remember: trust }
-                                }
+                                AdmissionDecision::Accept { trust } => Admission::Accept {
+                                    persist: if trust { Persist::User } else { Persist::None },
+                                },
                                 AdmissionDecision::Reject => Admission::Deny {
                                     reason: "rejected_by_host",
                                 },
@@ -990,9 +1014,9 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     let peer_id = auth::recv_validate_auth(&mut ch, &mut gate, &trust, &binding).await?;
     // C-44 (F-01/RNF-07): autenticado ≠ autorizado. El anfitrión decide ANTES
     // de anunciar nada ni enviar su prueba de identidad (mínima exposición).
-    let admission = admit_peer(&peer_id, cfg, ctl, session_id, peer, log, emit).await?;
-    let remember = match admission {
-        Admission::Accept { remember } => remember,
+    let admission = admit_peer(&peer_id, cfg, &trust, ctl, session_id, peer, log, emit).await?;
+    let persist = match admission {
+        Admission::Accept { persist } => persist,
         Admission::Deny { reason } => {
             log.record(
                 AuditEventKind::PermissionDenied,
@@ -1017,16 +1041,24 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
         }
     };
     auth::send_auth(&mut ch, identity, &binding).await?;
-    // D-03 (TOFU): solo se recuerda un par ACEPTADO; en la próxima sesión del
-    // mismo equipo `peer_trusted` será true (y en `trusted`/`ask` entra sin
-    // volver a preguntar).
-    if remember {
-        TrustStore::remember(&cfg.config_dir, &peer_id.node_id, &peer_id.pubkey);
+    // D-03/C-44: `User` = autorización explícita del anfitrión; `Seen` = solo
+    // TOFU (no autoriza en `trusted`/`ask`). Nunca se degrada un `user`.
+    match persist {
+        Persist::None => {}
+        Persist::User => TrustStore::remember(&cfg.config_dir, &peer_id.node_id, &peer_id.pubkey),
+        Persist::Seen => {
+            TrustStore::remember_seen(&cfg.config_dir, &peer_id.node_id, &peer_id.pubkey)
+        }
     }
+    let trust_origin = match trust.origin(&peer_id.node_id, &peer_id.pubkey) {
+        Some(TrustOrigin::User) => "user",
+        Some(TrustOrigin::Seen) => "seen",
+        None => "none",
+    };
     log.record(
         AuditEventKind::SessionEstablished,
         session_id,
-        serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted, "peer_addr": peer.to_string(), "transport": transport, "accept": cfg.accept.as_str()}),
+        serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted, "peer_trust": trust_origin, "persist": match persist { Persist::None => "none", Persist::User => "user", Persist::Seen => "seen" }, "peer_addr": peer.to_string(), "transport": transport, "accept": cfg.accept.as_str()}),
     )?;
     emit.emit(ev(
         "session_active",

@@ -145,10 +145,22 @@ impl Identity {
     }
 }
 
+/// Origen de una entrada de confianza (fix C-44, campo 2026-11-19).
+///
+/// Solo `User` acredita una **decisión explícita** del anfitrión
+/// (`--trust` o «Aceptar y confiar»). `Seen` es TOFU automático (modo `any`)
+/// o una entrada **heredada** de versiones previas, que se registraban sin
+/// consentimiento: no debe autorizar por sí sola.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TrustOrigin {
+    User,
+    Seen,
+}
+
 /// Dispositivos de confianza locales (patrón OPTION_ENABLE_TRUSTED_DEVICES, H-RD-02).
 #[derive(Default)]
 pub struct TrustStore {
-    entries: std::collections::BTreeMap<NodeId, [u8; 32]>,
+    entries: std::collections::BTreeMap<NodeId, ([u8; 32], TrustOrigin)>,
 }
 
 impl TrustStore {
@@ -156,17 +168,40 @@ impl TrustStore {
         Self::default()
     }
 
+    /// Confía explícitamente en el par (decisión del anfitrión).
     pub fn trust(&mut self, id: NodeId, pk: [u8; 32]) {
-        self.entries.insert(id, pk);
+        self.entries.insert(id, (pk, TrustOrigin::User));
+    }
+
+    /// Registra el par como «visto» (TOFU automático): informativo, no autoriza.
+    pub fn trust_seen(&mut self, id: NodeId, pk: [u8; 32]) {
+        // Nunca degradar una autorización explícita.
+        if !self.is_user_trusted(&id, &pk) {
+            self.entries.insert(id, (pk, TrustOrigin::Seen));
+        }
     }
 
     pub fn remove(&mut self, id: &NodeId) -> bool {
         self.entries.remove(id).is_some()
     }
 
-    /// Solo es confiable si el id y la pk coinciden con el registro.
+    /// El par está registrado (cualquier origen) con id y pk coincidentes.
     pub fn is_trusted(&self, id: &NodeId, pk: &[u8; 32]) -> bool {
-        self.entries.get(id).is_some_and(|k| k == pk)
+        self.entries.get(id).is_some_and(|(k, _)| k == pk)
+    }
+
+    /// El par fue **autorizado explícitamente** por el anfitrión.
+    pub fn is_user_trusted(&self, id: &NodeId, pk: &[u8; 32]) -> bool {
+        self.entries
+            .get(id)
+            .is_some_and(|(k, o)| k == pk && *o == TrustOrigin::User)
+    }
+
+    pub fn origin(&self, id: &NodeId, pk: &[u8; 32]) -> Option<TrustOrigin> {
+        self.entries
+            .get(id)
+            .filter(|(k, _)| k == pk)
+            .map(|(_, o)| *o)
     }
 
     pub fn len(&self) -> usize {
@@ -179,6 +214,10 @@ impl TrustStore {
 
     /// Carga `dir/trusted.ids` (mejor esfuerzo: ausente/corrupto → vacío; cada
     /// línea inválida se ignora y el vínculo id↔pk se revalida al leer).
+    ///
+    /// Formato: `ID=hex[:user|:seen]`. **Sin sufijo = `seen`** (entradas de
+    /// versiones anteriores a C-44, que se guardaban sin consentimiento): se
+    /// conservan para el registro pero no autorizan sin preguntar.
     pub fn load(dir: &std::path::Path) -> Self {
         let mut s = Self::new();
         let Ok(text) = std::fs::read_to_string(dir.join(TRUST_FILE)) else {
@@ -189,12 +228,17 @@ impl TrustStore {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((id, pk)) = line.split_once('=') else {
+            let Some((id, rest)) = line.split_once('=') else {
                 continue;
+            };
+            let (pk_hex, origin) = match rest.rsplit_once(':') {
+                Some((pk, "user")) => (pk, TrustOrigin::User),
+                Some((pk, "seen")) => (pk, TrustOrigin::Seen),
+                _ => (rest, TrustOrigin::Seen), // heredado = visto, no autorizado
             };
             let (Ok(id), Ok(raw)) = (
                 NodeId::parse(id),
-                data_encoding::HEXLOWER.decode(pk.as_bytes()),
+                data_encoding::HEXLOWER.decode(pk_hex.as_bytes()),
             ) else {
                 continue;
             };
@@ -203,7 +247,7 @@ impl TrustStore {
             };
             // Vínculo id↔pk coherente (mismo criterio que `is_trusted`).
             if derive_node_id_from_pk_bytes(&pk) == id {
-                s.entries.insert(id, pk);
+                s.entries.insert(id, (pk, origin));
             }
         }
         s
@@ -212,24 +256,39 @@ impl TrustStore {
     /// Persiste el store en `dir/trusted.ids`.
     pub fn save(&self, dir: &std::path::Path) -> Result<(), IdentityError> {
         std::fs::create_dir_all(dir).map_err(io_err)?;
-        let mut out = String::from("# anyremote: pares autenticados (TOFU)\n");
-        for (id, pk) in &self.entries {
+        let mut out = String::from(
+            "# anyremote: pares conocidos (C-44: user = autorizado, seen = solo visto)\n",
+        );
+        for (id, (pk, origin)) in &self.entries {
             out.push_str(id.as_str());
             out.push('=');
             out.push_str(&data_encoding::HEXLOWER.encode(pk));
+            out.push_str(match origin {
+                TrustOrigin::User => ":user",
+                TrustOrigin::Seen => ":seen",
+            });
             out.push('\n');
         }
         std::fs::write(dir.join(TRUST_FILE), out).map_err(io_err)?;
         Ok(())
     }
 
-    /// TOFU (D-03): recuerda un par YA autenticado para que la próxima sesión
-    /// del mismo equipo figure como `peer_trusted`. Solo añade (no pisa) y
-    /// persiste; mejor esfuerzo (un fallo de E/S no afecta a la sesión).
+    /// Autoriza explícitamente al par y lo persiste (mejor esfuerzo: un fallo
+    /// de E/S no afecta a la sesión).
     pub fn remember(dir: &std::path::Path, id: &NodeId, pk: &[u8; 32]) {
         let mut s = Self::load(dir);
-        if !s.is_trusted(id, pk) {
+        if !s.is_user_trusted(id, pk) {
             s.trust(id.clone(), *pk);
+            let _ = s.save(dir);
+        }
+    }
+
+    /// Recuerda el par como «visto» (modo `any`/TOFU): no autoriza en
+    /// `trusted`/`ask`. Nunca degrada una autorización `user`.
+    pub fn remember_seen(dir: &std::path::Path, id: &NodeId, pk: &[u8; 32]) {
+        let mut s = Self::load(dir);
+        if s.origin(id, pk) != Some(TrustOrigin::Seen) {
+            s.trust_seen(id.clone(), *pk);
             let _ = s.save(dir);
         }
     }
@@ -368,6 +427,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Fix C-44 (campo 19/11): las entradas heredadas del TOFU antiguo se
+    /// conservan como `seen` y **no** autorizan sin preguntar.
+    #[test]
+    fn legacy_entries_are_seen_and_only_user_trust_authorizes() {
+        let dir =
+            std::env::temp_dir().join(format!("anyremote-trust-origin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let a = Identity::generate();
+        let pk_hex = data_encoding::HEXLOWER.encode(&a.verifying_key_bytes());
+
+        // Formato v1 (sin sufijo): heredado → seen.
+        std::fs::write(
+            dir.join(TRUST_FILE),
+            format!("{}={}\n", a.node_id(), pk_hex),
+        )
+        .expect("escribe v1");
+        let s = TrustStore::load(&dir);
+        assert!(s.is_trusted(&a.node_id(), &a.verifying_key_bytes()));
+        assert!(
+            !s.is_user_trusted(&a.node_id(), &a.verifying_key_bytes()),
+            "una entrada heredada no es autorización del usuario"
+        );
+        assert_eq!(
+            s.origin(&a.node_id(), &a.verifying_key_bytes()),
+            Some(TrustOrigin::Seen)
+        );
+
+        // «Aceptar y confiar» → user y persiste el origen.
+        TrustStore::remember(&dir, &a.node_id(), &a.verifying_key_bytes());
+        let s = TrustStore::load(&dir);
+        assert!(s.is_user_trusted(&a.node_id(), &a.verifying_key_bytes()));
+        assert_eq!(
+            s.origin(&a.node_id(), &a.verifying_key_bytes()),
+            Some(TrustOrigin::User)
+        );
+        let raw = std::fs::read_to_string(dir.join(TRUST_FILE)).expect("lee");
+        assert!(raw.contains(":user"), "formato v2 con origen:\n{raw}");
+
+        // `seen` no degrada una autorización `user`.
+        TrustStore::remember_seen(&dir, &a.node_id(), &a.verifying_key_bytes());
+        assert!(TrustStore::load(&dir).is_user_trusted(&a.node_id(), &a.verifying_key_bytes()));
+
+        // Un par nuevo registrado solo como visto no queda autorizado.
+        let b = Identity::generate();
+        TrustStore::remember_seen(&dir, &b.node_id(), &b.verifying_key_bytes());
+        let s = TrustStore::load(&dir);
+        assert!(s.is_trusted(&b.node_id(), &b.verifying_key_bytes()));
+        assert!(!s.is_user_trusted(&b.node_id(), &b.verifying_key_bytes()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn trust_store_requires_matching_id_and_pk() {
         let a = Identity::generate();
@@ -376,6 +488,7 @@ mod tests {
         store.trust(a.node_id(), a.verifying_key_bytes());
 
         assert!(store.is_trusted(&a.node_id(), &a.verifying_key_bytes()));
+        assert!(store.is_user_trusted(&a.node_id(), &a.verifying_key_bytes()));
         assert!(!store.is_trusted(&b.node_id(), &b.verifying_key_bytes()));
         // Misma id con pk ajena no es confiable.
         assert!(!store.is_trusted(&a.node_id(), &b.verifying_key_bytes()));

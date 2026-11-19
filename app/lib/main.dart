@@ -889,11 +889,6 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     final proc = _listener;
-    if (proc == null) {
-      _append('[ui] sesión entrante sin listener local: no se puede decidir '
-          '(¿daemon externo?) — el anfitrión la denegará por timeout');
-      return;
-    }
     _admissionPromptOpen = true;
     var choice = 'reject';
     try {
@@ -924,6 +919,11 @@ class _HomePageState extends State<HomePage> {
       if (res != null) choice = res;
     } finally {
       _admissionPromptOpen = false;
+    }
+    if (proc == null) {
+      _append('[ui] decisión «$choice» para $peer no enviada: no hay listener '
+          'local (el anfitrión la denegará por timeout)');
+      return;
     }
     try {
       proc.stdin.writeln(admissionLine(peer: peer, choice: choice));

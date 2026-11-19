@@ -95,6 +95,27 @@ void main() {
     );
   });
 
+  testWidgets('C-44: session_pending abre el diálogo de autorización',
+      (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+    // El daemon emite `session_pending` y BLOQUEA el handshake hasta la
+    // decisión: la UI debe mostrar el diálogo (aunque no haya listener local).
+    st.debugHandleEvent(
+        '{"event":"session_pending","peer":"AAAA2222BB","peer_addr":"1.2.3.4:5555"}');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Sesión entrante'), findsOneWidget);
+    expect(find.textContaining('AAAA2222BB'), findsWidgets);
+    expect(find.widgetWithText(TextButton, 'Aceptar una vez'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Aceptar y confiar'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Rechazar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Sesión entrante'), findsNothing);
+  });
+
   testWidgets('C-2: tres toggles desactivados por defecto y dinámicos (D-07)',
       (tester) async {
     await tester.pumpWidget(const AnyremoteApp());

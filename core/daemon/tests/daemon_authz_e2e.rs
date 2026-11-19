@@ -348,3 +348,85 @@ async fn ask_mode_rejects_on_host_decision() {
 
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }
+
+/// Regresión de campo (2026-11-19): un ID heredado del TOFU antiguo (formato
+/// sin sufijo, guardado por versiones previas sin consentimiento) se carga
+/// como `seen` y **no** autoriza en `ask`: el anfitrión debe recibir
+/// `session_pending` y decidir. «Aceptar y confiar» lo deja como `user`.
+#[tokio::test]
+async fn ask_mode_prompts_for_legacy_seen_peer() {
+    let cfg_dir = temp_cfg_dir("ask-legacy");
+    let port = free_port().await;
+
+    // Identidad compartida (cert-store local) → el par que conectará es este.
+    let ident = anyremote_identity::Identity::load_or_generate(&cfg_dir).expect("identidad");
+    let peer_id = ident.node_id().to_string();
+    let pk_hex = data_encoding::HEXLOWER.encode(&ident.verifying_key_bytes());
+    // Formato v1: `ID=hex` (sin `:user|:seen`).
+    std::fs::write(
+        cfg_dir.join("trusted.ids"),
+        format!("# anyremote: pares autenticados (TOFU)\n{peer_id}={pk_hex}\n"),
+    )
+    .expect("trusted.ids heredado");
+
+    let (tx_listen, rx_listen) = tokio::sync::mpsc::channel::<String>(8);
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let s = sink.clone();
+    let listen = {
+        let mut c = base_cfg(cfg_dir.clone(), port);
+        c.accept = AcceptPolicy::Ask;
+        c.accept_timeout_secs = 5;
+        c.bye_source = Some(rx_listen);
+        c.on_event = Some(Box::new(move |line| s.lock().unwrap().push(line)));
+        tokio::spawn(async move { run_listen(c).await })
+    };
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    let ctl = {
+        let mut c = DaemonConfig::new(cfg_dir.clone());
+        c.target = Some(format!("127.0.0.1:{port}"));
+        c.clipboard = ClipboardMode::Off;
+        c.max_secs = 4;
+        tokio::spawn(async move { run_connect(c).await })
+    };
+
+    // Debe PREGUNTAR: la entrada heredada es «vista», no autorización.
+    let pending = wait_for_line(&sink, "\"event\":\"session_pending\"").await;
+    assert_eq!(peer_of(&pending), peer_id);
+    assert_eq!(
+        sink.lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("\"event\":\"session_pending\""))
+            .count(),
+        1,
+        "un solo aviso de sesión pendiente"
+    );
+
+    tx_listen
+        .send(format!("{{\"accept\":\"{peer_id}\",\"trust\":true}}"))
+        .await
+        .expect("accept+trust");
+    let ctl = ctl.await.expect("join controller").expect("controller ok");
+    assert!(
+        ctl.events
+            .iter()
+            .any(|e| e.contains("\"event\":\"session_active\"")),
+        "tras decidir, la sesión se activa: {:?}",
+        ctl.events
+    );
+    let srv = listen.await.expect("join listener").expect("listener ok");
+    assert!(srv
+        .events
+        .iter()
+        .any(|e| e.contains("\"event\":\"session_active\"")));
+
+    // La decisión explícita queda como `user` (no vuelve a preguntar).
+    let trust = std::fs::read_to_string(cfg_dir.join("trusted.ids")).expect("trusted.ids");
+    assert!(
+        trust.contains(&format!("{peer_id}={pk_hex}:user")),
+        "«Aceptar y confiar» debe persistir user:\n{trust}"
+    );
+
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+}
