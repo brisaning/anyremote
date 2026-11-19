@@ -176,6 +176,14 @@ String? composeDeadAccent(String dead, String base) {
   return tabla[base];
 }
 
+/// C-41: segundos sin frames (null si el vídeo es reciente o nunca llegó).
+/// Se usa para avisar de una imagen congelada en vez de mostrarla en silencio.
+int? stallSeconds(int nowMs, int lastFrameMs, {int umbralMs = 5000}) {
+  if (lastFrameMs <= 0) return null;
+  final d = nowMs - lastFrameMs;
+  return d > umbralMs ? (d / 1000).round() : null;
+}
+
 /// C-38: resuelve una dead key pendiente con el carácter que llega.
 ///
 /// Devuelve `(acentoSuelto, caracterAEnviar)`:
@@ -416,6 +424,12 @@ class _HomePageState extends State<HomePage> {
   final ScrollController _hScroll = ScrollController();
   final ScrollController _vScroll = ScrollController();
   int _lastRenderMs = 0;
+  /// C-41: instante del último frame RENDERIZADO. Si el visor deja de recibir
+  /// (red caída), antes seguía mostrando la última imagen en silencio: en WAN
+  /// se quedó 50 s congelado sin avisar.
+  int _lastFrameMs = 0;
+  /// C-41: ya se avisó del congelamiento actual (para loguear una vez).
+  bool _stallLogged = false;
   /// Última actualización del texto de cabecera (C-19: tope de 2 Hz).
   int _lastStatusMs = 0;
   /// C-27: errores de decode vistos (para tasar el registro: en campo un
@@ -638,7 +652,11 @@ class _HomePageState extends State<HomePage> {
             _videoStatus.value =
                 'vídeo ${ev['w']}x${ev['h']} · ${ev['frames']} frames';
           case 'video_adapt':
-            _append('[daemon] calidad adaptada: ${ev['reason']} → ${ev['size']}${ev['bps'] != null ? ' @${ev['bps']} bps' : ''}');
+            // C-41: el RTT que disparó la decisión (diagnóstico de WAN).
+            final rtt = ev['rtt'];
+            _append('[daemon] calidad adaptada: ${ev['reason']} → ${ev['size']}'
+                '${ev['bps'] != null ? ' @${ev['bps']} bps' : ''}'
+                '${rtt != null ? ' · rtt ${rtt}ms' : ''}');
           case 'video_backend':
             // C-14: backend realmente usado (mf_h264 o fallback vpx_vp9).
             _append('[daemon] códec de vídeo: ${ev['encoder']}'
@@ -1065,6 +1083,19 @@ class _HomePageState extends State<HomePage> {
       _fpsLogTimer?.cancel();
       _fpsLogTimer = Timer.periodic(const Duration(seconds: 5), (_) {
         if (!mounted || _preview == null) return;
+        // C-41: si no llega ningún frame, la imagen congelada engaña. Se
+        // avisa (una vez por episodio) y se pone el fps a 0.
+        final ahora = DateTime.now().millisecondsSinceEpoch;
+        final seg = stallSeconds(ahora, _lastFrameMs);
+        if (seg != null && _sessionActive) {
+          _renderFps = 0;
+          _videoStatus.value = 'sin vídeo desde hace $seg s (¿red?)';
+          if (!_stallLogged) {
+            _stallLogged = true;
+            _appendQuiet(
+                '[ui] visor: sin frames desde hace $seg s — la sesión puede estar caída');
+          }
+        }
         final img = _frame.value;
         if (img != null) {
           final escala = _viewerBox.width / img.width * 100;
@@ -1119,6 +1150,8 @@ class _HomePageState extends State<HomePage> {
     img?.dispose();
     _videoFrames = 0;
     _videoDecodeErrors = 0;
+    _lastFrameMs = 0;
+    _stallLogged = false;
     // C-19: al soltar el frame, la página reevalúa `viewerVisible` (antes
     // dependía de que cada llamante hiciera su propio `setState`). C-23:
     // nunca durante `dispose` (ver `_disposed`).
@@ -1246,6 +1279,8 @@ class _HomePageState extends State<HomePage> {
       }
       _lastRenderMs = now;
       _videoFrames += 1;
+      _lastFrameMs = now;
+      _stallLogged = false;
       // C-19: la cabecera se actualiza como máximo a 2 Hz (contador/fps no
       // necesitan más) y por SU notifier → no repinta la cabecera por frame.
       if (now - _lastStatusMs >= 500) {

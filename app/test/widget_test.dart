@@ -472,6 +472,14 @@ void main() {
     expect(resolveDeadKey('~', 'e'), ('~', 'e'));
   });
 
+  test('C-41: sin frames >5 s se detecta como vídeo congelado', () {
+    expect(stallSeconds(10000, 0), isNull, reason: 'aún no llegó ningún frame');
+    expect(stallSeconds(10000, 9500), isNull, reason: 'vídeo reciente');
+    expect(stallSeconds(10000, 5000), isNull, reason: 'justo en el umbral');
+    expect(stallSeconds(10000, 4000), 6);
+    expect(stallSeconds(60000, 10000), 50, reason: 'el caso de campo (WAN)');
+  });
+
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {
     // Cualquier calidad de vídeo (720p, 1080p, nativa) produce el mismo
     // resultado para la misma posición relativa (fix v0.6.2: a 720p/1080p el
