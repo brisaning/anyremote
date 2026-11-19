@@ -109,3 +109,45 @@ flutter test                             # 33/33
 - **C-46** sigue abierto: la auditoría aún escribe el carácter inyectado.
 - El modo `any` queda como superficie de riesgo deliberada: visible en el
   código (`insecure_accept_any`) y en `--accept any`.
+
+## Fix de campo (2026-11-19, v0.14.1) — el diálogo no aparecía
+
+**Síntoma (reporte del usuario):** el cliente veía la pantalla del anfitrión y
+en el anfitrión **no** aparecía ningún diálogo de autorización.
+
+**Diagnóstico (datos reales).** La auditoría del anfitrión mostraba:
+
+```json
+{"kind":"session_established","detail":{"accept":"ask","peer":"ONDH6IU4RU","peer_trusted":true,...}}
+```
+
+y `%APPDATA%\anyremote\trusted.ids` (del **2026-11-15**, escrito por el TOFU
+previo a C-44, que recordaba a **cualquier** par autenticado) contenía ese ID.
+`admit_peer` en `ask` auto-aceptaba `peer_id.trusted`, es decir, trataba como
+autorización del usuario un registro que se había creado **sin consentimiento**.
+El diálogo de la app funcionaba; el daemon nunca lo pidió.
+
+**Fix.**
+
+- `TrustOrigin { User, Seen }` en `anyremote-identity`: solo `User` acredita una
+  decisión explícita (`--trust` o «Aceptar y confiar»).
+- `trusted.ids` v2: `ID=hex:user` / `ID=hex:seen`; **sin sufijo = `seen`**
+  (migración de las entradas heredadas, sin perderlas).
+- `admit_peer` en `ask`/`trusted` exige `is_user_trusted`; `--accept any`
+  recuerda como `seen` (nunca degrada un `user`).
+- Auditoría `session_established` añade `peer_trust` (estado previo) y
+  `persist` (qué se guardó).
+- App: el diálogo se muestra también si el listener es externo (solo falla al
+  enviar la decisión, con aviso); test de widget que inyecta `session_pending`
+  y verifica el diálogo.
+
+**Gates.** `ask_mode_prompts_for_legacy_seen_peer` (nuevo e2e: `trusted.ids` v1
+→ `session_pending` → aceptar+confiar → `:user`), unitario
+`legacy_entries_are_seen_and_only_user_trust_authorizes`, widget
+`C-44: session_pending abre el diálogo`. Rust **169/0** · clippy 0 · fmt 0 ·
+Flutter **34/34** · analyze limpio.
+
+**Efecto para el usuario.** Las entradas anteriores a C-44 se conservan pero
+**no autorizan**: la primera conexión de cada equipo conocido desde entonces
+volverá a preguntar; «Aceptar y confiar» migra esa entrada a `user` y las
+siguientes no preguntan.

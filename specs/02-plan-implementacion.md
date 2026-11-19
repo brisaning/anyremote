@@ -10,7 +10,7 @@
 
 ## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
 
-_Última actualización: 2026-11-19 · **C-45 ✅ (v0.13.16) · C-44 ✅ (v0.14.0, autorización del par)** · `develop`=8af342b · **auditoría de fronteras (8 hallazgos): C-44/C-45 cerrados; siguen C-46…C-51 (§12)**_
+_Última actualización: 2026-11-19 · **C-45 ✅ (v0.13.16) · C-44 ✅ (v0.14.0 + fix v0.14.1: trust `user`/`seen`)** · **auditoría de fronteras (8 hallazgos): C-44/C-45 cerrados; siguen C-46…C-51 (§12)**_
 
 | Fase/Ciclo/Lote | Estado | Tag / PR |
 |---|---|---|
@@ -80,7 +80,7 @@ _Última actualización: 2026-11-19 · **C-45 ✅ (v0.13.16) · C-44 ✅ (v0.14.
 | C-41 WAN + micrófono v0.13.13 | Prueba WAN (relay) con micro: el audio llegó (`audio_sent=100` → `audio_recv=100`) pero el relay cayó (`connection_gone`, errores 10065/10013) y el visor mostró la última imagen **50 s** sin avisar | Watchdog de vídeo en el cliente (>5 s sin frames → «sin vídeo desde hace N s (¿red?)», fps a 0 y una línea de registro); `rtt` en el registro de `calidad adaptada`; helper `stallSeconds` con test | `wan-stall-v0.13.13` · `evidence/wan-mic-gate.md` |
 | C-42 decisión `fps render`/`Texture` v0.13.14 | Pendiente de C-19: ¿hace falta `Texture` nativo? No había medición del coste real del visor | Contadores `recv/render/drop/coste` en el log de 5 s; banco en release: **11,0 ms/frame a 1080p** (66 ms de presupuesto, drop=0) → **no se implementa Texture**; cierre de Juank/Juank2 (fluido, validación del usuario) | `render-v0.13.14` · `evidence/viewer-render-gate.md` |
 | C-43 «Conectar» deja de compartir v0.13.15 | Con el escritorio compartido, pulsar Conectar lanzaba un segundo daemon y el equipo quedaba como anfitrión y cliente a la vez | Conectar cierra el listener primero (`bye` + espera, máx. 3 s) y después arranca la sesión; con sesión activa no se abre la escucha (aviso) | `connect-share-v0.13.15` · `evidence/connect-stops-sharing-gate.md` |
-| **C-44 autorización del par** (F-01 · RNF-07) **v0.14.0** | ✅ **gate verde** (Rust 167/0 · clippy 0 · fmt 0 · Flutter 33/33) · campo pendiente · semilla F-01: C2 solo demuestra posesión de una clave, `peer_trusted` no decidía y el `granted` lo respondía el par → **cualquier equipo que alcanzara 21118 obtenía control** | **Política `--accept trusted\|ask\|any`** (default `trusted`; la app usa `ask` con diálogo), **admisión antes de `send_auth`**, TOFU solo de pares aceptados, `--trust ID`, timeout 30 s, y **grant del anfitrión = intersección** (el par no amplía) | `peer-authz-v0.14.0` · `evidence/peer-authz-gate.md` |
+| **C-44 autorización del par** (F-01 · RNF-07) **v0.14.0** (+ fix **v0.14.1**) | ✅ **gate verde** (Rust 169/0 · clippy 0 · fmt 0 · Flutter 34/34) · campo: **diálogo no aparecía con IDs heredados → corregido en v0.14.1** (`seen` vs `user`) · semilla F-01: C2 solo demuestra posesión de una clave, `peer_trusted` no decidía y el `granted` lo respondía el par → **cualquier equipo que alcanzara 21118 obtenía control** | **Política `--accept trusted\|ask\|any`** (default `trusted`; la app usa `ask` con diálogo), **admisión antes de `send_auth`**, TOFU solo de pares aceptados, `--trust ID`, timeout 30 s, y **grant del anfitrión = intersección** (el par no amplía) | `peer-authz-v0.14.0` · `evidence/peer-authz-gate.md` |
 | **C-45 entrada realmente opt-in** (F-02 · RNF-08) **v0.13.16** | ✅ **gate verde** (Rust 160/0 · clippy 0 · fmt 0 · Flutter 32/32) · campo pendiente · F-02: `buildListenArgs` armaba `--allow-input` siempre y «Compartir escritorio» forzaba el toggle; el daemon nacía con `input_on = cfg.allow_input` | **Capacidad ≠ estado**: `--input-on` (CLI, default off) separa el estado inicial; `DynamicPerms.input_on = allow_input && input_on_start`; la app no pasa `--input-on` (solo `--allow-input` para el toggle dinámico); sin auto-encendido, `shareSummary` («solo ver»), chip en la cabecera, `listening` con `input_initial` y `InputDenied` con `reason` | `input-optin-v0.13.16` · `evidence/input-optin-gate.md` |
 | **C-46 auditoría sin contenido tecleado** (F-05 · RNF-10) v0.14.2 | 🔴 **planificado** · F-05: cada tecla inyectada se escribe como `KeyDown(Char('x'))` en `audit/*.jsonl`, carpeta que el README manda compartir para soporte | Diseño §12.3 · detalle `{"perm","kind"}` sin `Char`/texto + nota de migración de logs · gate `audit_never_contains_typed_text` · `evidence/audit-privacy-gate.md` |
 | **C-47 compuerta de portapapeles** (F-03 · RNF-08) v0.14.3 | 🔴 **planificado** · F-03: el portapapeles del anfitrión se envía cada 500 ms y se sobrescribe con el del par sin permiso ni toggle (la app pasa `--clipboard win` fijo) | Diseño §12.4 · permiso `clipboard` (default off) + cuarto toggle en la UI · gates `clipboard_out_requires_grant`, `clipboard_in_rejected_without_grant` · `evidence/clipboard-gate-v2.md` |
@@ -463,9 +463,19 @@ handshake y al default del binario).**
 - Un `bye` durante la espera de `ask` detiene la escucha (el rechazo no deja el
   proceso colgado).
 
+**Fix de campo (v0.14.1).** El primer uso real reveló que `ask` auto-aceptaba
+las entradas de `trusted.ids` creadas por el TOFU **anterior** a C-44 (sin
+consentimiento): el cliente veía la pantalla y el anfitrión no recibía
+`session_pending`. Se añadió `TrustOrigin { User, Seen }`: el archivo v2 guarda
+`ID=hex:user|:seen` y **sin sufijo se interpreta como `seen`** (migración); solo
+`user` autoriza en `trusted`/`ask`, y `any` recuerda `seen` sin degradar `user`.
+Gates nuevos: `ask_mode_prompts_for_legacy_seen_peer` (e2e),
+`legacy_entries_are_seen_and_only_user_trust_authorizes` (unit) y el widget del
+diálogo. Detalle en `evidence/peer-authz-gate.md`.
+
 **Gate (verde).** `unknown_peer_rejected_by_default`,
 `trusted_peer_gets_active`, `ask_mode_blocks_until_host_decision`,
-`ask_mode_rejects_on_host_decision` + unitarios `host_grant_is_intersection_and_never_expands`,
+`ask_mode_rejects_on_host_decision`, `ask_mode_prompts_for_legacy_seen_peer` + unitarios `host_grant_is_intersection_and_never_expands`,
 `admission_decision_parses_only_for_the_pending_peer`,
 `accept_policy_defaults_to_trusted`; los e2e previos declaran
 `insecure_accept_any()` de forma explícita. Evidencia: `evidence/peer-authz-gate.md`.
