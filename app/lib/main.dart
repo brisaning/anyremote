@@ -865,6 +865,12 @@ class _HomePageState extends State<HomePage> {
       _append('[ui] el listener local ya corre');
       return;
     }
+    // C-43: con una sesión de cliente activa no se abre la escucha (mismo
+    // conflicto que al revés): se pide detenerla.
+    if (_daemon != null) {
+      _append('[ui] hay una sesión activa — pulsa Detener antes de compartir');
+      return;
+    }
     // C-21: «Compartir escritorio» activa el control remoto por defecto si
     // no estaba seleccionado (se fija ANTES de `_sendPerms()` para que el
     // daemon reciba `input:true` al abrir sesión).
@@ -1339,6 +1345,15 @@ class _HomePageState extends State<HomePage> {
     if (_daemon != null) {
       _append('[ui] ya hay una sesión en curso — pulsa Detener primero');
       return;
+    }
+    // C-43: si el escritorio se está compartiendo (listener local), al pulsar
+    // Conectar se DEJA de compartir primero: el mismo equipo no debe ser
+    // anfitrión y cliente a la vez (dos daemons compitiendo por el puerto y
+    // por el vídeo). El usuario pidió este comportamiento explícitamente.
+    if (_listener != null) {
+      _append('[ui] dejando de compartir el escritorio antes de conectar…');
+      await _stopLocalListen();
+      if (!mounted) return;
     }
     if (!File(_daemonBin).existsSync()) {
       _append('[ui] anyremoted.exe no encontrado en $_daemonBin');
