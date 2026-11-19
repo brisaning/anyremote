@@ -10,7 +10,7 @@
 
 ## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
 
-_Última actualización: 2026-11-19 · **C-45 ✅ (v0.13.16) · C-44 ✅ (v0.14.0, autorización del par)** · `develop`=42a629c · **auditoría de fronteras (8 hallazgos): C-44/C-45 cerrados; siguen C-46…C-51 (§12)**_
+_Última actualización: 2026-11-19 · **C-45 ✅ (v0.13.16) · C-44 ✅ (v0.14.0, autorización del par)** · `develop`=88b403f · **auditoría de fronteras (8 hallazgos): C-44/C-45 cerrados; siguen C-46…C-51 (§12)**_
 
 | Fase/Ciclo/Lote | Estado | Tag / PR |
 |---|---|---|
