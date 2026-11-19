@@ -18,7 +18,10 @@ void main() {
   runApp(const AnyremoteApp());
 }
 
-const String kVersion = String.fromEnvironment('APP_VERSION', defaultValue: '0.1.0');
+/// Versión de la app: la inyecta `scripts/build-release.ps1` desde `VERSION`
+/// (`--dart-define=APP_VERSION`). Sin define, un build de desarrollo se
+/// identifica como `dev` en vez de mentir con una versión fija.
+const String kVersion = String.fromEnvironment('APP_VERSION', defaultValue: 'dev');
 const String kGitRev = String.fromEnvironment('GIT_REV', defaultValue: 'desconocido');
 const String kFlutterBuild = String.fromEnvironment('FLUTTER_BUILD', defaultValue: 'unknown');
 

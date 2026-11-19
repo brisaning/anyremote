@@ -140,7 +140,12 @@ del cursor del anfitrión (DXGI no lo captura). Se normaliza **igual que
 los clics** (0..65535 del monitor primario) → aparece exactamente donde
 caen; viaja **solo en cambios** (sondeo a 50 ms) y solo se dibuja con
 visor visible.
-Build: `cargo build --release -p anyremote-daemon --bin anyremoted` · `flutter build windows --release` (ambos artefactos se sirven desde `app/build/windows/x64/runner/Release/`).
+Build: **`powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1`** — lee
+`VERSION` (fuente única), comprueba que `app/pubspec.yaml` y `core/daemon/Cargo.toml`
+coinciden, compila daemon + app con esa versión (UI y `VERSIONINFO` del .exe) y
+copia `anyremoted.exe` junto a la app en `app/build/windows/x64/runner/Release/`.
+A mano: `cargo build --release -p anyremote-daemon --bin anyremoted` ·
+`flutter build windows --release --dart-define=APP_VERSION=<versión>`.
 **Requisito de build**: `opus` compila libopus con **CMake** — si hay que recompilar
 (`cargo clean`, nueva máquina), añadir al `PATH` `C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin` (VS Build Tools).
 
