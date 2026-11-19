@@ -273,15 +273,36 @@ List<String> buildListenArgs({
       // C-14: H.264 por Media Foundation (menos CPU que VP9); si la máquina
       // no tiene MFT utilizable, el daemon cae a VP9 y lo dice en el log.
       '--codec', 'h264',
-      // C-2: la CAPACIDAD está siempre disponible; el estado real lo fija
-      // `{"perm":...}` (se envía ya y en cada cambio de casilla → los
-      // toggles son dinámicos durante la sesión, D-07 en caliente).
+      // C-2/C-45: la **capacidad** de entrada viaja siempre armada para que
+      // los toggles sigan siendo dinámicos durante la sesión, pero **no**
+      // concede nada por sí sola: el **estado** arranca apagado y solo lo
+      // enciende `{"perm":{"input":true}}` (ver `_sendPerms`). La app nunca
+      // pasa `--input-on` (C-45, F-02): compartir pantalla ≠ dar teclado.
       '--allow-input',
       '--audio', 'on',
       '--audio-source', 'system,mic',
       // v0.8.2: escucha repetidora (ver doc de esta función).
       '--max-sessions', '0',
     ];
+
+/// C-45 (F-02): resumen honesto de lo que comparte el listener al abrirse.
+/// El control remoto es **opt-in**: con el toggle apagado el anfitrión queda
+/// en «solo ver» aunque la capacidad `--allow-input` viaje armada (capacidad
+/// ≠ estado; el daemon solo inyecta tras `{"perm":{"input":true}}`).
+String shareSummary({
+  required bool control,
+  required bool audio,
+  required bool mic,
+}) {
+  final activos = <String>[
+    if (control) 'control remoto',
+    if (audio) 'audio del sistema',
+    if (mic) 'micrófono',
+  ];
+  return activos.isEmpty
+      ? 'solo ver (control remoto y audio apagados; se pueden activar en caliente)'
+      : 'acepta ${activos.join(' + ')}';
+}
 
 /// Ubica `anyremoted.exe`: env ANYREMOTE_DAEMON (override) o junto al ejecutable.
 String resolveDaemonPath() {
@@ -708,7 +729,14 @@ class _HomePageState extends State<HomePage> {
             // RF-02a: no se loguea cada evento (inundaría el registro); solo el contador.
             setState(() => _inputEvents += 1);
           case 'input_denied':
-            _append('[daemon] entrada denegada en el anfitrión: ${ev['allow_input'] == false ? 'sin --allow-input (D-07)' : 'permiso ${ev['perm'] ?? '?'} no concedido'}');
+            final inpWhy = ev['allow_input'] != true
+                ? 'capacidad de entrada desactivada (--allow-input)'
+                : ev['input_on'] == false
+                    ? 'control remoto apagado en el anfitrión'
+                    : ev['reason'] == 'unsupported'
+                        ? 'evento de entrada no soportado'
+                        : 'permiso ${ev['perm'] ?? '?'} no concedido';
+            _append('[daemon] entrada denegada en el anfitrión: $inpWhy');
           case 'input_error':
             _append('[daemon] evento de entrada no soportado: ${ev['detail']}');
           case 'input_result':
@@ -871,12 +899,9 @@ class _HomePageState extends State<HomePage> {
       _append('[ui] hay una sesión activa — pulsa Detener antes de compartir');
       return;
     }
-    // C-21: «Compartir escritorio» activa el control remoto por defecto si
-    // no estaba seleccionado (se fija ANTES de `_sendPerms()` para que el
-    // daemon reciba `input:true` al abrir sesión).
-    if (!_acceptRemoteControl) {
-      setState(() => _acceptRemoteControl = true);
-    }
+    // C-45 (F-02): compartir pantalla NO enciende el control remoto. El
+    // toggle queda como lo dejó el usuario (apagado por defecto) y el daemon
+    // arranca en «solo ver» hasta que se marque aquí o en el visor.
     if (!File(_daemonBin).existsSync()) {
       _append('[ui] anyremoted.exe no encontrado en $_daemonBin');
       _setStatus('Daemon no encontrado', Colors.orange);
@@ -896,16 +921,9 @@ class _HomePageState extends State<HomePage> {
       );
       setState(() => _listener = proc);
       _sendPerms(); // estado inicial de los toggles (se aplica al abrir sesión)
-      final activos = <String>[
-        if (_acceptRemoteControl) 'control remoto',
-        if (_shareAudio) 'audio del sistema',
-        if (_shareMic) 'micrófono',
-      ];
       _append('[ui] listener de red lanzado (0.0.0.0:21118 — ${_useUdp ? 'tcp+udp (QUIC)' : 'tcp'} — vídeo $_videoQuality@15 h264'
           ' — encuentro ${effectiveRdv(_rdv.text)}'
-          '${activos.isEmpty
-              ? ' — sin control remoto ni audio (D-07)'
-              : ' — acepta ${activos.join(' + ')}'}'
+          ' — ${shareSummary(control: _acceptRemoteControl, audio: _shareAudio, mic: _shareMic)}'
           ')');
       _logToFile('--- listen args: ${args.join(' ')}');
       proc.stdout
@@ -1742,6 +1760,15 @@ class _HomePageState extends State<HomePage> {
                                         ? Colors.teal
                                         : Colors.orange)),
                           if (_audioHint.isNotEmpty) const SizedBox(width: 10),
+                          // C-45 (F-02): estado real del anfitrión. En modo
+                          // visor los toggles están a la vista, pero un chip
+                          // explícito evita creer que se está compartiendo
+                          // control cuando la sesión es «solo ver».
+                          if (_listener != null && !_acceptRemoteControl)
+                            const Text('solo ver',
+                                style: TextStyle(fontSize: 12, color: Colors.orange)),
+                          if (_listener != null && !_acceptRemoteControl)
+                            const SizedBox(width: 10),
                           if (_inputEvents > 0)
                             Text('entrada: $_inputEvents',
                                 style: const TextStyle(fontSize: 12, color: Colors.teal)),

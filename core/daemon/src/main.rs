@@ -1,7 +1,7 @@
 //! `anyremoted` — daemon de anyremote (integración de los ciclos S0–C8).
 //!
 //! Uso:
-//!   anyremoted listen  [--bind 127.0.0.1:21118] [--clipboard off|memory|win] [--grant keyboard,mouse] [--allow-input] [--max-secs 600] [--max-sessions 1]
+//!   anyremoted listen  [--bind 127.0.0.1:21118] [--clipboard off|memory|win] [--grant keyboard,mouse] [--allow-input [--input-on]] [--max-secs 600] [--max-sessions 1]
 //!   anyremoted connect <host:puerto> | --profile <alias>  [--clipboard ...] [--grant ...] [--send-file <ruta>] [--max-secs ...]
 //!   anyremoted profiles [--config-dir <dir>] [--list] [--add <alias,host,puerto>] [--remove <alias>]
 //!   anyremoted id [--config-dir <dir>]     (ID estable de este equipo, D-03)
@@ -134,6 +134,11 @@ async fn main() {
             cfg.one_way_files = args.iter().any(|a| a == "--one-way-files");
             // RF-02a (D-07): inyección de teclado/ratón — denegada salvo flag explícito.
             cfg.allow_input = args.iter().any(|a| a == "--allow-input");
+            // C-45 (F-02): capacidad ≠ estado. `--input-on` pide arrancar la
+            // sesión con la entrada ENCENDIDA (requiere `--allow-input`).
+            // Sin él, la sesión arranca en «solo ver» hasta `{"perm":...}`
+            // (la app gestiona el toggle y por eso NO lo pasa).
+            cfg.input_on_start = args.iter().any(|a| a == "--input-on");
             // RF audio: fuente de captura (off por defecto; `test` sin hardware).
             if let Some(a) = flag_value(&args, "--audio") {
                 cfg.audio = AudioMode::parse(&a).unwrap_or_else(|e| {
@@ -324,7 +329,7 @@ async fn main() {
             eprintln!(
                 "anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio"
             );
-            eprintln!("  anyremoted listen   [--bind a:p] [--transport tcp|udp] [--discover ip:puerto] [--rdv ip:puerto] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
+            eprintln!("  anyremoted listen   [--bind a:p] [--transport tcp|udp] [--discover ip:puerto] [--rdv ip:puerto] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input [--input-on]] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--transport tcp|udp] [--discover ip:puerto] [--rdv ip:puerto] [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             eprintln!("  anyremoted id                                       (ID estable de este equipo, D-03)");

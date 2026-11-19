@@ -25,13 +25,22 @@ async fn free_port() -> u16 {
     p
 }
 
-/// Lado controlado: `listen` con la concesión y el flag de entrada indicados.
-fn listen_cfg(cfg_dir: PathBuf, port: u16, grant: &[&str], allow_input: bool) -> DaemonConfig {
+/// Lado controlado: `listen` con la concesión y los flags de entrada indicados.
+/// C-45: `allow_input` es la **capacidad**; `input_on_start` el **estado**
+/// inicial (la sesión arranca en «solo ver» si es `false`).
+fn listen_cfg(
+    cfg_dir: PathBuf,
+    port: u16,
+    grant: &[&str],
+    allow_input: bool,
+    input_on_start: bool,
+) -> DaemonConfig {
     let mut c = DaemonConfig::new(cfg_dir);
     c.bind = format!("127.0.0.1:{port}");
     c.clipboard = ClipboardMode::Off;
     c.grant = grant.iter().map(|s| s.to_string()).collect();
     c.allow_input = allow_input;
+    c.input_on_start = input_on_start;
     c.input_backend = InputBackend::Recording; // nunca toca el sistema en tests
     c.max_secs = 6;
     c
@@ -88,10 +97,9 @@ async fn input_partial_grant_injects_keyboard_and_denies_pointer() {
     let port = free_port().await;
 
     let listen_dir = cfg_dir.clone();
-    let listen =
-        tokio::spawn(
-            async move { run_listen(listen_cfg(listen_dir, port, &["keyboard"], true)).await },
-        );
+    let listen = tokio::spawn(async move {
+        run_listen(listen_cfg(listen_dir, port, &["keyboard"], true, true)).await
+    });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
     let ctl = controller(
@@ -142,7 +150,14 @@ async fn input_denied_by_default_without_allow_input() {
 
     let listen_dir = cfg_dir.clone();
     let listen = tokio::spawn(async move {
-        run_listen(listen_cfg(listen_dir, port, &["keyboard", "mouse"], false)).await
+        run_listen(listen_cfg(
+            listen_dir,
+            port,
+            &["keyboard", "mouse"],
+            false,
+            false,
+        ))
+        .await
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
@@ -189,7 +204,14 @@ async fn input_full_grant_injects_keyboard_pointer_button_scroll() {
 
     let listen_dir = cfg_dir.clone();
     let listen = tokio::spawn(async move {
-        run_listen(listen_cfg(listen_dir, port, &["keyboard", "mouse"], true)).await
+        run_listen(listen_cfg(
+            listen_dir,
+            port,
+            &["keyboard", "mouse"],
+            true,
+            true,
+        ))
+        .await
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
@@ -222,6 +244,127 @@ async fn input_full_grant_injects_keyboard_pointer_button_scroll() {
         "{ev}"
     );
     assert!(ctl.events.join("\n").contains("\"event\":\"closed\""));
+
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+}
+
+/// C-45 (F-02): la **capacidad** `--allow-input` no concede nada por sí sola.
+/// La sesión arranca en «solo ver» (`input_on_start = false`) y el primer
+/// `{"perm":{"input":true}}` del anfitrión la enciende en caliente.
+///
+/// Secuencia dirigida por eventos (sin sleeps fijos): sesión activa → tecla 'a'
+/// (denegada por `toggle_apagado`) → permiso `input:true` → tecla 'b'
+/// (inyectada) → `bye`. También comprueba que `listening` publica el estado
+/// inicial real (`input_initial=false` con la capacidad armada).
+#[tokio::test]
+async fn input_off_by_default_with_capability_and_enabled_by_perm() {
+    use std::sync::{Arc, Mutex};
+
+    async fn wait_for(sink: &Arc<Mutex<Vec<String>>>, needle: &str) {
+        for _ in 0..200 {
+            if sink.lock().unwrap().iter().any(|l| l.contains(needle)) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!(
+            "timeout esperando `{needle}` en los eventos del anfitrión: {:?}",
+            sink.lock().unwrap()
+        );
+    }
+
+    const KEY_B: &str = r#"{"input":{"key":{"code":0,"ch":"b","down":true}}}"#;
+
+    let cfg_dir = temp_cfg_dir("optin");
+    let port = free_port().await;
+
+    let (tx_listen, rx_listen) = tokio::sync::mpsc::channel::<String>(8);
+    let listen_events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = listen_events.clone();
+    let listen = {
+        let mut c = listen_cfg(cfg_dir.clone(), port, &["keyboard"], true, false);
+        c.bye_source = Some(rx_listen);
+        c.on_event = Some(Box::new(move |line| sink.lock().unwrap().push(line)));
+        tokio::spawn(async move { run_listen(c).await })
+    };
+
+    let (tx_ctl, rx_ctl) = tokio::sync::mpsc::channel::<String>(8);
+    let ctl = {
+        let mut c = DaemonConfig::new(cfg_dir.clone());
+        c.target = Some(format!("127.0.0.1:{port}"));
+        c.clipboard = ClipboardMode::Off;
+        c.grant = vec!["keyboard".into()];
+        c.bye_source = Some(rx_ctl);
+        c.max_secs = 5;
+        tokio::spawn(async move { run_connect(c).await })
+    };
+
+    // 1) Sesión activa → 2) tecla con el toggle apagado → 3) la denegación
+    // llega al anfitrión → 4) el anfitrión enciende el control remoto.
+    wait_for(&listen_events, "\"event\":\"session_active\"").await;
+    tx_ctl.send(KEY_A.to_string()).await.expect("key a");
+    wait_for(&listen_events, "\"event\":\"input_denied\"").await;
+    tx_listen
+        .send(r#"{"perm":{"input":true,"audio":false,"mic":false}}"#.to_string())
+        .await
+        .expect("permiso input:true");
+    wait_for(&listen_events, "\"event\":\"permissions_updated\"").await;
+
+    // 5) La siguiente tecla sí se inyecta → 6) cierre ordenado.
+    tx_ctl.send(KEY_B.to_string()).await.expect("key b");
+    wait_for(&listen_events, "\"event\":\"input_injected\"").await;
+    tx_ctl.send("bye".to_string()).await.expect("bye");
+
+    let ctl = ctl.await.expect("join controller").expect("controller ok");
+    let srv = listen.await.expect("join listener").expect("listener ok");
+    let ev = srv.events.join("\n");
+
+    assert!(
+        ev.contains("\"event\":\"listening\"")
+            && ev.contains("\"input_capability\":true")
+            && ev.contains("\"input_initial\":false"),
+        "`listening` debe publicar capacidad armada y estado inicial apagado:\n{ev}"
+    );
+    assert_eq!(
+        ev.matches("\"event\":\"input_denied\"").count(),
+        1,
+        "solo la tecla previa al permiso se deniega:\n{ev}"
+    );
+    assert!(
+        ev.contains("\"reason\":\"toggle_apagado\"")
+            && ev.contains("\"input_on\":false")
+            && ev.contains("\"allow_input\":true"),
+        "la denegación distingue capacidad (true) de estado (false):\n{ev}"
+    );
+    assert_eq!(
+        ev.matches("\"event\":\"input_injected\"").count(),
+        1,
+        "solo la tecla posterior al permiso se inyecta:\n{ev}"
+    );
+    assert!(
+        ev.contains("\"input\":\"KeyDown(Char('b'))\""),
+        "la inyectada debe ser 'b':\n{ev}"
+    );
+    assert!(
+        ev.contains("\"event\":\"permissions_updated\"") && ev.contains("\"input\":true"),
+        "el permiso se aplicó en caliente:\n{ev}"
+    );
+
+    // Acuses al controlador (RF-02a): 1 denegada + 1 inyectada.
+    let acks: Vec<&String> = ctl
+        .events
+        .iter()
+        .filter(|l| l.contains("\"event\":\"input_result\""))
+        .collect();
+    let oks = acks.iter().filter(|l| l.contains("\"ok\":true")).count();
+    let denied = acks.iter().filter(|l| l.contains("\"ok\":false")).count();
+    assert_eq!((acks.len(), oks, denied), (2, 1, 1), "acuses: {acks:?}");
+
+    let kinds = audit_kinds(&cfg_dir);
+    assert!(
+        kinds.contains("InputDenied") && kinds.contains("InputInjected"),
+        "auditoría: {kinds}"
+    );
 
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }

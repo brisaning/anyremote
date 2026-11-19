@@ -61,11 +61,12 @@ void main() {
     await tester.tap(find.widgetWithText(OutlinedButton, 'Compartir escritorio'));
     await tester.pump();
     expect(find.textContaining('anyremoted.exe no encontrado'), findsWidgets);
-    // C-21: al oprimirlo, control remoto se activa solo si no estaba.
+    // C-45 (sustituye a C-21): compartir escritorio NO activa el control
+    // remoto; el toggle sigue apagado y el anfitrión queda en «solo ver».
     expect(
       tester.widget<Checkbox>(find.byType(Checkbox).at(0)).value,
-      isTrue,
-      reason: 'C-21: compartir escritorio activa control remoto automáticamente',
+      isFalse,
+      reason: 'C-45: la entrada es opt-in; compartir pantalla no la concede',
     );
   });
 
@@ -156,7 +157,11 @@ void main() {
     expect(args[i + 1], '0', reason: '0 = ilimitado: vuelve a aceptar tras cada sesión');
 
     // El resto de la configuración de campo no cambia.
+    // C-45: la CAPACIDAD viaja armada (permite el toggle dinámico) pero el
+    // ESTADO inicial no se pide nunca desde la app (`--input-on`): compartir
+    // pantalla no concede teclado/ratón.
     expect(args, contains('--allow-input'));
+    expect(args, isNot(contains('--input-on')));
     expect(args, contains('--audio-source'));
     // C-14: la app pide H.264/MF (con fallback a VP9 visible en el log).
     expect(args[args.indexOf('--codec') + 1], 'h264');
@@ -177,6 +182,29 @@ void main() {
     final rdv =
         buildListenArgs(size: '1280x720', kbps: 3000, rdv: '1.2.3.4:21120');
     expect(rdv[rdv.indexOf('--rdv') + 1], '1.2.3.4:21120');
+  });
+
+  test('C-45: compartir escritorio no concede control remoto (opt-in)', () {
+    // El resumen del listener debe decir la verdad: sin toggle, «solo ver».
+    final soloVer =
+        shareSummary(control: false, audio: false, mic: false);
+    expect(soloVer, contains('solo ver'));
+    expect(soloVer, contains('apagados'));
+    expect(soloVer, isNot(contains('acepta')));
+    expect(soloVer, contains('en caliente'),
+        reason: 'el anfitrión puede activarlo durante la sesión');
+
+    // Con el toggle marcado sí se anuncia el control.
+    final conControl = shareSummary(control: true, audio: true, mic: false);
+    expect(conControl, contains('control remoto'));
+    expect(conControl, contains('audio del sistema'));
+    expect(conControl, isNot(contains('solo ver')));
+    expect(conControl, isNot(contains('micrófono')));
+
+    // La app nunca pide el estado inicial ON: lo decide el toggle por permiso.
+    final args = buildListenArgs(size: '1280x720', kbps: 3000);
+    expect(args, isNot(contains('--input-on')));
+    expect(args, contains('--allow-input'));
   });
 
   testWidgets('C-9: el visor remoto cabe en la ventana (sin desbordes)',

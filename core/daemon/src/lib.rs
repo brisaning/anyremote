@@ -149,7 +149,15 @@ pub struct DaemonConfig {
     pub one_way_files: bool,
     /// RF-02a (D-07): permite inyectar teclado/ratón en el controlado.
     /// **Desactivado por defecto** (denegado salvo que se pida `--allow-input`).
+    /// Es la **capacidad**: sin ella ninguna orden `{"perm":{"input":true}}`
+    /// enciende la entrada.
     pub allow_input: bool,
+    /// C-45 (F-02): **estado inicial** del toggle de entrada dentro de la sesión.
+    /// Requiere `allow_input`. `false` por defecto → la sesión arranca en «solo
+    /// ver» y solo `{"perm":{"input":true}}` la enciende (fail-closed).
+    /// La CLI puede pedir estado inicial ON con `--input-on`; la app **no** lo
+    /// pasa (deja que el toggle del anfitrión lo decida en cada sesión).
+    pub input_on_start: bool,
     /// Backend de inyección: `Windows` (SendInput) en producción, `Recording` en tests.
     pub input_backend: InputBackend,
     /// C-11: fuente del cursor para el overlay del visor (`Windows` en
@@ -195,6 +203,7 @@ impl DaemonConfig {
             codec: anyremote_codec::CodecFormat::Vp9,
             one_way_files: false,
             allow_input: false,
+            input_on_start: false,
             input_backend: InputBackend::Windows,
             cursor_backend: CursorBackend::Windows,
             net_rtt_override: None,
@@ -404,7 +413,9 @@ fn spawn_audio_capture(
 /// la excepción es audio: compartir tu audio/micrófono es decisión de quien
 /// comparte, así que activarlo en caliente no exige el grant inicial.
 struct DynamicPerms {
-    /// Toggle de entrada (siempre ANDado con `--allow-input` y el grant).
+    /// Toggle de entrada: **estado** de la sesión. Siempre ANDado con la
+    /// capacidad `--allow-input` y con el grant. C-45: arranca apagado salvo
+    /// que la CLI pida `--input-on`.
     input_on: bool,
     /// Fuentes de audio activas (vacío = sin captura).
     sources: Vec<AudioSource>,
@@ -426,7 +437,10 @@ impl DynamicPerms {
             Vec::new()
         };
         Self {
-            input_on: cfg.allow_input,
+            // C-45 (F-02): capacidad ≠ estado. Sin `--input-on` la sesión
+            // arranca en «solo ver» aunque la capacidad esté armada; el primer
+            // `{"perm":{"input":true}}` del anfitrión la enciende.
+            input_on: cfg.allow_input && cfg.input_on_start,
             sources,
             runtime_enabled: false,
             granted_audio,
@@ -1056,7 +1070,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
     };
     emit.emit(ev(
         "listening",
-        serde_json::json!({ "bind": bind_addr, "transport": cfg.transport.as_str(), "discover": discover.as_ref().map(|d| d.local_addr().to_string()), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION }),
+        serde_json::json!({ "bind": bind_addr, "transport": cfg.transport.as_str(), "discover": discover.as_ref().map(|d| d.local_addr().to_string()), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION, "input_capability": cfg.allow_input, "input_initial": cfg.allow_input && cfg.input_on_start }),
     ));
 
     // C-17: cliente persistente de encuentro (si está configurado): registra
@@ -1667,9 +1681,9 @@ async fn active_controlled<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
                                             "no_concedido"
                                         };
                                         log.record(AuditEventKind::InputDenied, session_id,
-                                            serde_json::json!({"perm": need, "allow_input": perms.input_on}))?;
+                                            serde_json::json!({"perm": need, "allow_input": cfg.allow_input, "input_on": perms.input_on, "reason": reason}))?;
                                         emit.emit(ev("input_denied",
-                                            serde_json::json!({"perm": need, "allow_input": perms.input_on})));
+                                            serde_json::json!({"perm": need, "allow_input": cfg.allow_input, "input_on": perms.input_on, "reason": reason})));
                                         (false, need.to_string(), reason.to_string())
                                     } else {
                                         match injector.inject(&iev) {
