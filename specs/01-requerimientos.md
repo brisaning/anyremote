@@ -25,6 +25,7 @@
 |RF-04 Perfiles|✅ (C6 + UI v0.4.0)|`c6-gate`, `ui-batch-gate`|
 |RF-05 Registro|✅ (C7)|`c7-gate`|
 |RF-06 Trazabilidad|✅ (fases 0–6 + evidencia versionada)|`evidence/`|
+|RNF-07..10 Fronteras de confianza|🔴 **planificado — auditoría 2026-11-19**: autorización del par (F-01), mínimo privilegio por capacidad (F-02/F-03/F-04), robustez ante pares hostiles (F-04/F-06/F-07) y privacidad del registro (F-05)|`evidence/security-review-2026-11-19.md` · ciclos C-44…C-51 (`specs/02` §12)|
 |Pendientes globales|🟡 revalidación audio/720p/Nativa — **H.264/red/visor/ID/dueño ✅ verificados en campo** · **UDP/QUIC ✅ hecho y verificado en campo (C-15, v0.10.0–v0.10.1)** · **conexión por ID ✅ hecho y verificado en campo (C-16, v0.11.0–v0.11.2)** · **WAN ✅ hecho y verificado en campo (C-17, v0.12.0): VPS + relay + adaptación sin caídas** · **resampler ✅ hecho (C-18, v0.12.1)** — queda oírlo en campo · **render alto ✅ hecho (C-19, v0.12.2, sin nativo)** — queda medir `fps render` y decidir `Texture`|README § Pendientes|
 
 ---
@@ -92,6 +93,10 @@ Especificar la construcción de un aplicativo de escritorio remoto denominado **
 - **RNF-04 Mantenibilidad**: arquitectura modular alineada con los patrones identificados en RustDesk.
 - **RNF-05 Auditabilidad**: toda decisión de diseño debe rastrearse a un hallazgo de RE o a un artefacto indexado.
 - **RNF-06 Reproducibilidad**: los análisis de MCP rea y MCP codebase-memory deben ser repetibles y versionados.
+- **RNF-07 Autorización del par (2026-11-19, F-01)**: la autenticación mutua **no** sustituye a la autorización. Ningún par obtiene una sesión activa sin una decisión explícita del anfitrión (allowlist persistente, aprobación por conexión o PIN de sesión), y la decisión la toma **el anfitrión**, no el par. Por defecto: denegar.
+- **RNF-08 Mínimo privilegio por capacidad (2026-11-19, F-02/F-03/F-04)**: entrada, portapapeles, archivos y audio se conceden por separado, con default denegado y toggles del anfitrión en caliente; ninguna capacidad puede habilitarse por el mero arranque del listener ni por lo que declare el par.
+- **RNF-09 Robustez frente a pares hostiles (2026-11-19, F-04/F-06/F-07)**: todo dato proveniente del par se procesa con cotas explícitas (memoria, disco, tiempo, dimensiones) y sin bloquear el bucle de control de la sesión; el cierre ordenado (`bye`/Ctrl+C) debe funcionar aunque el par esté enviando datos o se haya quedado a medias.
+- **RNF-10 Privacidad del registro (2026-11-19, F-05)**: el registro de auditoría y el diagnóstico **no** contendrán contenido tecleado, texto de portapapeles, credenciales ni secretos; solo metadatos y contadores.
 
 ---
 

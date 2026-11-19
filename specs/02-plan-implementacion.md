@@ -10,7 +10,7 @@
 
 ## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
 
-_Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2cd77 · correcciones en `fix/field-audio-quality`_
+_Última actualización: 2026-11-19 · v0.13.15 · `develop`=6967620 · **auditoría de fronteras de confianza (8 hallazgos, `evidence/security-review-2026-11-19.md`) planificada como ciclos C-44…C-51 (§12)**_
 
 | Fase/Ciclo/Lote | Estado | Tag / PR |
 |---|---|---|
@@ -80,7 +80,15 @@ _Última actualización: 2026-10-27 · v0.6.1 · `main`=c5792b8 · `develop`=2e2
 | C-41 WAN + micrófono v0.13.13 | Prueba WAN (relay) con micro: el audio llegó (`audio_sent=100` → `audio_recv=100`) pero el relay cayó (`connection_gone`, errores 10065/10013) y el visor mostró la última imagen **50 s** sin avisar | Watchdog de vídeo en el cliente (>5 s sin frames → «sin vídeo desde hace N s (¿red?)», fps a 0 y una línea de registro); `rtt` en el registro de `calidad adaptada`; helper `stallSeconds` con test | `wan-stall-v0.13.13` · `evidence/wan-mic-gate.md` |
 | C-42 decisión `fps render`/`Texture` v0.13.14 | Pendiente de C-19: ¿hace falta `Texture` nativo? No había medición del coste real del visor | Contadores `recv/render/drop/coste` en el log de 5 s; banco en release: **11,0 ms/frame a 1080p** (66 ms de presupuesto, drop=0) → **no se implementa Texture**; cierre de Juank/Juank2 (fluido, validación del usuario) | `render-v0.13.14` · `evidence/viewer-render-gate.md` |
 | C-43 «Conectar» deja de compartir v0.13.15 | Con el escritorio compartido, pulsar Conectar lanzaba un segundo daemon y el equipo quedaba como anfitrión y cliente a la vez | Conectar cierra el listener primero (`bye` + espera, máx. 3 s) y después arranca la sesión; con sesión activa no se abre la escucha (aviso) | `connect-share-v0.13.15` · `evidence/connect-stops-sharing-gate.md` |
-| **Pendientes** | 🐛 **BUG acentos** (dead key como `Char` → `´o`; fix = precomposición + Unicode, POSPUESTO) · 🟡 repetir sesión WAN (~10 Mbps): debe haber `red_recupera_*` + escala que SUBE y texto legible · `test de campo de5 s` (captura vs emitidos) · reenvío puertos21118 · **`fps render` (decisión `Texture`)** · micrófono end-to-end · **firewall de entrada en Brian**: crear reglas 21118/21119 para LAN directa (ver C-30) | [README § Pendientes](../README.md#pendientes) |
+| **C-44 autorización del par** (F-01 · RNF-07) v0.14.0 | 🔴 **planificado** · semilla `evidence/security-review-2026-11-19.md` F-01: C2 solo demuestra posesión de una clave autogenerada, el `granted` lo responde **el par** y `peer_trusted` no decide nada → **cualquier equipo que alcance 21118 obtiene control remoto** | Diseño §12.1 · modo `trusted`/`ask`/`any`, decisión del anfitrión + aprobación por stdin · gates `unknown_peer_rejected_by_default`, `trusted_peer_gets_active`, `ask_mode_blocks_until_host_decision` · `evidence/peer-authz-gate.md` |
+| **C-45 entrada realmente opt-in** (F-02 · RNF-08) v0.14.1 | 🔴 **planificado** · F-02: `buildListenArgs` pasa `--allow-input` siempre y «Compartir escritorio» fuerza el toggle; el daemon arranca la sesión con `input_on = cfg.allow_input` | Diseño §12.2 · args según toggle, sin auto-encendido, `input_on` inicial `false` hasta `{"perm":{"input":true}}` · gates `input_off_by_default`, `input_on_after_perm_true` + widget de `buildListenArgs` · `evidence/input-optin-gate.md` |
+| **C-46 auditoría sin contenido tecleado** (F-05 · RNF-10) v0.14.2 | 🔴 **planificado** · F-05: cada tecla inyectada se escribe como `KeyDown(Char('x'))` en `audit/*.jsonl`, carpeta que el README manda compartir para soporte | Diseño §12.3 · detalle `{"perm","kind"}` sin `Char`/texto + nota de migración de logs · gate `audit_never_contains_typed_text` · `evidence/audit-privacy-gate.md` |
+| **C-47 compuerta de portapapeles** (F-03 · RNF-08) v0.14.3 | 🔴 **planificado** · F-03: el portapapeles del anfitrión se envía cada 500 ms y se sobrescribe con el del par sin permiso ni toggle (la app pasa `--clipboard win` fijo) | Diseño §12.4 · permiso `clipboard` (default off) + cuarto toggle en la UI · gates `clipboard_out_requires_grant`, `clipboard_in_rejected_without_grant` · `evidence/clipboard-gate-v2.md` |
+| **C-48 archivos acotados y no bloqueantes** (F-04 · RNF-08/RNF-09) v0.14.4 | 🔴 **planificado** · F-04: recepción sin compuerta ni cuota (`max_files_per_batch` no se aplica), 256 MiB en RAM por archivo y `.part` persistentes; `receive_file_offer` dentro del `select!` bloquea control, `bye` y Ctrl+C | Diseño §12.5 · permiso `files`, cuota de sesión, tarea aparte con timeout y cancelación, limpieza de huérfanos · gates `file_offer_without_grant_rejected`, `stalled_transfer_does_not_block_control`, `receiver_enforces_batch_limit` · `evidence/filexfer-gate-v2.md` |
+| **C-49 decodificador con cotas** (F-06 · RNF-09) v0.14.5 | 🔴 **planificado** · F-06: `Deflate` → `read_to_end` sin tope (bomba zlib) y `width*height*4` en `u32` (overflow); el formato del frame lo elige el par | Diseño §12.6 · tope de salida, `checked_mul`, rango de dimensiones · gates `deflate_bomb_is_rejected`, `oversized_dimensions_rejected` · `evidence/codec-bounds-gate.md` |
+| **C-50 preview autenticado** (F-07 · RNF-09) v0.14.6 | 🔴 **planificado** · F-07: el primer cliente de `127.0.0.1:<efímero>` recibe BGRA crudo de la pantalla remota sin credencial | Diseño §12.7 · token de un solo uso en la cabecera del stream · gate `preview_requires_token` · `evidence/preview-auth-gate.md` |
+| **C-51 higiene de confianza y contadores** (F-08 · RNF-07) v0.14.7 | 🔴 **planificado** · F-08: `AuthGate` inalcanzable (aborta en el primer fallo) y sin rate-limit; «✓ verificado» se pinta con `peer_trusted` (cualquier par nuevo); `Scroll` multiplica sin comprobar | Diseño §12.8 · contador real + rate-limit por origen, etiqueta «visto antes» vs allowlist, `checked_mul` · gates `auth_gate_counts_failures`, `trusted_badge_means_allowlisted` · `evidence/trust-hygiene-gate.md` |
+| **Pendientes** | 🔴 **seguridad primero: C-44…C-51** (auditoría 19/11; F-01/F-02 son altos y bloquean el resto) · 🐛 **BUG acentos** (dead key como `Char` → `´o`; fix = precomposición + Unicode, POSPUESTO) · 🟡 repetir sesión WAN (~10 Mbps): debe haber `red_recupera_*` + escala que SUBE y texto legible · `test de campo de5 s` (captura vs emitidos) · reenvío puertos21118 · **`fps render` (decisión `Texture`)** · micrófono end-to-end · **firewall de entrada en Brian**: crear reglas 21118/21119 para LAN directa (ver C-30) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
@@ -393,3 +401,184 @@ de la cabecera del visor a 720p/1080p/«Nativa» con este build; solo si no
 llega a los fps del stream se plantea el paso a `Texture` (decode fuera de
 Flutter: wire de preview + plataforma Windows — esfuerzo L). Si el pipeline
 actual llega, el backlog queda **cerrado sin nativo**.
+
+---
+
+## 12. Blindaje de fronteras de confianza — auditoría 2026-11-19 (F-01…F-08)
+
+**Disparador.** Revisión estática de las fronteras críticas del 2026-11-19
+(commit `6967620`) sobre `transport`, `identity`, `daemon`, `input`,
+`filexfer`, `clipboard`, `codec` y el cableado de la app. Semilla completa y
+evidencia por ruta/línea: `evidence/security-review-2026-11-19.md`. No hubo
+ejecución del objetivo: los ciclos de abajo incluyen la validación local que
+falta (loopback, sin red externa, con límites).
+
+**Regla del lote.** Estos ciclos **preceden** al resto del backlog: F-01 y F-02
+son altos y convierten los demás hallazgos en explotables por un tercero. El
+orden ya está fijado por prioridad; no se reordena por coste.
+
+| Orden | Ciclo | Hallazgo | RNF | Capacidad afectada |
+|---|---|---|---|---|
+| 1 | C-44 | F-01 · sin autorización del par | RNF-07 | admisión de sesión |
+| 2 | C-45 | F-02 · entrada armada al compartir | RNF-08 | entrada remota |
+| 3 | C-46 | F-05 · teclas en claro en auditoría | RNF-10 | registro |
+| 4 | C-47 | F-03 · portapapeles sin compuerta | RNF-08 | portapapeles |
+| 5 | C-48 | F-04 · archivos sin cuota y bloqueantes | RNF-08/09 | archivos |
+| 6 | C-49 | F-06 · decodificador sin cotas | RNF-09 | vídeo (receptor) |
+| 7 | C-50 | F-07 · preview local sin autenticación | RNF-09 | preview |
+| 8 | C-51 | F-08 · higiene de confianza | RNF-07 | UI/registro |
+
+**Protocolo.** C-44, C-45, C-46, C-49, C-50 y C-51 **no** tocan el wire. C-47 y
+C-48 usan el `repeated string permissions` que ya existe
+(`core/transport/proto/arsp.proto:210-218`): añadir `"clipboard"` y `"files"`
+no cambia el esquema ni rompe peers viejos (fail-closed: sin negociación no se
+concede). Ningún ciclo introduce un mensaje nuevo.
+
+### 12.1 C-44 · Autorización del par (F-01)
+
+**Objetivo.** Que «autenticado» ≠ «autorizado»: el anfitrión decide quién entra.
+
+**Cambios.**
+- `DaemonConfig.accept: AcceptPolicy` (`trusted` | `ask` | `any`), flag
+  `--accept`; **default `trusted` en CLI y `ask` en la app**. `any` queda para
+  tests e2e y para quien lo pida explícitamente.
+- `establish_common` (`core/daemon/src/lib.rs:747-825`): tras
+  `recv_validate_auth` y **antes** de `hello/welcome`, resolver la admisión:
+  - `trusted`: `peer_id.trusted` o `--trust <ID>` (que persiste en
+    `trusted.ids`); si no → auditar `permission_denied{reason:"peer_unknown"}`,
+    emitir `peer_rejected` y devolver `Established::Denied`.
+  - `ask`: emitir `session_pending {peer, node_id}` y esperar por el canal
+    `ctl` (`core/daemon/src/lib.rs:708-714`) un `{"accept":"<ID>"}` o
+    `{"reject":"<ID>"}` del anfitrión, con `--accept-timeout` (30 s por
+    defecto). Sin respuesta → `Denied` (fail-closed).
+  - `any`: comportamiento actual, solo bajo petición.
+- Invertir la autoridad del grant: el anfitrión calcula
+  `perms_host = requested ∩ capacidad_configurada` y **no** acepta del par
+  permisos fuera de `requested`; `PermissionResponse` se conserva como
+  intención del par (compatibilidad) pero ya no amplía nada. El evento
+  `permission_granted` registra `"source":"host"`.
+- App: diálogo de sesión entrante (NodeId + «Aceptar una vez» / «Aceptar y
+  confiar» / «Rechazar») que escribe la línea de `ctl`; con `trusted` y sin
+  diálogo, aviso en el registro de que hace falta confiar el ID.
+
+**Gate.** `unknown_peer_rejected_by_default` (par nuevo → nunca `Active`, sin
+`InputAck`), `trusted_peer_gets_active` (tras `--trust`), `ask_mode_blocks_until_host_decision`
+(sin decisión no hay `Active`; con `accept` sí; con `reject` cierra en <1 s) y
+regresión completa de `daemon`+`transport` con `--accept any`. Riesgo asumido:
+los e2e existentes se actualizan de forma explícita, sin relajar el default.
+
+### 12.2 C-45 · Entrada remota realmente opt-in (F-02)
+
+**Objetivo.** Compartir pantalla no concede teclado ni ratón.
+
+**Cambios.**
+- `app/lib/main.dart:182-213`: `--allow-input` **solo** si el usuario marcó
+  control remoto; `_startLocalListen` (`:748-758`) deja de forzar
+  `_acceptRemoteControl = true` y, si está apagado, el registro dice «solo
+  ver» (y la cabecera del visor lo indica).
+- `core/daemon/src/lib.rs:406-435`: separar **capacidad** (`allow_input`, del
+  flag) de **estado** (`input_on`). `DynamicPerms::new` arranca en `false`;
+  solo `{"perm":{"input":true}}` lo enciende. Sin flag, ninguna orden lo
+  enciende (comportamiento actual conservado).
+- Docs: el README deja de prometer «opt-in» cuando el código no lo era; tras
+  C-45 la promesa pasa a ser cierta.
+
+**Gate.** Unit de `buildListenArgs` en ambos estados; e2e
+`input_off_by_default_with_capability` (arranque con `--allow-input`, primer
+`InputEvent` → `InputDenied{toggle_apagado}`) e `input_on_after_perm_true`;
+regresión de acentos (C-37/C-38) porque dependen de la ruta de entrada.
+
+### 12.3 C-46 · Auditoría sin contenido tecleado (F-05)
+
+**Cambios.**
+- `core/daemon/src/lib.rs:1677-1678`: el detalle pasa a
+  `{"perm": "<keyboard|mouse>", "kind": "key|mouse"}`; prohibido
+  `format!("{iev:?}")` sobre `InputEvent`. Si se necesita correlación, un
+  `u64` de hash no reversible, nunca el carácter.
+- Revisar los demás `detail`: `clipboard_sync` ya es solo `bytes`;
+  `session_error` puede llevar rutas (aceptable) pero no contenido.
+- README §Diagnóstico: nota de que los logs **anteriores** a C-46 pueden
+  contener texto tecleado y no deben compartirse.
+- Test estático (estilo C8, `transport/tests/security_audit.rs`) que prohíbe
+  `InputEvent`/`Char` en los `detail` de auditoría.
+
+**Gate.** `audit_never_contains_typed_text`: e2e que inyecta una cadena
+centinela y verifica que **no** aparece en el JSONL de la sesión.
+
+### 12.4 C-47 · Compuerta de portapapeles (F-03)
+
+**Cambios.**
+- Permiso `"clipboard"` en `requested`/`granted` y campo
+  `DynamicPerms.clipboard` (**default `false`**).
+- `core/daemon/src/lib.rs:1721-1760` solo envía si el permiso está concedido;
+  `:1596-1614` solo aplica si está concedido (si no, `clipboard_denied`).
+- App: cuarto toggle «Portapapeles» (default off) y `_sendPerms` amplía el
+  JSON a `{"perm":{"input","clipboard","audio","mic"}}`.
+- Peer viejo sin el permiso → no se sincroniza (fail-closed, una línea de
+  registro por sesión, sin spam).
+
+**Gate.** `clipboard_out_requires_grant` y `clipboard_in_rejected_without_grant`
+(e2e con `--clipboard win` y sin concesión), widget del toggle y actualización
+de `evidence/clipboard-gate-v2.md` con la matriz de los cuatro estados.
+
+### 12.5 C-48 · Archivos acotados y no bloqueantes (F-04)
+
+**Cambios.**
+- Permiso `"files"` (default off; `--one-way-files` sigue siendo la política de
+  sentido). `file_policy` deja de ignorar la habilitación.
+- `TransferPolicy`: `max_session_bytes` y `max_concurrent`; `accept_offer`
+  aplica `max_files_per_batch`, `max_concurrent` y la cuota (hoy solo valida
+  tamaño y nombre, `core/filexfer/src/lib.rs:260-294`).
+- Recepción **fuera** del `select!`: `receive_file_offer` pasa a tarea con
+  `mpsc` al bucle de control, `timeout` por chunk (30 s) y cancelación por
+  `bye`/Ctrl+C. El `select!` vuelve a atender entrada, latidos y cierre aunque
+  la transferencia esté a medias.
+- `TransferStore::sweep()` al abrir y cerrar sesión: borra `.part`/`.meta`
+  huérfanos (más antiguos que N días o de sesiones ya cerradas).
+
+**Gate.** `file_offer_without_grant_rejected`,
+`receiver_enforces_batch_limit` y `stalled_transfer_does_not_block_control`
+(con oferta a medias, `bye` local cierra en <1 s y la sesión deja de retener
+memoria).
+
+### 12.6 C-49 · Decodificador con cotas (F-06)
+
+**Cambios.** `core/codec/src/lib.rs:202-219`: `checked_mul` para
+`width*height*4`, `MAX_PIXELS` (p. ej. 4096×4096) rechazando lo que exceda, y
+descompresión con `Read::take(expect as u64 + 1)` + error si sobrepasa. Aplicar
+lo mismo al backend VP9/OpenH264 si aceptan dimensiones del wire.
+
+**Gate.** `deflate_bomb_is_rejected` (frame comprimido que expande > tope → error
+sin reservar) y `oversized_dimensions_rejected` (w/h absurdos → `Decode`, sin
+pánico en debug).
+
+### 12.7 C-50 · Preview autenticado (F-07)
+
+**Cambios.** `core/daemon/src/preview.rs`: token de 16 bytes de `OsRng`
+publicado en el evento `preview {port, token}`; el cliente envía el token como
+primeros 16 bytes y sin coincidencia exacta se cierra. La app lo pasa al abrir
+el socket. Alternativa futura: named pipe con ACL del usuario.
+
+**Gate.** `preview_requires_token` (conexión sin token o con token erróneo →
+cierre inmediato; con token → frames).
+
+### 12.8 C-51 · Higiene de confianza y contadores (F-08)
+
+**Cambios.** `AuthGate` cuenta fallos de verdad y solo corta al superar
+`MAX_AUTH_FAILURES`; `run_listen` añade rate-limit por `SocketAddr` (tabla
+acotada, p. ej. 5 intentos/60 s). El indicador de la UI deja de decir
+«✓ verificado» por `peer_trusted`: pasa a «visto antes» salvo que el ID esté en
+`trusted.ids` (origen explícito en el evento). `Scroll` usa `checked_mul` con
+clamp a `u32`.
+
+**Gate.** `auth_gate_counts_failures`, `trusted_badge_means_allowlisted` y
+widget del indicador.
+
+### 12.9 Cierre del lote
+
+Cada ciclo cierra con: gates verdes (`cargo test` + `clippy -D warnings` + `fmt`
++ `flutter analyze/test`), su `evidence/*-gate.md` con la invocación exacta, tag
+`<ciclo>-v0.14.x` en `develop`, fila actualizada en la tabla de arriba y en
+`specs/04`, y nota en la bóveda. El lote no se declara cerrado hasta que
+F-01…F-08 tengan ciclo con evidencia o una decisión explícita de aceptación del
+riesgo registrada en `specs/04`.
