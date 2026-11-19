@@ -84,7 +84,7 @@ fn listen_cfg(
     rdv_port: Option<u16>,
     events: Arc<Mutex<Vec<String>>>,
 ) -> DaemonConfig {
-    let mut c = DaemonConfig::new(dir);
+    let mut c = DaemonConfig::new(dir).insecure_accept_any();
     c.bind = format!("127.0.0.1:{bind_port}");
     c.clipboard = ClipboardMode::Off;
     c.discover = format!("127.0.0.1:{disc_port}");
@@ -102,7 +102,7 @@ fn connect_cfg(
     rdv: Option<&str>,
     events: Arc<Mutex<Vec<String>>>,
 ) -> DaemonConfig {
-    let mut c = DaemonConfig::new(dir);
+    let mut c = DaemonConfig::new(dir).insecure_accept_any();
     c.target = Some(target.to_string());
     c.clipboard = ClipboardMode::Off;
     c.discover = format!("127.0.0.1:{disc_port}");

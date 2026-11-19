@@ -31,7 +31,7 @@ async fn clipboard_faults_do_not_kill_the_session() {
     let listen_events = Arc::new(Mutex::new(Vec::<String>::new()));
     let le = listen_events.clone();
     let listen_cfg = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Flaky; // fallas simuladas en el receptor
         c.max_secs = 4;
@@ -44,7 +44,7 @@ async fn clipboard_faults_do_not_kill_the_session() {
     let ctl_events = Arc::new(Mutex::new(Vec::<String>::new()));
     let ce = ctl_events.clone();
     let connect_cfg = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.target = Some(format!("127.0.0.1:{port}"));
         c.clipboard = ClipboardMode::Flaky; // fallas simuladas también en el emisor
         c.clipboard_seed = Some("primera lectura ok".into());

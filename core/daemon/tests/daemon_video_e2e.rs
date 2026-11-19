@@ -45,7 +45,7 @@ async fn m2_video_streams_and_preview_delivers_frames() {
     let listen_events = Arc::new(Mutex::new(Vec::<String>::new()));
     let le = listen_events.clone();
     let listen_cfg = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Off;
         c.video = VideoMode::Test;
@@ -94,7 +94,7 @@ async fn m2_video_streams_and_preview_delivers_frames() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let connect_cfg = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.target = Some(format!("127.0.0.1:{port}"));
         c.clipboard = ClipboardMode::Off;
         c.max_secs = 4;

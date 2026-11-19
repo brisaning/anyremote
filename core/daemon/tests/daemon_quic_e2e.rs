@@ -67,7 +67,7 @@ fn listen_cfg(
     transport: Transport,
     events: Arc<Mutex<Vec<String>>>,
 ) -> DaemonConfig {
-    let mut c = DaemonConfig::new(dir);
+    let mut c = DaemonConfig::new(dir).insecure_accept_any();
     c.bind = format!("127.0.0.1:{port}");
     c.clipboard = ClipboardMode::Off;
     c.transport = transport;
@@ -86,7 +86,7 @@ fn connect_cfg(
     transport: Transport,
     events: Arc<Mutex<Vec<String>>>,
 ) -> DaemonConfig {
-    let mut c = DaemonConfig::new(dir);
+    let mut c = DaemonConfig::new(dir).insecure_accept_any();
     c.target = Some(format!("127.0.0.1:{port}"));
     c.clipboard = ClipboardMode::Off;
     c.transport = transport;

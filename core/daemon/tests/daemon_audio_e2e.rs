@@ -27,7 +27,7 @@ async fn free_port() -> u16 {
 }
 
 fn base_cfg(cfg_dir: PathBuf) -> DaemonConfig {
-    let mut c = DaemonConfig::new(cfg_dir);
+    let mut c = DaemonConfig::new(cfg_dir).insecure_accept_any();
     c.clipboard = ClipboardMode::Off;
     c.max_secs = 6;
     c

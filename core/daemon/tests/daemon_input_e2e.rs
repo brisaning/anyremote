@@ -35,7 +35,7 @@ fn listen_cfg(
     allow_input: bool,
     input_on_start: bool,
 ) -> DaemonConfig {
-    let mut c = DaemonConfig::new(cfg_dir);
+    let mut c = DaemonConfig::new(cfg_dir).insecure_accept_any();
     c.bind = format!("127.0.0.1:{port}");
     c.clipboard = ClipboardMode::Off;
     c.grant = grant.iter().map(|s| s.to_string()).collect();
@@ -58,7 +58,7 @@ async fn controller(
     for l in lines {
         tx.send((*l).to_string()).await.expect("encolar línea");
     }
-    let mut c = DaemonConfig::new(cfg_dir);
+    let mut c = DaemonConfig::new(cfg_dir).insecure_accept_any();
     c.target = Some(format!("127.0.0.1:{port}"));
     c.clipboard = ClipboardMode::Off;
     c.grant = grant.iter().map(|s| s.to_string()).collect();
@@ -290,7 +290,7 @@ async fn input_off_by_default_with_capability_and_enabled_by_perm() {
 
     let (tx_ctl, rx_ctl) = tokio::sync::mpsc::channel::<String>(8);
     let ctl = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.target = Some(format!("127.0.0.1:{port}"));
         c.clipboard = ClipboardMode::Off;
         c.grant = vec!["keyboard".into()];

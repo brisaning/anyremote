@@ -147,6 +147,16 @@ pub struct DaemonConfig {
     /// Política de un solo sentido para archivos (patrón OPTION_ONE_WAY_FILE_TRANSFER):
     /// solo controlador → controlado; el controlador RECHAZA ofertas entrantes.
     pub one_way_files: bool,
+    /// C-44 (F-01): política de admisión de pares del listener. **Default
+    /// `trusted`** (denegar salvo par confiado); `any` queda para tests y
+    /// para quien lo pida explícitamente.
+    pub accept: AcceptPolicy,
+    /// C-44: IDs pre-autorizados por el anfitrión (`--trust ID[,ID]`). Al
+    /// autenticarse ese ID, se acepta y se recuerda en `trusted.ids`.
+    pub trusted_ids: Vec<String>,
+    /// C-44: espera máxima (segundos) de la decisión del anfitrión en
+    /// `--accept ask`. Sin respuesta → se deniega (fail-closed).
+    pub accept_timeout_secs: u64,
     /// RF-02a (D-07): permite inyectar teclado/ratón en el controlado.
     /// **Desactivado por defecto** (denegado salvo que se pida `--allow-input`).
     /// Es la **capacidad**: sin ella ninguna orden `{"perm":{"input":true}}`
@@ -202,6 +212,9 @@ impl DaemonConfig {
             video_fps: 10,
             codec: anyremote_codec::CodecFormat::Vp9,
             one_way_files: false,
+            accept: AcceptPolicy::Trusted,
+            trusted_ids: Vec::new(),
+            accept_timeout_secs: 30,
             allow_input: false,
             input_on_start: false,
             input_backend: InputBackend::Windows,
@@ -212,6 +225,27 @@ impl DaemonConfig {
             audio_sources: vec![AudioSource::System],
             bye_source: None,
         }
+    }
+
+    /// **Solo tests / embebedores de confianza**: desactiva la autorización del
+    /// par (comportamiento previo a C-44). En producción se usa `--accept`.
+    /// El nombre es deliberadamente explícito para que un `grep` lo delate.
+    #[doc(hidden)]
+    pub fn insecure_accept_any(mut self) -> Self {
+        self.accept = AcceptPolicy::Any;
+        self
+    }
+
+    /// C-44: tope de establecimiento. En `ask` incluye la espera de la
+    /// decisión del anfitrión (que ocurre dentro del handshake).
+    fn handshake_timeout(&self) -> std::time::Duration {
+        let base = 15u64;
+        let extra = if self.accept == AcceptPolicy::Ask {
+            self.accept_timeout_secs
+        } else {
+            0
+        };
+        std::time::Duration::from_secs(base + extra)
     }
 }
 
@@ -238,6 +272,44 @@ impl Transport {
         match self {
             Self::Tcp => "tcp",
             Self::Udp => "udp",
+        }
+    }
+}
+
+/// Política de admisión de pares del listener (C-44, F-01/RNF-07).
+///
+/// Autenticado ≠ autorizado: C2 demuestra posesión de una clave, pero la
+/// sesión solo debe activarse con una decisión del anfitrión.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AcceptPolicy {
+    /// Solo pares ya confiados (`trusted.ids`) o pre-autorizados con `--trust`.
+    #[default]
+    Trusted,
+    /// Pregunta al anfitrión por stdin (`{"accept":"<ID>"}` / `{"reject":"<ID>"}`).
+    /// Los pares ya confiados entran sin preguntar.
+    Ask,
+    /// Cualquier par autenticado (comportamiento histórico). **Solo** para
+    /// tests y para quien lo pida explícitamente.
+    Any,
+}
+
+impl AcceptPolicy {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "trusted" => Ok(Self::Trusted),
+            "ask" => Ok(Self::Ask),
+            "any" => Ok(Self::Any),
+            other => Err(format!(
+                "--accept espera trusted|ask|any (recibido {other})"
+            )),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Trusted => "trusted",
+            Self::Ask => "ask",
+            Self::Any => "any",
         }
     }
 }
@@ -701,6 +773,19 @@ fn conn_gone(e: &anyremote_transport::TransportError) -> bool {
     .any(|k| s.contains(k))
 }
 
+/// C-44 (F-01): permisos efectivos = **intersección** entre lo que el anfitrión
+/// ofreció y la intención del par. El `PermissionResponse` nunca amplía.
+fn host_grant(requested: &[String], intent_granted: bool, peer_perms: &[String]) -> Vec<String> {
+    if !intent_granted {
+        return Vec::new();
+    }
+    requested
+        .iter()
+        .filter(|p| peer_perms.iter().any(|q| q == *p))
+        .cloned()
+        .collect()
+}
+
 /// Resultado del establecimiento con un cliente.
 #[allow(clippy::large_enum_variant)] // `Channel` domina en tamaño; boxear solo añadiría indirección.
 enum Established<T> {
@@ -725,6 +810,132 @@ struct StdinCtl {
     pending: Vec<String>,
     /// La sesión se cerró por stdin/señal → el listener debe detenerse también.
     stop: bool,
+}
+
+/// Decisión del anfitrión sobre una sesión entrante (C-44, `--accept ask`).
+#[derive(Debug, PartialEq)]
+enum AdmissionDecision {
+    Accept { trust: bool },
+    Reject,
+}
+
+/// Parsea `{"accept":"<ID>","trust":bool}` / `{"reject":"<ID>"}` (C-44).
+/// `None` = la línea no es una decisión (p. ej. `{"perm":...}` o `bye`).
+fn parse_decision(line: &str, expected_id: &str) -> Option<AdmissionDecision> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let id = v
+        .get("accept")
+        .or_else(|| v.get("reject"))
+        .and_then(|x| x.as_str())?;
+    if !id.eq_ignore_ascii_case(expected_id) {
+        return None; // decisión para otro par: se ignora
+    }
+    if v.get("accept").is_some() {
+        Some(AdmissionDecision::Accept {
+            trust: v.get("trust").and_then(|x| x.as_bool()).unwrap_or(false),
+        })
+    } else {
+        Some(AdmissionDecision::Reject)
+    }
+}
+
+/// Resultado de la autorización del par (C-44). `remember` = persistir en TOFU.
+enum Admission {
+    Accept { remember: bool },
+    Deny { reason: &'static str },
+}
+
+/// Autoriza al par autenticado según `--accept` (F-01/RNF-07). El anfitrión
+/// decide; un par desconocido **no** obtiene sesión por defecto.
+#[allow(clippy::too_many_arguments)] // capas de sesión: cada parámetro tiene dueño claro.
+async fn admit_peer(
+    peer_id: &auth::PeerIdentity,
+    cfg: &DaemonConfig,
+    ctl: &mut StdinCtl,
+    session_id: &str,
+    peer: std::net::SocketAddr,
+    log: &mut SessionLog,
+    emit: &mut Emit,
+) -> Result<Admission, DaemonError> {
+    let id = peer_id.node_id.to_string();
+    match cfg.accept {
+        // Legado/tests: cualquier par autenticado (documentado como inseguro).
+        AcceptPolicy::Any => Ok(Admission::Accept { remember: true }),
+        AcceptPolicy::Trusted => {
+            if peer_id.trusted {
+                return Ok(Admission::Accept { remember: false });
+            }
+            if cfg
+                .trusted_ids
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(id.as_str()))
+            {
+                return Ok(Admission::Accept { remember: true });
+            }
+            Ok(Admission::Deny {
+                reason: "peer_unknown",
+            })
+        }
+        AcceptPolicy::Ask => {
+            // Ya autorizado por el anfitrión en una sesión anterior: entra sin
+            // volver a preguntar (la decisión quedó en `trusted.ids`).
+            if peer_id.trusted {
+                return Ok(Admission::Accept { remember: false });
+            }
+            emit.emit(ev(
+                "session_pending",
+                serde_json::json!({
+                    "peer": id,
+                    "peer_addr": peer.to_string(),
+                    "session_id": session_id,
+                    "role": "controlled",
+                }),
+            ));
+            let timeout = std::time::Duration::from_secs(cfg.accept_timeout_secs.max(1));
+            let deadline = tokio::time::Instant::now() + timeout;
+            loop {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    return Ok(Admission::Deny { reason: "timeout" });
+                }
+                match tokio::time::timeout(left, ctl.rx.recv()).await {
+                    // Sin gestor (stdin cerrado) o timeout → denegar.
+                    Err(_) | Ok(None) => return Ok(Admission::Deny { reason: "timeout" }),
+                    Ok(Some(line)) => {
+                        if let Some(dec) = parse_decision(&line, id.as_str()) {
+                            return Ok(match dec {
+                                AdmissionDecision::Accept { trust } => {
+                                    Admission::Accept { remember: trust }
+                                }
+                                AdmissionDecision::Reject => Admission::Deny {
+                                    reason: "rejected_by_host",
+                                },
+                            });
+                        }
+                        // Los toggles `{"perm":...}` no se pierden: se aplican
+                        // al abrir la sesión (C-2).
+                        if line.trim_start().starts_with('{') && line.contains("\"perm\"") {
+                            ctl.pending.push(line);
+                            continue;
+                        }
+                        if line.trim_start().starts_with('{')
+                            && (line.contains("\"accept\"") || line.contains("\"reject\""))
+                        {
+                            continue; // decisión para otro par: se ignora
+                        }
+                        // `bye`/línea de control del gestor → detener la escucha.
+                        ctl.stop = true;
+                        let _ = log.record(
+                            AuditEventKind::Error,
+                            session_id,
+                            serde_json::json!({"pending_session": "stop", "peer": id}),
+                        );
+                        return Ok(Admission::Deny { reason: "stopped" });
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Resultado de la espera idle del listener (aceptar / stdin / señal / tiempo).
@@ -768,6 +979,8 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     identity: &Identity,
     session_id: &str,
     cfg: &DaemonConfig,
+    // C-44: canal del gestor (UI) para pedir la decisión en `--accept ask`.
+    ctl: &mut StdinCtl,
     log: &mut SessionLog,
     emit: &mut Emit,
 ) -> Result<Established<T>, DaemonError> {
@@ -775,14 +988,45 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     let mut gate = auth::AuthGate::new();
     let trust = TrustStore::load(&cfg.config_dir);
     let peer_id = auth::recv_validate_auth(&mut ch, &mut gate, &trust, &binding).await?;
+    // C-44 (F-01/RNF-07): autenticado ≠ autorizado. El anfitrión decide ANTES
+    // de anunciar nada ni enviar su prueba de identidad (mínima exposición).
+    let admission = admit_peer(&peer_id, cfg, ctl, session_id, peer, log, emit).await?;
+    let remember = match admission {
+        Admission::Accept { remember } => remember,
+        Admission::Deny { reason } => {
+            log.record(
+                AuditEventKind::PermissionDenied,
+                session_id,
+                serde_json::json!({
+                    "from": "host",
+                    "reason": reason,
+                    "peer": peer_id.node_id.to_string(),
+                    "peer_addr": peer.to_string(),
+                    "transport": transport,
+                }),
+            )?;
+            emit.emit(ev(
+                "peer_rejected",
+                serde_json::json!({
+                    "peer": peer_id.node_id.to_string(),
+                    "peer_addr": peer.to_string(),
+                    "reason": reason,
+                }),
+            ));
+            return Ok(Established::Denied);
+        }
+    };
     auth::send_auth(&mut ch, identity, &binding).await?;
-    // D-03 (TOFU): se recuerda el par autenticado; en la próxima sesión del
-    // mismo equipo `peer_trusted` será true.
-    TrustStore::remember(&cfg.config_dir, &peer_id.node_id, &peer_id.pubkey);
+    // D-03 (TOFU): solo se recuerda un par ACEPTADO; en la próxima sesión del
+    // mismo equipo `peer_trusted` será true (y en `trusted`/`ask` entra sin
+    // volver a preguntar).
+    if remember {
+        TrustStore::remember(&cfg.config_dir, &peer_id.node_id, &peer_id.pubkey);
+    }
     log.record(
         AuditEventKind::SessionEstablished,
         session_id,
-        serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted, "peer_addr": peer.to_string(), "transport": transport}),
+        serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted, "peer_addr": peer.to_string(), "transport": transport, "accept": cfg.accept.as_str()}),
     )?;
     emit.emit(ev(
         "session_active",
@@ -800,7 +1044,7 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     }
     ch.send(proto::envelope::Payload::PermissionRequest(
         proto::PermissionRequest {
-            permissions: requested,
+            permissions: requested.clone(),
         },
     ))
     .await?;
@@ -808,7 +1052,7 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     let _state = transition(SessionState::Handshaking, SessionEvent::HandshakeOk)?;
 
     let resp = ch.recv().await?;
-    let granted = match resp.payload {
+    let intent = match resp.payload {
         Some(proto::envelope::Payload::PermissionResponse(r)) => r,
         other => {
             return Err(DaemonError::Config(format!(
@@ -816,11 +1060,15 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
             )))
         }
     };
-    if !granted.granted || granted.permissions.is_empty() {
+    // C-44 (F-01): el `PermissionResponse` del par es su **intención**, no una
+    // autorización. El anfitrión concede solo la intersección con lo que él
+    // mismo solicitó (nunca un permiso que no ofreció).
+    let granted = host_grant(&requested, intent.granted, &intent.permissions);
+    if granted.is_empty() {
         log.record(
             AuditEventKind::PermissionDenied,
             session_id,
-            serde_json::json!({"from": "controller", "peer": peer.to_string()}),
+            serde_json::json!({"from": "controller", "peer": peer.to_string(), "reason": "interseccion_vacia"}),
         )?;
         emit.emit(ev(
             "client_failed",
@@ -831,11 +1079,11 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     log.record(
         AuditEventKind::PermissionGranted,
         session_id,
-        serde_json::json!({"perms": granted.permissions}),
+        serde_json::json!({"perms": granted, "source": "host", "peer": peer_id.node_id.to_string()}),
     )?;
     // El stream de vídeo dedicado (QUIC) lo adjunta el caller de este
     // establecimiento; en TCP el vídeo va por este mismo canal.
-    Ok(Established::Active(ch, granted.permissions, None))
+    Ok(Established::Active(ch, granted, None))
 }
 
 /// Resultado del manejo de UN intento de sesión del listener (C-15).
@@ -952,8 +1200,19 @@ async fn handle_attempt<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>
             }
         }
         Ok(Ok(Established::Denied)) => {
-            // Cliente descartado tras auditoría → sigue escuchando.
-            Ok(SessionFlow::Continue)
+            // Cliente descartado tras auditoría → sigue escuchando, salvo que
+            // la decisión del gestor (`bye`) haya pedido detener (C-44).
+            if ctl.stop {
+                let mut report = SessionReport::new(session_id);
+                report.finish();
+                Ok(SessionFlow::Done(RunOutcome {
+                    report,
+                    events: std::mem::take(&mut emit.events),
+                    clipboard_final: None,
+                }))
+            } else {
+                Ok(SessionFlow::Continue)
+            }
         }
         Ok(Err(e)) => {
             // Cliente falló (TLS/auth/secuencia): audita y NO mata el listener.
@@ -972,11 +1231,11 @@ async fn handle_attempt<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>
             log.record(
                 AuditEventKind::Error,
                 session_id,
-                serde_json::json!({"client": peer.to_string(), "error": "handshake_timeout_15s"}),
+                serde_json::json!({"client": peer.to_string(), "error": format!("handshake_timeout_{}s", cfg.handshake_timeout().as_secs())}),
             )?;
             emit.emit(ev(
                 "client_failed",
-                serde_json::json!({"peer": peer.to_string(), "detail": "handshake_timeout (15s)"}),
+                serde_json::json!({"peer": peer.to_string(), "detail": format!("handshake_timeout ({}s)", cfg.handshake_timeout().as_secs())}),
             ));
             Ok(SessionFlow::Continue)
         }
@@ -1177,7 +1436,16 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         let accepted = match idle {
             Idle::Queue(line) => {
                 // `{"perm"...}` sin sesión → se aplica al abrirla (C-2).
-                ctl.pending.push(line);
+                // C-44: una decisión `accept/reject` sin sesión pendiente se
+                // ignora (no debe convertirse luego en un cierre por stdin).
+                if line.contains("\"perm\"") {
+                    ctl.pending.push(line);
+                } else {
+                    emit.emit(ev(
+                        "stale_decision",
+                        serde_json::json!({"detail": "decisión sin sesión pendiente"}),
+                    ));
+                }
                 continue;
             }
             Idle::Eof => {
@@ -1244,12 +1512,13 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                         &identity,
                         &session_id,
                         &cfg,
+                        &mut ctl,
                         &mut log,
                         &mut emit,
                     )
                     .await
                 };
-                let attempt = tokio::time::timeout(std::time::Duration::from_secs(15), fut).await;
+                let attempt = tokio::time::timeout(cfg.handshake_timeout(), fut).await;
                 handle_attempt(
                     attempt,
                     peer,
@@ -1291,6 +1560,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                         &identity,
                         &session_id,
                         &cfg,
+                        &mut ctl,
                         &mut log,
                         &mut emit,
                     )
@@ -1300,7 +1570,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                         Established::Denied => Established::Denied,
                     })
                 };
-                let attempt = tokio::time::timeout(std::time::Duration::from_secs(15), fut).await;
+                let attempt = tokio::time::timeout(cfg.handshake_timeout(), fut).await;
                 handle_attempt(
                     attempt,
                     peer,
@@ -1879,7 +2149,18 @@ async fn active_controlled<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
                                 log, emit);
                             continue;
                         }
-                        Ok(None) => {} // JSON sin `perm` → se trata como cierre (compat.)
+                        Ok(None) => {
+                            // C-44: una decisión `accept/reject` con la sesión ya
+                            // activa no aplica (y no debe cerrar la sesión).
+                            if line.contains("\"accept\"") || line.contains("\"reject\"") {
+                                emit.emit(ev(
+                                    "stale_decision",
+                                    serde_json::json!({"detail": "sesión ya activa"}),
+                                ));
+                                continue;
+                            }
+                            // JSON sin `perm` → se trata como cierre (compat.)
+                        }
                         Err(detail) => {
                             emit.emit(ev("input_error", serde_json::json!({"detail": detail})));
                             continue;
@@ -3228,5 +3509,65 @@ mod tests {
         // Vuelve el sonido -> reanuda envio.
         assert!(!silence_gate(0.05, &mut n));
         assert_eq!(n, 0);
+    }
+
+    /// C-44 (F-01): el anfitrión concede su intersección, nunca lo que el par
+    /// añada. Un `PermissionResponse` que amplía no surte efecto.
+    #[test]
+    fn host_grant_is_intersection_and_never_expands() {
+        let requested = vec!["keyboard".to_string(), "mouse".to_string()];
+        assert_eq!(
+            host_grant(&requested, true, &["keyboard".into()]),
+            vec!["keyboard".to_string()]
+        );
+        // El par añade `fingerprint`: no se concede (no estaba en `requested`).
+        assert_eq!(
+            host_grant(&requested, true, &["keyboard".into(), "fingerprint".into()]),
+            vec!["keyboard".to_string()]
+        );
+        // `granted=false` no concede nada aunque liste permisos.
+        assert!(host_grant(&requested, false, &requested).is_empty());
+        // Intención vacía → nada (la sesión se denegará por intersección vacía).
+        assert!(host_grant(&requested, true, &[]).is_empty());
+    }
+
+    /// C-44: la decisión del anfitrión se parsea con el ID del par pendiente.
+    #[test]
+    fn admission_decision_parses_only_for_the_pending_peer() {
+        assert_eq!(
+            parse_decision(r#"{"accept":"AAAA2222BB"}"#, "AAAA2222BB"),
+            Some(AdmissionDecision::Accept { trust: false })
+        );
+        assert_eq!(
+            parse_decision(r#"{"accept":"AAAA2222BB","trust":true}"#, "AAAA2222BB"),
+            Some(AdmissionDecision::Accept { trust: true })
+        );
+        assert_eq!(
+            parse_decision(r#"{"reject":"AAAA2222BB"}"#, "AAAA2222BB"),
+            Some(AdmissionDecision::Reject)
+        );
+        // Otro par, permisos o basura → no es una decisión.
+        assert_eq!(
+            parse_decision(r#"{"accept":"CCCC4444DD"}"#, "AAAA2222BB"),
+            None
+        );
+        assert_eq!(
+            parse_decision(r#"{"perm":{"input":true}}"#, "AAAA2222BB"),
+            None
+        );
+        assert_eq!(parse_decision("bye", "AAAA2222BB"), None);
+    }
+
+    /// C-44: el default de la política es denegar salvo par confiado.
+    #[test]
+    fn accept_policy_defaults_to_trusted() {
+        assert_eq!(AcceptPolicy::default(), AcceptPolicy::Trusted);
+        assert_eq!(
+            DaemonConfig::new(std::env::temp_dir()).accept,
+            AcceptPolicy::Trusted
+        );
+        assert!(AcceptPolicy::parse("ask").is_ok());
+        assert!(AcceptPolicy::parse("any").is_ok());
+        assert!(AcceptPolicy::parse("nope").is_err());
     }
 }

@@ -32,7 +32,7 @@ async fn listener_survives_aborted_clients_and_serves_the_next_one() {
     let listener_events = Arc::new(Mutex::new(Vec::<String>::new()));
     let le = listener_events.clone();
     let listen_cfg = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Memory;
         c.max_secs = 15;
@@ -67,7 +67,7 @@ async fn listener_survives_aborted_clients_and_serves_the_next_one() {
     let ctl_events = Arc::new(Mutex::new(Vec::<String>::new()));
     let ce = ctl_events.clone();
     let connect_cfg = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.target = Some(format!("127.0.0.1:{port}"));
         c.clipboard = ClipboardMode::Memory;
         c.max_secs = 3;

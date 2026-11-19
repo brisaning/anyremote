@@ -34,7 +34,7 @@ async fn controller_rtt_hint_makes_the_host_adapt_bitrate() {
     let listen_events = Arc::new(Mutex::new(Vec::<String>::new()));
     let le = listen_events.clone();
     let listen = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Off;
         c.video = VideoMode::Test;
@@ -54,7 +54,7 @@ async fn controller_rtt_hint_makes_the_host_adapt_bitrate() {
         let _ = tx.send("bye".to_string()).await;
     });
     let ctl = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.target = Some(format!("127.0.0.1:{port}"));
         c.clipboard = ClipboardMode::Off;
         c.bye_source = Some(rx);

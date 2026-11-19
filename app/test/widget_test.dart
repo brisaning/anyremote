@@ -70,6 +70,31 @@ void main() {
     );
   });
 
+  test('C-44: la app pregunta antes de aceptar y decide por stdin', () {
+    // El listener de la app autoriza por diálogo (el daemon bloquea el
+    // handshake hasta la decisión y deniega por timeout).
+    final args = buildListenArgs(size: '1280x720', kbps: 3000);
+    expect(args[args.indexOf('--accept') + 1], 'ask');
+
+    expect(
+      admissionLine(peer: 'AAAA2222BB', choice: 'accept'),
+      '{"accept":"AAAA2222BB"}',
+    );
+    expect(
+      admissionLine(peer: 'AAAA2222BB', choice: 'trust'),
+      '{"accept":"AAAA2222BB","trust":true}',
+    );
+    expect(
+      admissionLine(peer: 'AAAA2222BB', choice: 'reject'),
+      '{"reject":"AAAA2222BB"}',
+    );
+    // Cualquier otro valor degrada a rechazo (fail-closed).
+    expect(
+      admissionLine(peer: 'AAAA2222BB', choice: 'lo-que-sea'),
+      '{"reject":"AAAA2222BB"}',
+    );
+  });
+
   testWidgets('C-2: tres toggles desactivados por defecto y dinámicos (D-07)',
       (tester) async {
     await tester.pumpWidget(const AnyremoteApp());

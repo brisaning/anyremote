@@ -33,7 +33,7 @@ async fn session_with_cursor(
     let port = free_port().await;
 
     let listen = {
-        let mut c = DaemonConfig::new(cfg_dir.to_path_buf());
+        let mut c = DaemonConfig::new(cfg_dir.to_path_buf()).insecure_accept_any();
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Off;
         c.max_secs = 15;
@@ -50,7 +50,7 @@ async fn session_with_cursor(
         let _ = tx.send("bye".to_string()).await;
     });
     let ctl = {
-        let mut c = DaemonConfig::new(cfg_dir.to_path_buf());
+        let mut c = DaemonConfig::new(cfg_dir.to_path_buf()).insecure_accept_any();
         c.target = Some(format!("127.0.0.1:{port}"));
         c.clipboard = ClipboardMode::Off;
         c.bye_source = Some(rx);

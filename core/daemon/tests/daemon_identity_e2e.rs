@@ -30,7 +30,7 @@ async fn session(cfg_dir: &Path) -> (RunOutcome, RunOutcome) {
     let port = free_port().await;
     let listen_dir = cfg_dir.to_path_buf();
     let listen = tokio::spawn(async move {
-        let mut c = DaemonConfig::new(listen_dir);
+        let mut c = DaemonConfig::new(listen_dir).insecure_accept_any();
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Off;
         c.max_secs = 6;
@@ -45,7 +45,7 @@ async fn session(cfg_dir: &Path) -> (RunOutcome, RunOutcome) {
     });
     let ctl_dir = cfg_dir.to_path_buf();
     let ctl = {
-        let mut c = DaemonConfig::new(ctl_dir);
+        let mut c = DaemonConfig::new(ctl_dir).insecure_accept_any();
         c.target = Some(format!("127.0.0.1:{port}"));
         c.clipboard = ClipboardMode::Off;
         c.bye_source = Some(rx);

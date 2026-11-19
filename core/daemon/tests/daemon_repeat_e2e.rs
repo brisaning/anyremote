@@ -38,7 +38,7 @@ async fn session_from_controller(cfg_dir: &std::path::Path, port: u16) -> RunOut
         tokio::time::sleep(Duration::from_millis(400)).await;
         let _ = tx.send("bye".to_string()).await;
     });
-    let mut c = DaemonConfig::new(cfg_dir.to_path_buf());
+    let mut c = DaemonConfig::new(cfg_dir.to_path_buf()).insecure_accept_any();
     c.target = Some(format!("127.0.0.1:{port}"));
     c.clipboard = ClipboardMode::Off;
     c.bye_source = Some(rx);
@@ -54,7 +54,7 @@ async fn listener_serves_a_second_session_after_the_invited_closed_the_first() {
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let ev = events.clone();
     let listen = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Off;
         c.max_secs = 20;
@@ -95,7 +95,7 @@ async fn stdin_bye_stops_the_listener_while_waiting_for_a_client() {
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let ev = events.clone();
     let listen = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Off;
         c.max_secs = 30;

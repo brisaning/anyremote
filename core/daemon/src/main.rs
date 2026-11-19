@@ -1,7 +1,7 @@
 //! `anyremoted` — daemon de anyremote (integración de los ciclos S0–C8).
 //!
 //! Uso:
-//!   anyremoted listen  [--bind 127.0.0.1:21118] [--clipboard off|memory|win] [--grant keyboard,mouse] [--allow-input [--input-on]] [--max-secs 600] [--max-sessions 1]
+//!   anyremoted listen  [--bind 127.0.0.1:21118] [--accept trusted|ask|any] [--trust ID[,ID]] [--accept-timeout 30] [--clipboard off|memory|win] [--grant keyboard,mouse] [--allow-input [--input-on]] [--max-secs 600] [--max-sessions 1]
 //!   anyremoted connect <host:puerto> | --profile <alias>  [--clipboard ...] [--grant ...] [--send-file <ruta>] [--max-secs ...]
 //!   anyremoted profiles [--config-dir <dir>] [--list] [--add <alias,host,puerto>] [--remove <alias>]
 //!   anyremoted id [--config-dir <dir>]     (ID estable de este equipo, D-03)
@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use anyremote_audio::{AudioMode, AudioSource};
 use anyremote_codec::CodecFormat;
 use anyremote_daemon::video::VideoMode;
-use anyremote_daemon::{resolve_profile, run_connect, run_listen, ClipboardMode, DaemonConfig};
+use anyremote_daemon::{
+    resolve_profile, run_connect, run_listen, AcceptPolicy, ClipboardMode, DaemonConfig,
+};
 
 fn config_dir(flag_dir: Option<String>) -> PathBuf {
     flag_dir.map(PathBuf::from).unwrap_or_else(|| {
@@ -132,6 +134,28 @@ async fn main() {
             }
             cfg.grant = parse_grant(&args, &["keyboard", "mouse"]);
             cfg.one_way_files = args.iter().any(|a| a == "--one-way-files");
+            // C-44 (F-01/RNF-07): autorización del par. Default **trusted**
+            // (solo pares confiados); `ask` pregunta por stdin; `any` es el
+            // comportamiento histórico y hay que pedirlo explícitamente.
+            cfg.accept = match flag_value(&args, "--accept") {
+                Some(a) => AcceptPolicy::parse(&a).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                }),
+                None => AcceptPolicy::Trusted,
+            };
+            // IDs pre-autorizados (primer uso explícito): al autenticarse se
+            // aceptan y quedan en `trusted.ids`.
+            if let Some(t) = flag_value(&args, "--trust") {
+                cfg.trusted_ids = t
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            if let Some(v) = flag_value(&args, "--accept-timeout") {
+                cfg.accept_timeout_secs = v.parse().unwrap_or(30);
+            }
             // RF-02a (D-07): inyección de teclado/ratón — denegada salvo flag explícito.
             cfg.allow_input = args.iter().any(|a| a == "--allow-input");
             // C-45 (F-02): capacidad ≠ estado. `--input-on` pide arrancar la
@@ -329,7 +353,7 @@ async fn main() {
             eprintln!(
                 "anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio"
             );
-            eprintln!("  anyremoted listen   [--bind a:p] [--transport tcp|udp] [--discover ip:puerto] [--rdv ip:puerto] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input [--input-on]] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
+            eprintln!("  anyremoted listen   [--bind a:p] [--transport tcp|udp] [--discover ip:puerto] [--rdv ip:puerto] [--accept trusted|ask|any] [--trust ID[,ID]] [--accept-timeout s] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input [--input-on]] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--transport tcp|udp] [--discover ip:puerto] [--rdv ip:puerto] [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             eprintln!("  anyremoted id                                       (ID estable de este equipo, D-03)");

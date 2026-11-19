@@ -279,6 +279,10 @@ List<String> buildListenArgs({
       // enciende `{"perm":{"input":true}}` (ver `_sendPerms`). La app nunca
       // pasa `--input-on` (C-45, F-02): compartir pantalla ≠ dar teclado.
       '--allow-input',
+      // C-44 (F-01): autorización del par. La app **pregunta** antes de abrir
+      // sesión (diálogo de sesión entrante); el daemon bloquea el handshake
+      // hasta la decisión y deniega por timeout si no llega.
+      '--accept', 'ask',
       '--audio', 'on',
       '--audio-source', 'system,mic',
       // v0.8.2: escucha repetidora (ver doc de esta función).
@@ -302,6 +306,18 @@ String shareSummary({
   return activos.isEmpty
       ? 'solo ver (control remoto y audio apagados; se pueden activar en caliente)'
       : 'acepta ${activos.join(' + ')}';
+}
+
+/// C-44 (F-01): línea de decisión que la UI escribe en el stdin del listener
+/// (`--accept ask`). `choice`: `accept` (una vez) · `trust` (recordar) · `reject`.
+String admissionLine({required String peer, required String choice}) {
+  if (choice == 'accept' || choice == 'trust') {
+    return jsonEncode({
+      'accept': peer,
+      if (choice == 'trust') 'trust': true,
+    });
+  }
+  return jsonEncode({'reject': peer});
 }
 
 /// Ubica `anyremoted.exe`: env ANYREMOTE_DAEMON (override) o junto al ejecutable.
@@ -360,6 +376,9 @@ class _HomePageState extends State<HomePage> {
   String? _deadPending;
   bool _sessionActive = false;
   bool _acceptRemoteControl = false;
+  /// C-44: evita apilar diálogos si llegan varias solicitudes (el daemon
+  /// atiende una sesión a la vez, pero la UI debe ser idempotente).
+  bool _admissionPromptOpen = false;
   bool _shareAudio = false;
   bool _shareMic = false;
   /// Calidad del vídeo que comparte el listener. **720p por defecto**: en la
@@ -642,6 +661,15 @@ class _HomePageState extends State<HomePage> {
           case 'connecting':
             _append('[daemon] anyremoted v${ev['daemon'] ?? '?'} conectando a ${ev['target']}…');
             _setStatus('Conectando', Colors.orange);
+          case 'session_pending':
+            // C-44: el anfitrión decide; el daemon bloquea el handshake hasta
+            // recibir `{"accept"|"reject":"<ID>"}` por stdin.
+            final pendingPeer = (ev['peer'] as String?) ?? '?';
+            _append('[daemon] sesión entrante de $pendingPeer — esperando tu decisión');
+            unawaited(_promptIncoming(pendingPeer));
+          case 'peer_rejected':
+            _append('[daemon] sesión rechazada (${ev['peer'] ?? '?'}): '
+                '${ev['reason'] ?? 'sin motivo'}');
           case 'session_active':
             // D-03: `peer_trusted` = este equipo ya se autenticó antes (TOFU).
             _append('[daemon] SESIÓN ACTIVA con ${ev['peer']}'
@@ -846,6 +874,59 @@ class _HomePageState extends State<HomePage> {
       }));
     } catch (e) {
       if (mounted) _append('[ui] no se pudieron enviar los permisos: $e');
+    }
+  }
+
+  /// C-44 (F-01): diálogo de **sesión entrante**. Escribe la decisión en el
+  /// stdin del listener; el daemon (`--accept ask`) mantiene el handshake
+  /// bloqueado hasta entonces y deniega por timeout si no hay respuesta.
+  Future<void> _promptIncoming(String peer) async {
+    if (_admissionPromptOpen) {
+      _append('[ui] ya hay una solicitud de sesión en pantalla');
+      return;
+    }
+    final proc = _listener;
+    if (proc == null) {
+      _append('[ui] sesión entrante sin listener local: no se puede decidir '
+          '(¿daemon externo?) — el anfitrión la denegará por timeout');
+      return;
+    }
+    _admissionPromptOpen = true;
+    var choice = 'reject';
+    try {
+      if (!mounted) return;
+      final res = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Sesión entrante'),
+          content: Text('El equipo $peer quiere conectarse a este equipo.\n\n'
+              '«Aceptar y confiar» la recordará para próximas sesiones.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'reject'),
+              child: const Text('Rechazar'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'accept'),
+              child: const Text('Aceptar una vez'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'trust'),
+              child: const Text('Aceptar y confiar'),
+            ),
+          ],
+        ),
+      );
+      if (res != null) choice = res;
+    } finally {
+      _admissionPromptOpen = false;
+    }
+    try {
+      proc.stdin.writeln(admissionLine(peer: peer, choice: choice));
+      _append('[ui] decisión para $peer: $choice');
+    } catch (e) {
+      _append('[ui] no se pudo enviar la decisión: $e');
     }
   }
 

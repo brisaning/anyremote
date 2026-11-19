@@ -198,7 +198,7 @@ async fn owner_loss_during_session_closes_it_and_the_repeat_listener() {
     let listen_events = Arc::new(Mutex::new(Vec::<String>::new()));
     let le = listen_events.clone();
     let listen = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Off;
         c.max_secs = 20;
@@ -212,7 +212,7 @@ async fn owner_loss_during_session_closes_it_and_the_repeat_listener() {
     let ctl_events = Arc::new(Mutex::new(Vec::<String>::new()));
     let ce = ctl_events.clone();
     let ctl = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.target = Some(format!("127.0.0.1:{port}"));
         c.clipboard = ClipboardMode::Off;
         c.max_secs = 8; // red de seguridad del test

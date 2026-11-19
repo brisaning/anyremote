@@ -41,7 +41,7 @@ async fn daemon_listen_connect_full_integration() {
 
     // ---- Lado controlado (listen) ----
     let listen_cfg = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.bind = format!("127.0.0.1:{port}");
         c.clipboard = ClipboardMode::Memory;
         c.max_secs = 6;
@@ -56,7 +56,7 @@ async fn daemon_listen_connect_full_integration() {
     let events_ctl = Arc::new(Mutex::new(Vec::<String>::new()));
     let events_clone = events_ctl.clone();
     let connect_cfg = {
-        let mut c = DaemonConfig::new(cfg_dir.clone());
+        let mut c = DaemonConfig::new(cfg_dir.clone()).insecure_accept_any();
         c.target = Some(format!("127.0.0.1:{port}"));
         c.clipboard = ClipboardMode::Memory;
         c.clipboard_seed = Some(seed.to_string());
