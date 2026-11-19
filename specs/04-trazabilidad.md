@@ -14,7 +14,7 @@
 | RNF-03 Portabilidad | H-AD-02b | H-RD-05/06/07 | workspace | builds Windows (+ backends futuros) | todo |
 | RNF-05 Auditabilidad | — | — | `evidence/` + vault | check-list CA por fase | todo |
 | RNF-07 Autorización del par | F-01 (auditoría 19/11) | — | `core/transport`, `core/daemon` | `unknown_peer_rejected_by_default`, `ask_mode_blocks_until_host_decision` | C-44 |
-| RNF-08 Mínimo privilegio | F-02, F-03, F-04 | — | `core/daemon`, `app/lib/main.dart` | `input_off_by_default_with_capability`, `clipboard_out_requires_grant`, `file_offer_without_grant_rejected` | C-45, C-47, C-48 |
+| RNF-08 Mínimo privilegio | F-02, F-03, F-04 | — | `core/daemon`, `app/lib/main.dart` | `input_off_by_default_with_capability_and_enabled_by_perm`, `clipboard_out_requires_grant`, `file_offer_without_grant_rejected` | C-45 ✅, C-47, C-48 |
 | RNF-09 Robustez ante pares hostiles | F-04, F-06, F-07 | — | `core/filexfer`, `core/codec`, `core/daemon/preview.rs` | `stalled_transfer_does_not_block_control`, `deflate_bomb_is_rejected`, `preview_requires_token` | C-48, C-49, C-50 |
 | RNF-10 Privacidad del registro | F-05 | — | `core/telemetry`, `core/daemon` | `audit_never_contains_typed_text` | C-46 |
 
@@ -96,7 +96,7 @@ fechada y versionada. RNF-01 sigue siendo la autenticación; RNF-07 añade la
 | C-42 fps render / Texture v0.13.14 | Decisión pendiente desde C-19 sin datos del coste del visor | Contadores recv/render/drop/coste; banco release 11,0 ms/frame a 1080p (66 ms de presupuesto) → no se implementa Texture; Juank/Juank2 cerrado | `render-v0.13.14` | `evidence/viewer-render-gate.md` |
 | C-43 Conectar sin compartir v0.13.15 | Compartiendo escritorio, Conectar lanzaba otro daemon (anfitrión y cliente a la vez) | Cierra el listener (`bye` + espera ≤3 s) antes de conectar; con sesión activa no se abre la escucha | `connect-share-v0.13.15` | `evidence/connect-stops-sharing-gate.md` |
 | **C-44 autorización del par** | F-01 / RNF-07 | **planificado** — `unknown_peer_rejected_by_default`, `trusted_peer_gets_active`, `ask_mode_blocks_until_host_decision` | — | `evidence/peer-authz-gate.md` (por producir) |
-| **C-45 entrada opt-in** | F-02 / RNF-08 | **planificado** — `input_off_by_default_with_capability`, `input_on_after_perm_true` | — | `evidence/input-optin-gate.md` (por producir) |
+| **C-45 entrada opt-in** | F-02 / RNF-08 | ✅ `input_off_by_default_with_capability_and_enabled_by_perm` (e2e) + widget de «solo ver» | `input-optin-v0.13.16` | `evidence/input-optin-gate.md` |
 | **C-46 auditoría sin teclas** | F-05 / RNF-10 | **planificado** — `audit_never_contains_typed_text` | — | `evidence/audit-privacy-gate.md` (por producir) |
 | **C-47 compuerta de portapapeles** | F-03 / RNF-08 | **planificado** — `clipboard_out_requires_grant`, `clipboard_in_rejected_without_grant` | — | `evidence/clipboard-gate-v2.md` (por producir) |
 | **C-48 archivos acotados** | F-04 / RNF-08/09 | **planificado** — `file_offer_without_grant_rejected`, `stalled_transfer_does_not_block_control` | — | `evidence/filexfer-gate-v2.md` (por producir) |
@@ -112,7 +112,8 @@ fechada y versionada. RNF-01 sigue siendo la autenticación; RNF-07 añade la
 
 0. 🔴 **Seguridad (auditoría 2026-11-19)**: F-01…F-08 → ciclos **C-44…C-51** en
    `specs/02` §12, con semilla en `evidence/security-review-2026-11-19.md`.
-   Prioridad 1-2 (F-01/F-02, altos) antes que cualquier otro pendiente.
+   **C-45 ✅ (v0.13.16, entrada opt-in)**; el siguiente es **C-44** (F-01, alto):
+   sin autorización del par, cualquier equipo alcanzable obtiene control.
 1. Audio: re-validar en LAN la cadena completa con v0.7.3+ (loopback + micrófono + toggles ya verificados por separado); resampler de mayor orden.
 2. ~~Acuse de inyección al controlador~~ ✅ resuelto en v0.8.1 (acuse `InputAck` por evento + contador real de inyectadas en la app).
 3. ~~Identidad persistente + trust por dispositivo~~ ✅ resuelto en v0.8.0 (C-6); el ID ya es visible/copiable (v0.8.3, C-9) — queda el uso futuro: **conectar** por ID estable (resolutor).

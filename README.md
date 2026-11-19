@@ -12,9 +12,9 @@ _Última actualización: 2026-11-19 — **auditoría de fronteras de confianza**
 
 | Campo | Valor |
 |---|---|
-| Versión actual | **v0.13.15 — primer release estable** (`anyremote_app.exe` + `anyremoted.exe` + `serveremote` en el repo hermano; [**release**](https://github.com/brisaning/anyremote/releases/tag/connect-share-v0.13.15) con el zip Windows). Los releases **0.12.x/0.13.x anteriores y sus borradores se retiraron** (el historial de desarrollo sigue en los **tags**). |
-| Ramas | `main` = `949d7be` (PRs #25–#62) · `develop` = `6967620` (tags `quic-transport-v0.10.x`, `id-resolve-v0.11.x`, `rdv-relay-v0.12.0`, `resampler-v0.12.1`, `render-high-v0.12.2`, `udp-rdv-defaults-v0.12.3`, `share-desktop-v0.12.4`, `lan-wan-auto-v0.12.5`, `cold-start-v0.12.6`, `encoder-warmup-v0.12.7`, `video-error-detail-v0.12.8`, `h264-framing-v0.12.9`, `adapt-excess-v0.13.0`, `encode-pending-v0.13.1`, `adapt-ladder-v0.13.2`, `relay-rdv-retry-v0.13.3`, `scale-fast-v0.13.4`, `text-bitrate-v0.13.5`, `viewer-zoom-v0.13.6`, `viewer-scrollbar-v0.13.7`, `gpu-encoder-v0.13.8`, `scale-parallel-v0.13.9`, `accents-v0.13.10`, `input-4k-v0.13.11`, `audio-diag-v0.13.12`, `wan-stall-v0.13.13`, `render-v0.13.14`, `connect-share-v0.13.15`) · **repo hermano: [serveremote](https://github.com/brisaning/serveremote)** (servidor WAN con Docker) |
-| Gates actuales | **Rust 159 tests / 0 fallos** · **clippy 0 avisos** (`-D warnings`) · **fmt 0 diffs** · `flutter analyze` limpio · `flutter test` 31/31 · CI en `.github/workflows/ci.yml` |
+| Versión actual | **v0.13.16 — C-45 entrada opt-in** (tag `input-optin-v0.13.16`; **release pendiente de publicar** con OK del usuario). Release estable visible: **v0.13.15** (`anyremote_app.exe` + `anyremoted.exe` + `serveremote` en el repo hermano; [**release**](https://github.com/brisaning/anyremote/releases/tag/connect-share-v0.13.15) con el zip Windows). Los releases **0.12.x/0.13.x anteriores y sus borradores se retiraron** (el historial de desarrollo sigue en los **tags**). |
+| Ramas | `main` = `949d7be` (PRs #25–#62) · `develop` = `6967620` (tags `quic-transport-v0.10.x`, `id-resolve-v0.11.x`, `rdv-relay-v0.12.0`, `resampler-v0.12.1`, `render-high-v0.12.2`, `udp-rdv-defaults-v0.12.3`, `share-desktop-v0.12.4`, `lan-wan-auto-v0.12.5`, `cold-start-v0.12.6`, `encoder-warmup-v0.12.7`, `video-error-detail-v0.12.8`, `h264-framing-v0.12.9`, `adapt-excess-v0.13.0`, `encode-pending-v0.13.1`, `adapt-ladder-v0.13.2`, `relay-rdv-retry-v0.13.3`, `scale-fast-v0.13.4`, `text-bitrate-v0.13.5`, `viewer-zoom-v0.13.6`, `viewer-scrollbar-v0.13.7`, `gpu-encoder-v0.13.8`, `scale-parallel-v0.13.9`, `accents-v0.13.10`, `input-4k-v0.13.11`, `audio-diag-v0.13.12`, `wan-stall-v0.13.13`, `render-v0.13.14`, `connect-share-v0.13.15`, `input-optin-v0.13.16`) · **repo hermano: [serveremote](https://github.com/brisaning/serveremote)** (servidor WAN con Docker) |
+| Gates actuales | **Rust 160 tests / 0 fallos** · **clippy 0 avisos** (`-D warnings`) · **fmt 0 diffs** · `flutter analyze` limpio · `flutter test` 32/32 · CI en `.github/workflows/ci.yml` |
 | Validación de campo | ✅ LAN: sesión estable · portapapeles · visor · **control remoto teclado/ratón (v0.5.0)** · vídeo en pantalla estática fix v0.7.2 · sesión sana con `source=system` (107 frames + `bye`) · **✅ combo «control remoto + micrófono» verificada sin error con v0.7.3** (PR #13) · **✅ reconexión sin reiniciar la escucha tras cerrar desde el invitado (v0.8.2)** · 🟡 pendiente revalidación audio/720p/Nativa · visor/ID v0.8.3 · **modo visor v0.8.4** · **✅ cursor v0.8.5 (probado en campo)** · **✅ v0.9.1 en campo: `mf_h264` SIN fallback + adaptación por red actuando (3M→750k con rtt 40–1402 ms) + `dueño ausente` auto-detenido al cerrar la app** · **✅ QUIC en campo (2026-11-03, v0.10.1)**: dos sesiones con `--transport udp` en ambos lados, **cero `quic_fallback`**, auditoría `session_established.transport:"quic"` en ambas, vídeo `mf_h264` + control (499 inyecciones) + C-12 cerrando limpio sobre QUIC · **compatibilidad** (cliente TCP → listener dual) también probada en campo · **✅ conexión por ID en campo (2026-11-03, v0.11.2)**: dos sesiones tecleando solo `ONDH6IU4RU` — `resolve_ok` por **broadcast** (343 ms, primera vez) y por **caché** (37 ms), auditoría con `transport:"quic"` y `transport:"tcp"`, **pin por ID** pineado, sin fallback · tras dos hotfixes de campo (v0.11.1 fan-out de subredes, v0.11.2 anti-ICMP-poison del /32 WARP) | |
 | PRs integrados | #2 (fases+ciclos+M2 base) · #3 (M2 fix + v0.3.0) · #4 (v0.4.0 UI) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (v0.6.2 coords) · #10 (v0.7.0 dinámico) · #11 (v0.7.1 perf) · #12 (v0.7.2 fix vídeo estático) · #13 (v0.7.3 diagnóstico) · #14 (v0.8.0 identidad) · #15 (v0.8.1 menores+CI) · #16 (docs+CI) · #17 (v0.8.2 listener repetidor) · #18 (v0.8.3 visor+ID) · #19 (v0.8.4 modo visor) · #20 (v0.8.5 cursor) · #21 (v0.8.6 dueño ausente) · #22 (v0.8.7 adaptación por red) · #23 (v0.9.0 H.264/MF) · #24 (v0.9.1 hotfix H.264) · #25 (v0.10.0 UDP/QUIC) · #26 (fmt e2e QUIC) · #27 (v0.10.1 auditoría transport) · #28 (v0.11.0 conexión por ID) · #29 (v0.11.1 fan-out broadcasts) · #30 (v0.11.2 fix ICMP-poison) · #31 (v0.12.0 WAN rendezvous+relay) · #32 (fix layout campo encuentro) · #33 (servidor → repo serveremote) · #34 (fix flake puertos e2e) · #35 (v0.12.1 resampler rubato) · #36 (v0.12.2 render alto sin nativo) · #37 (v0.12.3 defaults UDP+rdv + primer release) · #38 (v0.12.4 compartir escritorio) · #39 (docs post-merge C-21, título erróneo) · #40 (v0.12.5 rdv vacío + auto LAN/WAN) · #41 (v0.12.6 arranque en frío GDI + input) · #42 (v0.12.7 encoder en WAN+estático) · #43 (v0.12.8 detalle video_error) · #44 (v0.12.9 framing H.264) · #45 (CI Flutter fijado a3.47.8) · #46 (v0.13.0 exceso de RTT) · #47 (v0.13.1 cola del encoder) · #48 (v0.13.2 escalera acotada) · #49 (v0.13.3 reintento de relay) · #50 (fmt CI) · #51 (v0.13.4 escala separable) · #52 (v0.13.5 texto) |
 
@@ -24,7 +24,7 @@ _Última actualización: 2026-11-19 — **auditoría de fronteras de confianza**
 |---|---|---|
 | RF-01 Sesiones iniciar/aceptar | ✅ · **v0.8.2 listener repetidor**: al cerrar el invitado la escucha se libera y acepta reconexiones sin reiniciar; el proceso termina solo al detenerse (fix de cuelgue) · **v0.8.6 dueño ausente**: cerrar la app **detiene la escucha/sesión** (EOF del stdin con gestor visto) · **v0.10.0 transporte UDP/QUIC**: `--transport udp` (listen ata TCP+UDP en el mismo puerto; connect con fallback `quic_fallback`) — **vídeo por stream dedicado** (su pérdida no bloquea control/audio/heartbeats) y autenticación **C2 con el MISMO binding** exportado por QUIC | C1 (+C2) `evidence/listener-repeat-gate.md`, `evidence/owner-gate.md`, `evidence/quic-gate.md` |
 | RF-02a Pantalla + códec | ✅ · **visor sin desbordes (v0.8.3)**: la pantalla del anfitrión se ve **completa** a cualquier tamaño de ventana · **modo visor (v0.8.4)**: Conexión/Registro ocultos, `Detener` en la barra superior a la izquierda del estado y toggles en la cabecera del visor · **cursor remoto visible (v0.8.5)**: flecha de overlay con la posición del cursor del anfitrión (DXGI no lo incluye en los frames) · **adaptación por red (v0.8.7)**: el RTT del controlador baja bitrate/escala en el anfitrión · **H.264 por hardware/MF (v0.9.0 · hotfix v0.9.1)**: encoder Media Foundation (con fallback VP9 **visible** en el registro) + decoder OpenH264 — menos CPU que VP9; el hotfix dimensiona el buffer de salida por `cbSize` y reasigna tasas por reconstrucción (fix de `MF_E_BUFFERTOOSMALL` a 720p) | C3/C3-bis (VP9 37 fps@720p) + M2 visor · `evidence/viewer-id-gate.md`, `evidence/viewer-mode-gate.md`, `evidence/cursor-gate.md` |
-| RF-02a Entrada de teclado/ratón en sesión | ✅ (v0.5.0) — D-07 por defecto; coordenadas **normalizadas 0..65535** (v0.6.2); **toggles dinámicos** (v0.7.0); **acuse de inyección** al visor y **F1..F12** (v0.8.1) | `evidence/input-session-gate.md`, `evidence/control-coords-gate.md`, `evidence/dynamic-perms-gate.md`, `evidence/menores-gate.md` |
+| RF-02a Entrada de teclado/ratón en sesión | ✅ (v0.5.0) — D-07 por defecto; coordenadas **normalizadas 0..65535** (v0.6.2); **toggles dinámicos** (v0.7.0); **acuse de inyección** al visor y **F1..F12** (v0.8.1) · **v0.13.16 (C-45) entrada opt-in real**: capacidad ≠ estado (`--input-on` solo para la CLI), la app no la concede al compartir y el visor indica «solo ver» | `evidence/input-session-gate.md`, `evidence/control-coords-gate.md`, `evidence/dynamic-perms-gate.md`, `evidence/menores-gate.md`, `evidence/input-optin-gate.md` |
 | Audio en sesión (capacidad D-05/D-07) | ✅ (v0.6.1 → **v0.7.0**): **loopback (audio del sistema)** + **micrófono** como fuentes (mezclables con `--audio-source system,mic`), Opus 48 kHz; toggles **dinámicos en caliente** · **v0.12.1**: conversión de tasa con **`rubato`** (windowed-sinc) en ambos sentidos — sin alias al bajar48→44.1 | `evidence/audio-gate.md`, `evidence/dynamic-perms-gate.md` |
 | RF-02b Portapapeles | ✅ | C4 (contención de formatos) |
 | RF-02c Archivos | ✅ | C5 + reanudación persistente (v0.3.0) |
@@ -43,13 +43,14 @@ entrada, archivos, portapapeles, códec). Semilla con evidencia por ruta/línea:
 [`evidence/security-review-2026-11-19.md`](evidence/security-review-2026-11-19.md).
 Diseño de cada ciclo y criterios de gate: [`specs/02`](specs/02-plan-implementacion.md) §12.
 **Mientras no estén cerrados:** no compartir el escritorio en redes no confiables
-(hotel, campus, VLAN corporativa) y revisar antes de compartir los logs de
-sesiones antiguas (pueden contener texto tecleado; ver C-46).
+(hotel, campus, VLAN corporativa) hasta cerrar **C-44** (autorización del par), y
+revisar antes de compartir los logs de sesiones antiguas (pueden contener texto
+tecleado; ver C-46).
 
 | # | Ciclo | Hallazgo | Sev. | Qué cambia |
 |---|---|---|---|---|
 | 1 | C-44 | F-01 sin autorización del par: cualquiera que alcance 21118 obtiene control | **Alta** | Política de admisión (`trusted`/`ask`/`any`), aprobación por conexión y decisión del anfitrión sobre los permisos |
-| 2 | C-45 | F-02 «Compartir escritorio» arma `--allow-input` y el toggle solo | **Alta** | Entrada opt-in real: sin toggle no se concede teclado/ratón |
+| 2 | C-45 ✅ | F-02 «Compartir escritorio» armaba `--allow-input` y el toggle solo | **Alta** | **Hecho v0.13.16**: capacidad ≠ estado (`--input-on`), sin auto-encendido, «solo ver» visible — [`evidence/input-optin-gate.md`](evidence/input-optin-gate.md) |
 | 3 | C-46 | F-05 teclas en claro en `audit/*.jsonl` | Media | Auditoría solo con metadatos (`perm`, `kind`), nunca el carácter |
 | 4 | C-47 | F-03 portapapeles del anfitrión sin compuerta | Media | Permiso `clipboard` + cuarto toggle (default off) |
 | 5 | C-48 | F-04 archivos sin cuota y bloqueando la sesión | Media | Permiso `files`, cuotas, recepción fuera del bucle y limpieza de `.part` |
@@ -81,8 +82,12 @@ sesiones antiguas (pueden contener texto tecleado; ver C-46).
 
 ```powershell
 # Anfitrión (la app usa 720p por defecto; --audio on comparte el AUDIO DEL SISTEMA vía loopback):
-anyremoted listen --bind 0.0.0.0:21118 --video on --video-size 1280x720 --clipboard win --allow-input --audio on
+anyremoted listen --bind 0.0.0.0:21118 --video on --video-size 1280x720 --clipboard win --allow-input --input-on --audio on
 # ... --audio-source mic para compartir el micrófono en lugar de la salida del sistema.
+# C-45: `--allow-input` es la CAPACIDAD (permite el toggle dinámico) y
+# `--input-on` el ESTADO inicial. Sin `--input-on` la sesión arranca en
+# «solo ver» hasta que el anfitrión envíe {"perm":{"input":true}} (la app
+# lo hace con la casilla «Control remoto», apagada por defecto).
 # Invitado (o la app: destino IP:puerto o alias de perfil):
 anyremote connect <ip>:21118 --clipboard win [--send-file archivo] [--one-way-files]
 # Perfiles:
@@ -92,19 +97,21 @@ anyremote id
 ```
 En la app: las tres casillas **"Control remoto", "Audio del sistema" y
 "Micrófono"** son **dinámicas** — se activan/desactivan **durante la sesión** y el
-anfitrión las aplica en caliente (D-07 en caliente: manda quien comparte). La
+anfitrión las aplica en caliente (D-07 en caliente: manda quien comparte).
+**C-45:** arrancan **apagadas**; compartir pantalla no concede control remoto
+(el visor muestra **«solo ver»** hasta marcar la casilla). La
 **calidad de vídeo** (720p por defecto · 1080p · Nativa) se elige antes de
 *Escuchar (red)*. El visor envía ratón (mover/clic/arrastre/rueda) y teclado por
 stdin al proceso `connect`; el audio (sistema y/o micrófono, **mezclados** si
 ambos) viaja **Opus 48 kHz mono** hasta el controlador (indicador `audio ✓` /
 `audio: sin señal` en la cabecera del visor según el RMS).
 
-> **⚠️ Estado de seguridad (auditoría 2026-11-19).** Hoy **«Compartir escritorio»
-> activa el control remoto automáticamente** (C-21) y el listener acepta
-> cualquier par autenticado sin aprobación (F-01/F-02 de
-> [`evidence/security-review-2026-11-19.md`](evidence/security-review-2026-11-19.md)).
-> Hasta cerrar **C-44/C-45**, comparte solo en redes de confianza. C-45 convierte
-> la entrada en opt-in real y C-44 añade autorización por conexión.
+> **⚠️ Estado de seguridad (auditoría 2026-11-19).** **C-45 ✅ (v0.13.16)**: la
+> entrada es **opt-in real** — compartir pantalla ya **no** activa el control
+> remoto; el listener arranca en «solo ver» y el anfitrión lo enciende con el
+> toggle. Queda **F-01/C-44**: el listener acepta cualquier par autenticado sin
+> aprobación ([`evidence/security-review-2026-11-19.md`](evidence/security-review-2026-11-19.md)).
+> Hasta cerrar **C-44**, comparte solo en redes de confianza.
 
 **IDs de equipo (v0.8.3)**: el ID es el *nombre* del equipo (Base32 de 10
 caracteres, estable — `anyremote id` o la fila **«ID de este equipo»** con

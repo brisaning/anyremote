@@ -10,7 +10,7 @@
 
 ## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
 
-_Última actualización: 2026-11-19 · v0.13.15 · `develop`=6967620 · **auditoría de fronteras de confianza (8 hallazgos, `evidence/security-review-2026-11-19.md`) planificada como ciclos C-44…C-51 (§12)**_
+_Última actualización: 2026-11-19 · **C-45 ✅ (v0.13.16: entrada opt-in)** · v0.13.15 · `develop`=6967620 · **auditoría de fronteras de confianza (8 hallazgos) planificada como C-44…C-51 (§12); C-45 cerrado, C-44 es el siguiente**_
 
 | Fase/Ciclo/Lote | Estado | Tag / PR |
 |---|---|---|
@@ -81,14 +81,14 @@ _Última actualización: 2026-11-19 · v0.13.15 · `develop`=6967620 · **audito
 | C-42 decisión `fps render`/`Texture` v0.13.14 | Pendiente de C-19: ¿hace falta `Texture` nativo? No había medición del coste real del visor | Contadores `recv/render/drop/coste` en el log de 5 s; banco en release: **11,0 ms/frame a 1080p** (66 ms de presupuesto, drop=0) → **no se implementa Texture**; cierre de Juank/Juank2 (fluido, validación del usuario) | `render-v0.13.14` · `evidence/viewer-render-gate.md` |
 | C-43 «Conectar» deja de compartir v0.13.15 | Con el escritorio compartido, pulsar Conectar lanzaba un segundo daemon y el equipo quedaba como anfitrión y cliente a la vez | Conectar cierra el listener primero (`bye` + espera, máx. 3 s) y después arranca la sesión; con sesión activa no se abre la escucha (aviso) | `connect-share-v0.13.15` · `evidence/connect-stops-sharing-gate.md` |
 | **C-44 autorización del par** (F-01 · RNF-07) v0.14.0 | 🔴 **planificado** · semilla `evidence/security-review-2026-11-19.md` F-01: C2 solo demuestra posesión de una clave autogenerada, el `granted` lo responde **el par** y `peer_trusted` no decide nada → **cualquier equipo que alcance 21118 obtiene control remoto** | Diseño §12.1 · modo `trusted`/`ask`/`any`, decisión del anfitrión + aprobación por stdin · gates `unknown_peer_rejected_by_default`, `trusted_peer_gets_active`, `ask_mode_blocks_until_host_decision` · `evidence/peer-authz-gate.md` |
-| **C-45 entrada realmente opt-in** (F-02 · RNF-08) v0.14.1 | 🔴 **planificado** · F-02: `buildListenArgs` pasa `--allow-input` siempre y «Compartir escritorio» fuerza el toggle; el daemon arranca la sesión con `input_on = cfg.allow_input` | Diseño §12.2 · args según toggle, sin auto-encendido, `input_on` inicial `false` hasta `{"perm":{"input":true}}` · gates `input_off_by_default`, `input_on_after_perm_true` + widget de `buildListenArgs` · `evidence/input-optin-gate.md` |
+| **C-45 entrada realmente opt-in** (F-02 · RNF-08) **v0.13.16** | ✅ **gate verde** (Rust 160/0 · clippy 0 · fmt 0 · Flutter 32/32) · campo pendiente · F-02: `buildListenArgs` armaba `--allow-input` siempre y «Compartir escritorio» forzaba el toggle; el daemon nacía con `input_on = cfg.allow_input` | **Capacidad ≠ estado**: `--input-on` (CLI, default off) separa el estado inicial; `DynamicPerms.input_on = allow_input && input_on_start`; la app no pasa `--input-on` (solo `--allow-input` para el toggle dinámico); sin auto-encendido, `shareSummary` («solo ver»), chip en la cabecera, `listening` con `input_initial` y `InputDenied` con `reason` | `input-optin-v0.13.16` · `evidence/input-optin-gate.md` |
 | **C-46 auditoría sin contenido tecleado** (F-05 · RNF-10) v0.14.2 | 🔴 **planificado** · F-05: cada tecla inyectada se escribe como `KeyDown(Char('x'))` en `audit/*.jsonl`, carpeta que el README manda compartir para soporte | Diseño §12.3 · detalle `{"perm","kind"}` sin `Char`/texto + nota de migración de logs · gate `audit_never_contains_typed_text` · `evidence/audit-privacy-gate.md` |
 | **C-47 compuerta de portapapeles** (F-03 · RNF-08) v0.14.3 | 🔴 **planificado** · F-03: el portapapeles del anfitrión se envía cada 500 ms y se sobrescribe con el del par sin permiso ni toggle (la app pasa `--clipboard win` fijo) | Diseño §12.4 · permiso `clipboard` (default off) + cuarto toggle en la UI · gates `clipboard_out_requires_grant`, `clipboard_in_rejected_without_grant` · `evidence/clipboard-gate-v2.md` |
 | **C-48 archivos acotados y no bloqueantes** (F-04 · RNF-08/RNF-09) v0.14.4 | 🔴 **planificado** · F-04: recepción sin compuerta ni cuota (`max_files_per_batch` no se aplica), 256 MiB en RAM por archivo y `.part` persistentes; `receive_file_offer` dentro del `select!` bloquea control, `bye` y Ctrl+C | Diseño §12.5 · permiso `files`, cuota de sesión, tarea aparte con timeout y cancelación, limpieza de huérfanos · gates `file_offer_without_grant_rejected`, `stalled_transfer_does_not_block_control`, `receiver_enforces_batch_limit` · `evidence/filexfer-gate-v2.md` |
 | **C-49 decodificador con cotas** (F-06 · RNF-09) v0.14.5 | 🔴 **planificado** · F-06: `Deflate` → `read_to_end` sin tope (bomba zlib) y `width*height*4` en `u32` (overflow); el formato del frame lo elige el par | Diseño §12.6 · tope de salida, `checked_mul`, rango de dimensiones · gates `deflate_bomb_is_rejected`, `oversized_dimensions_rejected` · `evidence/codec-bounds-gate.md` |
 | **C-50 preview autenticado** (F-07 · RNF-09) v0.14.6 | 🔴 **planificado** · F-07: el primer cliente de `127.0.0.1:<efímero>` recibe BGRA crudo de la pantalla remota sin credencial | Diseño §12.7 · token de un solo uso en la cabecera del stream · gate `preview_requires_token` · `evidence/preview-auth-gate.md` |
 | **C-51 higiene de confianza y contadores** (F-08 · RNF-07) v0.14.7 | 🔴 **planificado** · F-08: `AuthGate` inalcanzable (aborta en el primer fallo) y sin rate-limit; «✓ verificado» se pinta con `peer_trusted` (cualquier par nuevo); `Scroll` multiplica sin comprobar | Diseño §12.8 · contador real + rate-limit por origen, etiqueta «visto antes» vs allowlist, `checked_mul` · gates `auth_gate_counts_failures`, `trusted_badge_means_allowlisted` · `evidence/trust-hygiene-gate.md` |
-| **Pendientes** | 🔴 **seguridad primero: C-44…C-51** (auditoría 19/11; F-01/F-02 son altos y bloquean el resto) · 🐛 **BUG acentos** (dead key como `Char` → `´o`; fix = precomposición + Unicode, POSPUESTO) · 🟡 repetir sesión WAN (~10 Mbps): debe haber `red_recupera_*` + escala que SUBE y texto legible · `test de campo de5 s` (captura vs emitidos) · reenvío puertos21118 · **`fps render` (decisión `Texture`)** · micrófono end-to-end · **firewall de entrada en Brian**: crear reglas 21118/21119 para LAN directa (ver C-30) | [README § Pendientes](../README.md#pendientes) |
+| **Pendientes** | 🔴 **seguridad: C-44, C-46…C-51** (C-45 ✅ v0.13.16; F-01 sigue siendo el alto pendiente y bloquea el resto) · 🐛 **BUG acentos** (dead key como `Char` → `´o`; fix = precomposición + Unicode, POSPUESTO) · 🟡 repetir sesión WAN (~10 Mbps): debe haber `red_recupera_*` + escala que SUBE y texto legible · `test de campo de5 s` (captura vs emitidos) · reenvío puertos21118 · **`fps render` (decisión `Texture`)** · micrófono end-to-end · **firewall de entrada en Brian**: crear reglas 21118/21119 para LAN directa (ver C-30) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
@@ -467,26 +467,32 @@ concede). Ningún ciclo introduce un mensaje nuevo.
 regresión completa de `daemon`+`transport` con `--accept any`. Riesgo asumido:
 los e2e existentes se actualizan de forma explícita, sin relajar el default.
 
-### 12.2 C-45 · Entrada remota realmente opt-in (F-02)
+### 12.2 C-45 · Entrada remota realmente opt-in (F-02) — ✅ cerrado v0.13.16
 
 **Objetivo.** Compartir pantalla no concede teclado ni ratón.
 
-**Cambios.**
-- `app/lib/main.dart:182-213`: `--allow-input` **solo** si el usuario marcó
-  control remoto; `_startLocalListen` (`:748-758`) deja de forzar
-  `_acceptRemoteControl = true` y, si está apagado, el registro dice «solo
-  ver» (y la cabecera del visor lo indica).
-- `core/daemon/src/lib.rs:406-435`: separar **capacidad** (`allow_input`, del
-  flag) de **estado** (`input_on`). `DynamicPerms::new` arranca en `false`;
-  solo `{"perm":{"input":true}}` lo enciende. Sin flag, ninguna orden lo
-  enciende (comportamiento actual conservado).
-- Docs: el README deja de prometer «opt-in» cuando el código no lo era; tras
-  C-45 la promesa pasa a ser cierta.
+**Cambios (implementados; el diseño inicial se ajustó al separar capacidad y
+estado — la app mantiene la capacidad para no perder los toggles dinámicos).**
+- `core/daemon/src/lib.rs`: `DaemonConfig.input_on_start` (nuevo, default
+  `false`) y flag `--input-on` en `main.rs`; `DynamicPerms::new` usa
+  `allow_input && input_on_start`. Separación **capacidad** (`--allow-input`,
+  sin ella ninguna orden enciende) vs **estado** (arranca off; lo enciende
+  `{"perm":{"input":true}}`).
+- `app/lib/main.dart`: `buildListenArgs` conserva `--allow-input` (capacidad,
+  necesaria para el toggle en caliente) y **nunca** pasa `--input-on`;
+  `_startLocalListen` deja de forzar el toggle; `shareSummary(...)` informa
+  «solo ver» o «acepta …»; chip «solo ver» en la cabecera del visor.
+- Observabilidad: evento `listening` con `input_capability`/`input_initial` y
+  `InputDenied` con `allow_input` (capacidad), `input_on` (estado) y `reason`.
+- Docs: README y `--help` documentan `--allow-input --input-on` para la CLI.
 
-**Gate.** Unit de `buildListenArgs` en ambos estados; e2e
-`input_off_by_default_with_capability` (arranque con `--allow-input`, primer
-`InputEvent` → `InputDenied{toggle_apagado}`) e `input_on_after_perm_true`;
-regresión de acentos (C-37/C-38) porque dependen de la ruta de entrada.
+**Gate (verde).** e2e dirigido por eventos
+`input_off_by_default_with_capability_and_enabled_by_perm` (capacidad armada →
+denegación `toggle_apagado` → `{"perm":true}` → inyección → acuses y `bye`);
+regresión `input_partial_grant_*`, `input_full_grant_*`,
+`input_denied_by_default_without_allow_input` y `input_toggles_at_runtime`;
+widget de `buildListenArgs`/`shareSummary` y aserción de que el checkbox sigue
+apagado tras «Compartir escritorio». Evidencia: `evidence/input-optin-gate.md`.
 
 ### 12.3 C-46 · Auditoría sin contenido tecleado (F-05)
 
