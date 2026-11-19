@@ -480,6 +480,38 @@ void main() {
     expect(stallSeconds(60000, 10000), 50, reason: 'el caso de campo (WAN)');
   });
 
+  testWidgets('C-42: el visor sostiene frames a 1080p con cadencia de 15 fps',
+      (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+    const w = 1920;
+    const h = 1080;
+    final payload = Uint8List(w * h * 4)..fillRange(0, w * h * 4, 0x30);
+
+    // 10 frames con la cadencia real (66 ms): si el render costara más que el
+    // hueco, el guard descartaría y `drop` subiría.
+    for (var i = 0; i < 10; i++) {
+      final bytes = Uint8List(16 + payload.length);
+      final bd = ByteData.sublistView(bytes);
+      bd.setUint32(0, w, Endian.little);
+      bd.setUint32(4, h, Endian.little);
+      bd.setUint32(8, i, Endian.little);
+      bd.setUint32(12, payload.length, Endian.little);
+      bytes.setAll(16, payload);
+      await tester.runAsync(() async {
+        st.debugPushVideoBytes(bytes);
+        await Future<void>.delayed(const Duration(milliseconds: 66));
+      });
+      await tester.pump();
+    }
+    final (recv, rendered, dropped, cost) = st.debugRenderStats as (int, int, int, double);
+    // ignore: avoid_print
+    print('[C-42] recv=$recv render=$rendered drop=$dropped coste=${cost.toStringAsFixed(1)}ms (test/JIT)');
+    expect(recv, 10);
+    expect(rendered, greaterThanOrEqualTo(9), reason: 'con cadencia real no debe descartar');
+    expect(dropped, lessThanOrEqualTo(1));
+  });
+
   test('normalizedPointer mapea el visor a 0..65535 sin depender del vídeo', () {
     // Cualquier calidad de vídeo (720p, 1080p, nativa) produce el mismo
     // resultado para la misma posición relativa (fix v0.6.2: a 720p/1080p el
