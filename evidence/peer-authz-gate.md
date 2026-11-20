@@ -151,3 +151,35 @@ Flutter **34/34** · analyze limpio.
 **no autorizan**: la primera conexión de cada equipo conocido desde entonces
 volverá a preguntar; «Aceptar y confiar» migra esa entrada a `user` y las
 siguientes no preguntan.
+
+## Integración C-44/C-45 (2026-11-20, v0.14.2) — aceptar no daba control
+
+**Síntoma (reporte del usuario, segunda vuelta):** el diálogo ya aparecía y la
+sesión se abría, pero el cliente **solo veía** la pantalla; en el registro del
+anfitrión: «entrada denegada en el anfitrión: control remoto apagado».
+
+**Causa.** C-44 autoriza la **sesión**; C-45 exige una decisión aparte para la
+**entrada**. El diálogo no incluía esa decisión y el toggle «Control remoto»
+seguía apagado, así que el daemon aplicaba `{"perm":{"input":false}}` y
+denegaba cada evento (`input_on:false`, 608 denegaciones en la sesión del
+20/11). El comportamiento era el diseñado por C-45, pero la UX era incoherente:
+«Aceptar» parecía conceder control y no lo hacía.
+
+**Fix (app).**
+- El diálogo **Sesión entrante** incluye la casilla
+  **«Permitir control remoto (teclado y ratón)»**, marcada por defecto y
+  visible: aceptar es la decisión explícita de ambos (conexión + control);
+  desmarcarla deja la sesión en «solo ver».
+- Los permisos se envían **antes** de la decisión (`{"perm":...}` queda
+  encolado y se aplica al abrir la sesión) → el primer clic del cliente ya
+  funciona.
+- Al aceptar sin control se avisa en el registro; el chip «solo ver» sigue
+  apareciendo si se apaga después.
+- Dedupe del aviso de denegación en el anfitrión (antes: una línea por cada
+  movimiento de ratón); se rearma al activar «Control remoto».
+
+**Gates.** Widget `C-44: session_pending abre el diálogo y permite control`
+(acepta → toggle encendido) y `C-45: se puede aceptar en «solo ver»`
+(desmarcar → toggle apagado); analyze limpio; Flutter **35/35**. Rust sin
+cambios: **169/0**. Binario **0.14.2** verificado (`FileVersion 0.14.2+1`,
+`anyremoted 0.14.2`).
