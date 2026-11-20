@@ -429,6 +429,10 @@ class _HomePageState extends State<HomePage> {
   String _audioSource = '';
   /// Último motivo de rechazo acusado (para no repetirlo en cada evento).
   String _lastInputDenied = '';
+  /// C-44/C-45 (v0.14.2): dedupe del aviso de denegación en el ANFITRIÓN.
+  /// Sin esto, cada movimiento de ratón denegado añadía una línea (608 en una
+  /// sesión del 20/11) e inundaba el registro.
+  String _lastHostDenied = '';
 
   // C-9: ID estable de este equipo (identidad D-03) — visible en la tarjeta
   // Conexión. Proviene de `anyremoted id` al arrancar o del evento `listening`.
@@ -767,7 +771,11 @@ class _HomePageState extends State<HomePage> {
                     : ev['reason'] == 'unsupported'
                         ? 'evento de entrada no soportado'
                         : 'permiso ${ev['perm'] ?? '?'} no concedido';
-            _append('[daemon] entrada denegada en el anfitrión: $inpWhy');
+            if (inpWhy != _lastHostDenied) {
+              _lastHostDenied = inpWhy;
+              _append('[daemon] entrada denegada en el anfitrión: $inpWhy'
+                  '${ev['input_on'] == false ? ' — activa «Control remoto» para permitir teclado/ratón' : ''}');
+            }
           case 'input_error':
             _append('[daemon] evento de entrada no soportado: ${ev['detail']}');
           case 'input_result':
@@ -794,6 +802,8 @@ class _HomePageState extends State<HomePage> {
                 : '[daemon] audio no concedido (D-07: activa "Audio del sistema" o "Micrófono" en el anfitrión)');
           case 'permissions_updated':
             // C-2: los toggles cambiaron en caliente (se aplica sin reconectar).
+            // v0.14.2: al activar el control se rearma el aviso de denegación.
+            if (ev['input'] == true) _lastHostDenied = '';
             _append('[daemon] permisos actualizados: control ${ev['input'] == true ? 'activado' : 'desactivado'}'
                 ' · audio ${ev['audio'] == true ? 'activo' : 'inactivo'}'
                 ' · mic ${ev['mic'] == true ? 'activo' : 'inactivo'}');
@@ -883,6 +893,11 @@ class _HomePageState extends State<HomePage> {
   /// C-44 (F-01): diálogo de **sesión entrante**. Escribe la decisión en el
   /// stdin del listener; el daemon (`--accept ask`) mantiene el handshake
   /// bloqueado hasta entonces y deniega por timeout si no hay respuesta.
+  ///
+  /// **C-44/C-45 (v0.14.2):** el diálogo decide también el **control remoto**
+  /// (casilla marcada por defecto). Autorizar la conexión y autorizar teclado/
+  /// ratón son la misma decisión explícita; sin esto, «Aceptar» abría una
+  /// sesión en «solo ver» y el cliente no podía hacer nada (reporte 20/11).
   Future<void> _promptIncoming(String peer) async {
     if (_admissionPromptOpen) {
       _append('[ui] ya hay una solicitud de sesión en pantalla');
@@ -891,34 +906,62 @@ class _HomePageState extends State<HomePage> {
     final proc = _listener;
     _admissionPromptOpen = true;
     var choice = 'reject';
+    var allowControl = true;
     try {
       if (!mounted) return;
       final res = await showDialog<String>(
         context: context,
         barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Sesión entrante'),
-          content: Text('El equipo $peer quiere conectarse a este equipo.\n\n'
-              '«Aceptar y confiar» la recordará para próximas sesiones.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, 'reject'),
-              child: const Text('Rechazar'),
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setLocal) => AlertDialog(
+            title: const Text('Sesión entrante'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('El equipo $peer quiere conectarse a este equipo.\n\n'
+                    '«Aceptar y confiar» la recordará para próximas sesiones.'),
+                const SizedBox(height: 8),
+                CheckboxListTile(
+                  value: allowControl,
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text('Permitir control remoto (teclado y ratón)'),
+                  subtitle: const Text('Desmárcalo para compartir solo la pantalla'),
+                  onChanged: (v) => setLocal(() => allowControl = v ?? false),
+                ),
+              ],
             ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, 'accept'),
-              child: const Text('Aceptar una vez'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, 'trust'),
-              child: const Text('Aceptar y confiar'),
-            ),
-          ],
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'reject'),
+                child: const Text('Rechazar'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'accept'),
+                child: const Text('Aceptar una vez'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, 'trust'),
+                child: const Text('Aceptar y confiar'),
+              ),
+            ],
+          ),
         ),
       );
       if (res != null) choice = res;
     } finally {
       _admissionPromptOpen = false;
+    }
+    if (choice != 'reject') {
+      // Los permisos van ANTES de la decisión: el daemon los encola mientras
+      // espera y los aplica al abrir la sesión (el primer clic ya funciona).
+      setState(() => _acceptRemoteControl = allowControl);
+      _sendPerms();
+      if (!allowControl) {
+        _append('[ui] sesión aceptada en modo «solo ver»: marca '
+            '«Control remoto» para permitir teclado/ratón');
+      }
     }
     if (proc == null) {
       _append('[ui] decisión «$choice» para $peer no enviada: no hay listener '
@@ -927,7 +970,8 @@ class _HomePageState extends State<HomePage> {
     }
     try {
       proc.stdin.writeln(admissionLine(peer: peer, choice: choice));
-      _append('[ui] decisión para $peer: $choice');
+      _append('[ui] decisión para $peer: $choice'
+          '${choice == 'reject' ? '' : allowControl ? ' · con control' : ' · solo ver'}');
     } catch (e) {
       _append('[ui] no se pudo enviar la decisión: $e');
     }

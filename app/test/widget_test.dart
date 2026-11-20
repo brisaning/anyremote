@@ -95,7 +95,7 @@ void main() {
     );
   });
 
-  testWidgets('C-44: session_pending abre el diálogo de autorización',
+  testWidgets('C-44: session_pending abre el diálogo y permite control',
       (tester) async {
     await tester.pumpWidget(const AnyremoteApp());
     final st = tester.state(find.byType(HomePage)) as dynamic;
@@ -108,12 +108,33 @@ void main() {
 
     expect(find.text('Sesión entrante'), findsOneWidget);
     expect(find.textContaining('AAAA2222BB'), findsWidgets);
+    // v0.14.2: aceptar la sesión incluye (explícito) el control remoto.
+    expect(find.text('Permitir control remoto (teclado y ratón)'), findsOneWidget);
     expect(find.widgetWithText(TextButton, 'Aceptar una vez'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Aceptar y confiar'), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(TextButton, 'Rechazar'));
+    await tester.tap(find.widgetWithText(TextButton, 'Aceptar una vez'));
     await tester.pumpAndSettle();
     expect(find.text('Sesión entrante'), findsNothing);
+    // El toggle de la página quedó encendido (aceptar = poder controlar).
+    expect(tester.widget<Checkbox>(find.byType(Checkbox).at(0)).value, isTrue);
+  });
+
+  testWidgets('C-45: se puede aceptar en «solo ver» desmarcando el control',
+      (tester) async {
+    await tester.pumpWidget(const AnyremoteApp());
+    final st = tester.state(find.byType(HomePage)) as dynamic;
+    st.debugHandleEvent(
+        '{"event":"session_pending","peer":"CCCC4444DD","peer_addr":"1.2.3.4:5556"}');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // Desmarcar la casilla del diálogo → sesión sin teclado/ratón.
+    await tester.tap(find.byType(CheckboxListTile));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(TextButton, 'Aceptar una vez'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Checkbox>(find.byType(Checkbox).at(0)).value, isFalse);
   });
 
   testWidgets('C-2: tres toggles desactivados por defecto y dinámicos (D-07)',
