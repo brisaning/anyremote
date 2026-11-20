@@ -30,6 +30,9 @@ pub struct Vp9Encoder {
     /// FPS nominal de la sesión (QW-4): libvpx asume 30 por defecto y con un
     /// fps real distinto el VBV queda mal temporizado (peor calidad/latencia).
     fps: u32,
+    /// C-52 (D3): el próximo frame se codifica como keyframe (petición de
+    /// refresco tras recuperar tasa).
+    force_next_key: bool,
 }
 
 impl Vp9Encoder {
@@ -42,6 +45,7 @@ impl Vp9Encoder {
             width: 0,
             height: 0,
             fps: 30,
+            force_next_key: false,
         }
     }
 
@@ -100,7 +104,10 @@ impl VideoEncoder for Vp9Encoder {
 
         if self.pending.is_empty() {
             let (y, u, v) = bgra_to_i420(frame.width, frame.height, &frame.data);
-            let force = self.since_key == 0 || self.since_key >= KEYFRAME_INTERVAL;
+            // C-52 (D3): un refresco pedido se atiende en este frame.
+            let force =
+                self.force_next_key || self.since_key == 0 || self.since_key >= KEYFRAME_INTERVAL;
+            self.force_next_key = false;
             inner
                 .encode(
                     &ImageData::I420 {
@@ -150,6 +157,16 @@ impl VideoEncoder for Vp9Encoder {
             ..Default::default()
         };
         inner.reconfigure(&params).is_ok()
+    }
+
+    /// C-52 (D3): el próximo frame se codifica como keyframe. Se atiende en el
+    /// siguiente `encode` (la petición se lanza justo después de cambiar la
+    /// tasa, antes de capturar el frame nuevo). Devuelve `true` porque la
+    /// petición queda **latched**: aunque el encoder aún no exista, su primer
+    /// frame ya es keyframe (`since_key == 0`).
+    fn request_refresh(&mut self) -> bool {
+        self.force_next_key = true;
+        true
     }
 }
 
@@ -278,5 +295,22 @@ mod tests {
         }
         assert!(encoded >= 85, "solo {encoded} frames codificados");
         assert_eq!(decoded, encoded);
+    }
+
+    /// C-52 (D3): la petición de refresco queda latched y se atiende en el
+    /// **siguiente** frame (el keyframe lo confirma el gate de campo con el
+    /// contador de IDR por frame, medición M2).
+    #[test]
+    fn request_refresh_latches_the_next_keyframe() {
+        let mut enc = Vp9Encoder::new();
+        let frame = TestPatternCapturer::render(176, 144, 1);
+        let first = enc.encode(&frame).expect("encode");
+        assert!(!first.data.is_empty(), "primer frame emitido");
+        assert!(!enc.force_next_key);
+        assert!(enc.request_refresh(), "la petición se acepta");
+        assert!(enc.force_next_key, "queda pedida para el próximo frame");
+        let out = enc.encode(&frame).expect("encode");
+        assert!(!out.data.is_empty());
+        assert!(!enc.force_next_key, "se atendió en este frame");
     }
 }

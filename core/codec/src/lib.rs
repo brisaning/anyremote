@@ -73,6 +73,16 @@ pub trait VideoEncoder: Send {
     /// FPS nominal de la sesión (QW-4): el códec lo usa para temporizar su
     /// control de tasa. Por defecto no-op.
     fn set_fps(&mut self, _fps: u32) {}
+
+    /// C-52 (D3): pide que el **próximo frame sea IDR** (refresco del contenido
+    /// estático). `set_target_bitrate` solo mueve el *techo* del control de
+    /// tasa: sin IDR, lo que no cambia conserva la calidad del último IDR y el
+    /// texto queda borroso aunque sobre ancho de banda (campo 20/11).
+    /// Devuelve si el códec lo aceptó; por defecto no-op (Raw/Deflate no
+    /// tienen estado entre frames).
+    fn request_refresh(&mut self) -> bool {
+        false
+    }
 }
 
 pub trait VideoDecoder: Send {

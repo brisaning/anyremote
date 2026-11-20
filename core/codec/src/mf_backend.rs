@@ -619,6 +619,9 @@ pub struct MfH264Encoder {
     /// retener la muestra: si se libera antes de la salida (a 4K tarda más),
     /// el codificador se queda sin eventos. Tope: el propio pipeline.
     in_flight: VecDeque<SampleSlot>,
+    /// C-52 (D3): hay un IDR pedido por `request_refresh` pendiente de aplicar
+    /// a la próxima entrada.
+    refresh_pending: bool,
 }
 
 // Los MFT son pointers COM sin `Send` (NonNull). Seguridad: ambos wrappers
@@ -650,6 +653,7 @@ impl MfH264Encoder {
             need_input: true,
             out_provides: false,
             in_flight: VecDeque::new(),
+            refresh_pending: false,
         }
     }
 
@@ -786,6 +790,24 @@ impl MfH264Encoder {
 }
 
 impl MfH264Encoder {
+    /// C-52 (D3): marca la entrada que se va a enviar como IDR (`1` = forzar).
+    /// Devuelve si este frame lleva el comando (para no tocar `ICodecAPI` en
+    /// cada frame: en un MFT asíncrono esa llamada no es gratis).
+    fn arm_refresh(&mut self, t: &mf::IMFTransform) -> bool {
+        if !self.refresh_pending {
+            return false;
+        }
+        self.refresh_pending = false;
+        codec_api_u32(t, &mf::CODECAPI_AVEncVideoForceKeyFrame, 1)
+    }
+
+    /// C-52 (D3): desarma el comando tras el `ProcessInput`. No todos los MFT
+    /// lo reinician solos; si quedara en `1`, **todos** los frames serían IDR
+    /// y el bitrate se multiplicaría (justo el defecto contrario).
+    fn clear_refresh(&mut self, t: &mf::IMFTransform) {
+        let _ = codec_api_u32(t, &mf::CODECAPI_AVEncVideoForceKeyFrame, 0);
+    }
+
     /// C-35: cierra el frame (diagnóstico de framing, prepend de SPS/PPS y
     /// secuencia) — común a los caminos síncrono y asíncrono.
     fn finish(&mut self, t: &mf::IMFTransform, payload: Vec<u8>) -> EncodedFrame {
@@ -946,10 +968,18 @@ impl MfH264Encoder {
             // crea una muestra por envío.
             let input = make_slot(self.nv12.len() as u32)?;
             input.fill(&self.nv12, time, dur)?;
+            // C-52 (D3): el IDR pedido se marca justo en la entrada que lo
+            // consume (no antes: el MFT podría procesar otra muestra).
+            let armed = self.arm_refresh(t);
             match unsafe { t.ProcessInput(0, &input.sample, 0) } {
                 Ok(()) => {
                     submitted = true;
                     self.need_input = false;
+                    // El comando ya se consumió: se limpia para que el códec no
+                    // marque TODOS los frames como IDR (multiplicaría el rate).
+                    if armed {
+                        self.clear_refresh(t);
+                    }
                     // C-39: la muestra se queda viva hasta que llegue su salida.
                     // 4 entradas sin ninguna salida = MFT atascado (driver):
                     // se cae al síncrono en vez de congelar el vídeo.
@@ -1032,6 +1062,9 @@ impl VideoEncoder for MfH264Encoder {
             None
         };
         self.pack_nv12(frame)?;
+        // C-52 (D3): marca esta entrada como IDR si se pidió refresco. Va antes
+        // de tomar prestada la muestra de entrada (que vive en `self`).
+        let armed = self.arm_refresh(&t);
         let fps = self.fps.max(1) as i64;
         let time = (self.seq as i64) * 10_000_000 / fps;
         let dur = 10_000_000 / fps;
@@ -1043,6 +1076,9 @@ impl VideoEncoder for MfH264Encoder {
         unsafe {
             t.ProcessInput(0, &input.sample, 0)
                 .map_err(|e| CodecError::Encode(format!("ProcessInput: {e}")))?;
+        }
+        if armed {
+            self.clear_refresh(&t);
         }
         let payload = match self.drain(&t) {
             Ok(v) => v.unwrap_or_default(),
@@ -1126,6 +1162,28 @@ impl VideoEncoder for MfH264Encoder {
         true
     }
 
+    /// C-52 (D3): `CODECAPI_AVEncVideoForceKeyFrame` marca la **siguiente**
+    /// entrada como IDR. Sin esto, subir el bitrate solo mueve el techo del
+    /// control de tasa y el texto estático conserva la calidad del IDR viejo
+    /// (campo 20/11: bloques a 0,026 bpp con 15 Mbps de objetivo).
+    fn request_refresh(&mut self) -> bool {
+        let Some(t) = self.transform.as_ref() else {
+            // El MFT se configura en el primer frame: ese IDR llega igual.
+            return false;
+        };
+        let supported = t
+            .cast::<mf::ICodecAPI>()
+            .map(|capi| unsafe {
+                capi.IsSupported(&mf::CODECAPI_AVEncVideoForceKeyFrame)
+                    .is_ok()
+            })
+            .unwrap_or(false);
+        if supported {
+            self.refresh_pending = true;
+        }
+        supported
+    }
+
     fn set_fps(&mut self, fps: u32) {
         self.fps = fps.max(1);
     }
@@ -1196,6 +1254,15 @@ mod tests {
         assert_eq!(out.format, PixelFormat::Bgra8);
         assert_eq!(out.data.len(), 320 * 180 * 4);
         assert!(out.data.iter().any(|&b| b > 0), "no todo negro");
+    }
+
+    /// C-52 (D3): sin MFT todavía (se configura en el primer frame) el refresco
+    /// no procede: ese primer frame ya es IDR. La petición se rechaza en vez de
+    /// mentir al llamador.
+    #[test]
+    fn request_refresh_without_mft_is_rejected() {
+        let mut enc = MfH264Encoder::new(15, 600_000);
+        assert!(!enc.request_refresh());
     }
 
     /// Vuelca el stream a un archivo para validación externa (ffmpeg).
