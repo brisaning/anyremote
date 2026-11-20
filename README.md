@@ -36,6 +36,15 @@ _Última actualización: 2026-11-19 — **auditoría de fronteras de confianza**
 
 ### Pendientes
 
+#### 🧭 Plan vigente (2026-11-21)
+
+Reorganización del desarrollo: [`specs/02`](specs/02-plan-implementacion.md) §14 ·
+diagnóstico: [`evidence/plan-2026-11-21.md`](evidence/plan-2026-11-21.md) ·
+agentes: `.opencode/agents/`.
+Orden: **F1 vídeo (C-52) → F2 UX+Caps (C-53/C-54) → F3 seguridad (C-46…C-51) →
+F4 teclado (C-55) → F5 contrato app↔daemon → F6 estructura → F7 release**.
+Regla: un frente por ciclo; nada se cierra sin binario verificado y gate de campo.
+
 #### 🔴 Regresiones de campo (20/11) — antes que la seguridad restante
 
 Sesión Julie→Brian por **relay** (351 ms). Evidencia cruzada:

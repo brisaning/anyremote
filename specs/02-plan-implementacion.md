@@ -742,3 +742,82 @@ tag.
 3. Toda regresión de una capacidad ya cerrada se abre como **ciclo propio** con
    la evidencia del campo (como este §13) y referencias a los ciclos que la
    resolvieron (C-32/C-33/C-35/C-36 para vídeo; C-37/C-38 para teclado).
+## 14. Plan de reorganización del desarrollo (2026-11-21)
+
+**Disparador.** El usuario reporta que «se generan bugs constantemente o vuelven
+a aparecer otros ya resueltos». El escaneo del repo, de RustDesk y de la
+evidencia previa de AnyDesk (detalle en `evidence/plan-2026-11-21.md`) muestra
+que el problema **no es de disciplina sino de verificación**: el proyecto
+verifica *unidades* y rompe *fronteras*.
+
+### 14.1 Diagnóstico en cifras
+
+| Métrica | Valor | Lectura |
+|---|---|---|
+| `fix` vs `feat` (120 commits) | 23 vs 22 | Un fix por cada feature: el ritmo de regresión es estructural |
+| `fix` que tocan `app/` | 4 de 6 | La capa Flutter es la más frágil |
+| `core/daemon/src/lib.rs` | 3.642 líneas, 1 archivo | Config + CLI + admisión + handshake + host + controller + vídeo + audio + archivos |
+| `app/lib/main.dart` | 2.065 líneas, 1 archivo | UI + parser del protocolo + procesos |
+| Contrato app↔daemon | 19 eventos, 36 `case`, **1 `default:` silencioso**, sin esquema | Un rename rompe en producción sin error |
+| Cobertura | huecos: vídeo adaptativo e2e, wire→backend de teclado, Caps Lock, cuotas de archivos, decodificador, preview | Lo más tocado es lo menos probado |
+| CI | fmt + clippy + test (Windows) | No valida binario, ni versión, ni campo |
+
+### 14.2 Decisiones
+
+- **D-12** — Un ciclo = un frente; el estado de una capacidad es del anfitrión y
+  sobrevive al ciclo de sesión.
+- **D-13** — Definition of Done por ciclo (test + e2e si aplica + **binario
+  reconstruido y verificado** + evidencia + specs + bóveda + tag).
+- **D-14** — Gate de campo: el ciclo N+1 no empieza hasta que el N está validado
+  por el usuario.
+- **D-15** — El contrato app↔daemon se versiona y se valida en CI.
+- **D-16** — Agentes por rol en `.opencode/agents/`, con `anyremote-orchestrator`
+  como dueño del ciclo. Modelos: `minimax-m3.1-flash` (orquestación, spec,
+  test, cleanroom, release) y `deepseek-v4.1-flash` (análisis de campo,
+  implementación Rust/Flutter, seguridad).
+
+### 14.3 Fases
+
+| Fase | Contenido | Puerta de salida |
+|---|---|---|
+| **F0 Andamiaje** | 9 agentes en `.opencode/agents/` + `opencode.jsonc`; `AGENTS.md` con D-12..D-16 y toolchain corregido; este §14; `evidence/plan-2026-11-21.md`; bóveda | Revisión del usuario de los ficheros de agente |
+| **F1 Campo-1 · vídeo** | **C-52**: A (medir/causa raíz) → B (política bits/píxel + refresco) → C (campo) | Gate de campo (D-14) |
+| **F2 Campo-2 · UX y Caps** | **C-53** (aceptar = control) y **C-54** (Caps Lock) | Gate de campo |
+| **F3 Seguridad** | **C-46** → **C-47/C-48** → **C-49/C-50/C-51** | Gates de cada ciclo |
+| **F4 Teclado** | **C-55**: investigación clean-room → diseño → implementación → campo con dos layouts | Gate de campo |
+| **F5 Contrato** | **D-15**: esquema versionado de eventos/stdio, parser único, test de compatibilidad, CI lo valida | Sin rupturas app↔daemon |
+| **F6 Estructura** | Partir `daemon/lib.rs` y `main.dart` en módulos por responsabilidad, **sin cambio de comportamiento** | GATES verdes + paridad de comportamiento |
+| **F7 Cierre** | Release **v0.15.0** (con OK del usuario) + retrospectiva y limpieza de backlog | Release publicado |
+
+**Reglas transversales**: un solo frente activo; `docs` no cuenta como feature;
+todo `fix` de campo abre ciclo con evidencia; nada se cierra sin binario
+verificado; el push y el release los hace la persona.
+
+### 14.4 Responsables por fase
+
+| Fase | Orquestador | Agentes participantes |
+|---|---|---|
+| F0 | — | `anyremote-spec` (specs), `anyremote-release` (build) |
+| F1 | `anyremote-orchestrator` | `anyremote-field-analyst` (semilla), `anyremote-spec`, `anyremote-rust`, `anyremote-test` |
+| F2 | `anyremote-orchestrator` | `anyremote-spec`, `anyremote-flutter`, `anyremote-rust`, `anyremote-test` |
+| F3 | `anyremote-orchestrator` | `anyremote-security` (revisión), `anyremote-rust`, `anyremote-test` |
+| F4 | `anyremote-orchestrator` | `anyremote-cleanroom` (investigación), `anyremote-spec`, `anyremote-rust`, `anyremote-flutter`, `anyremote-test` |
+| F5 | `anyremote-orchestrator` | `anyremote-spec`, `anyremote-rust`, `anyremote-flutter`, `anyremote-test` |
+| F6 | `anyremote-orchestrator` | `anyremote-rust`, `anyremote-flutter`, `anyremote-test` |
+| F7 | `anyremote-orchestrator` | `anyremote-release` (build/tag) |
+
+### 14.5 Huella de referencia (clean-room, D-01)
+
+De **RustDesk** (AGPL, `C:\proyectos\fixed\rustdesk`) se toman **patrones**:
+teclado en 3 modos (`legacy`/`map`/`translate`) con `KeyEvent.union` que incluye
+`seq` (texto por caracteres) y `modifiers` independiente de la tecla; QoS con
+**dos palancas** (bitrate-ratio **y** fps) y sonda de delay; refresco de
+pantalla estática; `approve-mode`/`access-mode` para el diálogo; `scope` por
+tipo de sesión; `MAX_FILES` y digest de reanudación.
+
+De **AnyDesk** solo hay **política observable** (el binario está empaquetado con
+Themida: 27 strings, IAT vacía) y comportamiento documentado (aprobar
+conexión, contraseña temporal/permanente, modo view-only).
+
+**No se copia código**: solo se referencian rutas lógicas de símbolo, como ya
+exige D-01.

@@ -128,3 +128,21 @@ fechada y versionada. RNF-01 sigue siendo la autenticación; RNF-07 añade la
 4. WAN (firewall/UPnP/NAT) — los gates de CI quedaron ✅ en v0.8.1 (`.github/workflows/ci.yml`).
 5. ~~Teclas F1..F12~~ ✅ resueltas en v0.8.1 (códigos 30..41); quedan Insert, PageUp/Down y bloqueos.
 6. Ver [README § Pendientes](../README.md#pendientes) para el panel completo.
+
+## Plan de reorganización (2026-11-21)
+
+Diagnóstico y fases: `specs/02` §14 · Evidencia: `evidence/plan-2026-11-21.md`.
+
+| Fase | Contenido | Ciclos/entregable |
+|---|---|---|
+| F0 | Andamiaje: 9 agentes en `.opencode/agents/` + proceso (D-12…D-16) | este documento + `AGENTS.md` |
+| F1 | Campo-1 · vídeo | C-52 |
+| F2 | Campo-2 · UX y teclado básico | C-53, C-54 |
+| F3 | Seguridad | C-46, C-47, C-48, C-49, C-50, C-51 |
+| F4 | Teclado independiente del layout | C-55 |
+| F5 | Contrato app↔daemon versionado | D-15 |
+| F6 | Estructura: partir `daemon/lib.rs` y `main.dart` | — |
+| F7 | Release v0.15.0 (con OK del usuario) | — |
+
+Reglas: un frente por ciclo; nada se cierra sin binario verificado (D-13); el
+ciclo N+1 espera al gate de campo del N (D-14).
