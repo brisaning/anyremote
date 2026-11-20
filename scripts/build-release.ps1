@@ -33,7 +33,24 @@ if ($cargoVersion -ne $version) {
 }
 
 $git = (git -C $root rev-parse --short HEAD).Trim()
-$flutterVer = ((flutter --version 2>$null | Select-Object -First 1) -replace '^Flutter\s+', '').Trim()
+
+# Localiza Flutter y CMake: si no están en el PATH, usa las rutas conocidas del
+# host y avisa. Sin esto el script fallaba antes de compilar (auditoría 0.14.4).
+function Resolve-Tool([string]$name, [string]$hint, [string]$fallback) {
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    if ($fallback -and (Test-Path $fallback)) {
+        $env:PATH = (Split-Path $fallback) + ';' + $env:PATH
+        Write-Host "aviso: $name no estaba en PATH; usando $fallback"
+        return $fallback
+    }
+    throw "$name no encontrado. Añádelo al PATH ($hint)"
+}
+
+$flutterExe = Resolve-Tool 'flutter' 'C:\proyectos\tools\flutter\flutter\bin' 'C:\proyectos\tools\flutter\flutter\bin\flutter.bat'
+$null = Resolve-Tool 'cmake' 'C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin' 'C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+
+$flutterVer = ((& $flutterExe --version 2>$null | Select-Object -First 1) -replace '^Flutter\s+', '').Trim()
 if (-not $flutterVer) { $flutterVer = 'desconocida' }
 
 Write-Host "== anyremote $version ($git) =="
@@ -45,7 +62,7 @@ try {
 
 Push-Location (Join-Path $root 'app')
 try {
-    flutter build windows --release `
+    & $flutterExe build windows --release `
         --build-name=$version --build-number=1 `
         --dart-define=APP_VERSION=$version `
         --dart-define=GIT_REV=$git `

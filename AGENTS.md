@@ -114,5 +114,8 @@ Sin (c) no hay cierre: un ciclo sin binario verificado es trabajo no validado.
   (comprueba que `VERSION`, `app/pubspec.yaml` y `core/daemon/Cargo.toml`
   coinciden, compila ambos y deja el daemon junto a la app). Los `.exe` no se
   pueden reemplazar con la app abierta: LNK1104 → pedir que la cierren, no
-  matar el proceso.
+  matar el proceso. El script **localiza Flutter y CMake** si no están en el
+  PATH (rutas conocidas: `C:\proyectos\tools\flutter\flutter\bin` y
+  `C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`) y
+  falla con un mensaje claro si no los encuentra.
 - Memoria de estado: bóveda `anyremote` → nota `Memoria del proyecto.md`.

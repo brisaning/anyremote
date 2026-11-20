@@ -6,6 +6,9 @@ color: "#8A6A3C"
 steps: 90
 permissions:
   - action: edit
+    resource: "*"
+    effect: deny
+  - action: edit
     resource: "VERSION"
     effect: allow
   - action: edit
@@ -21,11 +24,8 @@ permissions:
     resource: "scripts/**"
     effect: allow
   - action: edit
-    resource: "core/**"
-    effect: deny
-  - action: edit
-    resource: "app/lib/**"
-    effect: deny
+    resource: "evidence/**"
+    effect: allow
   - action: shell
     resource: "cargo build*"
     effect: allow
