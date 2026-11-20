@@ -183,3 +183,23 @@ denegaba cada evento (`input_on:false`, 608 denegaciones en la sesión del
 (desmarcar → toggle apagado); analyze limpio; Flutter **35/35**. Rust sin
 cambios: **169/0**. Binario **0.14.2** verificado (`FileVersion 0.14.2+1`,
 `anyremoted 0.14.2`).
+
+### Encadenado (v0.14.3): el estado del toggle no sobrevivía entre sesiones
+
+Con la 0.14.2, la **segunda** conexión de un par `user` se auto-aceptaba sin
+diálogo (correcto) pero `DynamicPerms::new` volvía a arrancar en `false`: la
+sesión se abría en «solo ver» sin que el anfitrión pudiera decidir. El toggle
+de la UI seguía marcado, pero el daemon lo olvidaba al cerrar la sesión.
+
+**Fix.** El estado de entrada pasa a ser un `Arc<AtomicBool>` en
+`DaemonConfig` (`input_state`, con `input_on()`/`set_input_on()`): persiste
+mientras el listener vive y lo actualizan `--input-on` y cada
+`{"perm":{"input":...}}` (incluidos los encolados al abrir sesión). Además,
+`ask` solo auto-acepta a un par `user` si el control está **encendido**; si
+está apagado vuelve a preguntar (el diálogo es donde se concede).
+
+**Gates.** `input_state_persists_between_sessions_and_needs_capability` (unit),
+`ask_mode_auto_accepts_user_trusted_peer_when_control_is_on` (sin
+`session_pending`), `ask_mode_prompts_trusted_peer_when_control_is_off` (con
+`session_pending`). Rust **172/0** · clippy 0 · fmt 0 · Flutter **35/35**.
+Binario **0.14.3** (`FileVersion 0.14.3+1`, `anyremoted 0.14.3`).

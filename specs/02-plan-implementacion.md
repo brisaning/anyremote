@@ -10,7 +10,7 @@
 
 ## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
 
-_Última actualización: 2026-11-20 · **C-45 ✅ (v0.13.16 + v0.14.2: aceptar incluye control) · C-44 ✅ (v0.14.0 + fix v0.14.1: trust `user`/`seen`)** · **auditoría de fronteras (8 hallazgos): C-44/C-45 cerrados; siguen C-46…C-51 (§12)**_
+_Última actualización: 2026-11-20 · **C-45 ✅ (v0.13.16 + v0.14.2/v0.14.3: aceptar incluye control y el estado persiste) · C-44 ✅ (v0.14.0 + fix v0.14.1: trust `user`/`seen`)** · **auditoría de fronteras (8 hallazgos): C-44/C-45 cerrados; siguen C-46…C-51 (§12)**_
 
 | Fase/Ciclo/Lote | Estado | Tag / PR |
 |---|---|---|
@@ -81,7 +81,7 @@ _Última actualización: 2026-11-20 · **C-45 ✅ (v0.13.16 + v0.14.2: aceptar i
 | C-42 decisión `fps render`/`Texture` v0.13.14 | Pendiente de C-19: ¿hace falta `Texture` nativo? No había medición del coste real del visor | Contadores `recv/render/drop/coste` en el log de 5 s; banco en release: **11,0 ms/frame a 1080p** (66 ms de presupuesto, drop=0) → **no se implementa Texture**; cierre de Juank/Juank2 (fluido, validación del usuario) | `render-v0.13.14` · `evidence/viewer-render-gate.md` |
 | C-43 «Conectar» deja de compartir v0.13.15 | Con el escritorio compartido, pulsar Conectar lanzaba un segundo daemon y el equipo quedaba como anfitrión y cliente a la vez | Conectar cierra el listener primero (`bye` + espera, máx. 3 s) y después arranca la sesión; con sesión activa no se abre la escucha (aviso) | `connect-share-v0.13.15` · `evidence/connect-stops-sharing-gate.md` |
 | **C-44 autorización del par** (F-01 · RNF-07) **v0.14.0** (+ fix **v0.14.1**) | ✅ **gate verde** (Rust 169/0 · clippy 0 · fmt 0 · Flutter 34/34) · campo: **diálogo no aparecía con IDs heredados → corregido en v0.14.1** (`seen` vs `user`) · semilla F-01: C2 solo demuestra posesión de una clave, `peer_trusted` no decidía y el `granted` lo respondía el par → **cualquier equipo que alcanzara 21118 obtenía control** | **Política `--accept trusted\|ask\|any`** (default `trusted`; la app usa `ask` con diálogo), **admisión antes de `send_auth`**, TOFU solo de pares aceptados, `--trust ID`, timeout 30 s, y **grant del anfitrión = intersección** (el par no amplía) | `peer-authz-v0.14.0` · `evidence/peer-authz-gate.md` |
-| **C-45 entrada realmente opt-in** (F-02 · RNF-08) **v0.13.16** (+ integración **v0.14.2**) | ✅ **gate verde** (Rust 169/0 · Flutter 35/35) · campo 20/11: aceptar la sesión no daba control → **el diálogo de C-44 ahora incluye «Permitir control remoto»** (marcado por defecto) · F-02: `buildListenArgs` armaba `--allow-input` siempre y «Compartir escritorio» forzaba el toggle; el daemon nacía con `input_on = cfg.allow_input` | **Capacidad ≠ estado**: `--input-on` (CLI, default off) separa el estado inicial; `DynamicPerms.input_on = allow_input && input_on_start`; la app no pasa `--input-on` (solo `--allow-input` para el toggle dinámico); sin auto-encendido, `shareSummary` («solo ver»), chip en la cabecera, `listening` con `input_initial` y `InputDenied` con `reason` | `input-optin-v0.13.16` · `evidence/input-optin-gate.md` |
+| **C-45 entrada realmente opt-in** (F-02 · RNF-08) **v0.13.16** (+ integración **v0.14.2/v0.14.3**) | ✅ **gate verde** (Rust 172/0 · Flutter 35/35) · campo 20/11: aceptar la sesión no daba control → **el diálogo incluye «Permitir control remoto»** (marcado por defecto) y el **estado del toggle persiste entre sesiones** · F-02: `buildListenArgs` armaba `--allow-input` siempre y «Compartir escritorio» forzaba el toggle; el daemon nacía con `input_on = cfg.allow_input` | **Capacidad ≠ estado**: `--input-on` (CLI, default off) separa el estado inicial; `DynamicPerms.input_on = allow_input && input_on_start`; la app no pasa `--input-on` (solo `--allow-input` para el toggle dinámico); sin auto-encendido, `shareSummary` («solo ver»), chip en la cabecera, `listening` con `input_initial` y `InputDenied` con `reason` | `input-optin-v0.13.16` · `evidence/input-optin-gate.md` |
 | **C-46 auditoría sin contenido tecleado** (F-05 · RNF-10) v0.14.2 | 🔴 **planificado** · F-05: cada tecla inyectada se escribe como `KeyDown(Char('x'))` en `audit/*.jsonl`, carpeta que el README manda compartir para soporte | Diseño §12.3 · detalle `{"perm","kind"}` sin `Char`/texto + nota de migración de logs · gate `audit_never_contains_typed_text` · `evidence/audit-privacy-gate.md` |
 | **C-47 compuerta de portapapeles** (F-03 · RNF-08) v0.14.3 | 🔴 **planificado** · F-03: el portapapeles del anfitrión se envía cada 500 ms y se sobrescribe con el del par sin permiso ni toggle (la app pasa `--clipboard win` fijo) | Diseño §12.4 · permiso `clipboard` (default off) + cuarto toggle en la UI · gates `clipboard_out_requires_grant`, `clipboard_in_rejected_without_grant` · `evidence/clipboard-gate-v2.md` |
 | **C-48 archivos acotados y no bloqueantes** (F-04 · RNF-08/RNF-09) v0.14.4 | 🔴 **planificado** · F-04: recepción sin compuerta ni cuota (`max_files_per_batch` no se aplica), 256 MiB en RAM por archivo y `.part` persistentes; `receive_file_offer` dentro del `select!` bloquea control, `bye` y Ctrl+C | Diseño §12.5 · permiso `files`, cuota de sesión, tarea aparte con timeout y cancelación, limpieza de huérfanos · gates `file_offer_without_grant_rejected`, `stalled_transfer_does_not_block_control`, `receiver_enforces_batch_limit` · `evidence/filexfer-gate-v2.md` |
@@ -499,14 +499,19 @@ estado — la app mantiene la capacidad para no perder los toggles dinámicos).*
   `InputDenied` con `allow_input` (capacidad), `input_on` (estado) y `reason`.
 - Docs: README y `--help` documentan `--allow-input --input-on` para la CLI.
 
-**Integración con C-44 (v0.14.2).** El primer uso real mostró la incoherencia:
-autorizar la sesión no autorizaba la entrada y el cliente quedaba en «solo ver»
-sin que el anfitrión lo entendiera. El diálogo de sesión entrante incluye ahora
-la casilla **«Permitir control remoto»** (marcada por defecto), envía
-`{"perm":{"input":...}}` **antes** de la decisión (queda encolado y se aplica
-al abrir la sesión) y avisa si se acepta sin control. Gates de widget:
-`C-44: session_pending abre el diálogo y permite control` y
-`C-45: se puede aceptar en «solo ver»`. Detalle: `evidence/peer-authz-gate.md`.
+**Integración con C-44 (v0.14.2/v0.14.3).** El primer uso real mostró la
+incoherencia: autorizar la sesión no autorizaba la entrada y el cliente quedaba
+en «solo ver» sin que el anfitrión lo entendiera. El diálogo de sesión entrante
+incluye la casilla **«Permitir control remoto»** (marcada por defecto), envía
+`{"perm":{"input":...}}` **antes** de la decisión (encolado, aplicado al abrir
+la sesión) y avisa si se acepta sin control. Además (v0.14.3) el estado del
+toggle es un `Arc<AtomicBool>` del `DaemonConfig` que **persiste entre
+sesiones** mientras el listener vive, y `ask` solo auto-acepta a un par `user`
+si el control está encendido. Gates: widgets del diálogo,
+`input_state_persists_between_sessions_and_needs_capability`,
+`ask_mode_auto_accepts_user_trusted_peer_when_control_is_on`,
+`ask_mode_prompts_trusted_peer_when_control_is_off`. Detalle:
+`evidence/peer-authz-gate.md`.
 
 **Gate (verde).** e2e dirigido por eventos
 `input_off_by_default_with_capability_and_enabled_by_perm` (capacidad armada →
