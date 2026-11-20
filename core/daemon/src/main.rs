@@ -162,7 +162,9 @@ async fn main() {
             // sesión con la entrada ENCENDIDA (requiere `--allow-input`).
             // Sin él, la sesión arranca en «solo ver» hasta `{"perm":...}`
             // (la app gestiona el toggle y por eso NO lo pasa).
-            cfg.input_on_start = args.iter().any(|a| a == "--input-on");
+            if args.iter().any(|a| a == "--input-on") {
+                cfg.set_input_on(true);
+            }
             // RF audio: fuente de captura (off por defecto; `test` sin hardware).
             if let Some(a) = flag_value(&args, "--audio") {
                 cfg.audio = AudioMode::parse(&a).unwrap_or_else(|e| {

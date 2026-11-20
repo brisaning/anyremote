@@ -40,7 +40,7 @@ fn listen_cfg(
     c.clipboard = ClipboardMode::Off;
     c.grant = grant.iter().map(|s| s.to_string()).collect();
     c.allow_input = allow_input;
-    c.input_on_start = input_on_start;
+    c.set_input_on(input_on_start);
     c.input_backend = InputBackend::Recording; // nunca toca el sistema en tests
     c.max_secs = 6;
     c

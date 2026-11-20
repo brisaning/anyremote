@@ -60,7 +60,7 @@ async fn input_toggles_at_runtime() {
         let mut c = base_cfg(listen_dir);
         c.bind = format!("127.0.0.1:{port}");
         c.allow_input = true; // capacidad (flag)
-        c.input_on_start = true; // C-45: la CLI puede pedir estado inicial ON; el resto lo mueve la UI
+        c.set_input_on(true); // C-45: la CLI puede pedir estado inicial ON; el resto lo mueve la UI
         c.bye_source = Some(rx_listen);
         c.on_event = Some(Box::new(move |line| ev_sink.lock().unwrap().push(line)));
         tokio::spawn(async move { run_listen(c).await })

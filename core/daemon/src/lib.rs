@@ -162,12 +162,11 @@ pub struct DaemonConfig {
     /// Es la **capacidad**: sin ella ninguna orden `{"perm":{"input":true}}`
     /// enciende la entrada.
     pub allow_input: bool,
-    /// C-45 (F-02): **estado inicial** del toggle de entrada dentro de la sesión.
-    /// Requiere `allow_input`. `false` por defecto → la sesión arranca en «solo
-    /// ver» y solo `{"perm":{"input":true}}` la enciende (fail-closed).
-    /// La CLI puede pedir estado inicial ON con `--input-on`; la app **no** lo
-    /// pasa (deja que el toggle del anfitrión lo decida en cada sesión).
-    pub input_on_start: bool,
+    /// C-45 (F-02): estado del toggle de entrada **persistente entre sesiones**
+    /// mientras el listener vive (el toggle de la UI no se resetea al cerrar
+    /// una sesión). Requiere `allow_input` para inyectar. `--input-on` lo
+    /// enciende al arrancar; la app lo mueve con `{"perm":{"input":...}}`.
+    input_state: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Backend de inyección: `Windows` (SendInput) en producción, `Recording` en tests.
     pub input_backend: InputBackend,
     /// C-11: fuente del cursor para el overlay del visor (`Windows` en
@@ -216,7 +215,7 @@ impl DaemonConfig {
             trusted_ids: Vec::new(),
             accept_timeout_secs: 30,
             allow_input: false,
-            input_on_start: false,
+            input_state: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input_backend: InputBackend::Windows,
             cursor_backend: CursorBackend::Windows,
             net_rtt_override: None,
@@ -225,6 +224,17 @@ impl DaemonConfig {
             audio_sources: vec![AudioSource::System],
             bye_source: None,
         }
+    }
+
+    /// Estado actual del toggle de entrada (persistente entre sesiones).
+    pub fn input_on(&self) -> bool {
+        self.input_state.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Fija el estado del toggle (lo usan `--input-on` y `{"perm":...}`).
+    pub fn set_input_on(&self, on: bool) {
+        self.input_state
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// **Solo tests / embebedores de confianza**: desactiva la autorización del
@@ -509,10 +519,10 @@ impl DynamicPerms {
             Vec::new()
         };
         Self {
-            // C-45 (F-02): capacidad ≠ estado. Sin `--input-on` la sesión
-            // arranca en «solo ver» aunque la capacidad esté armada; el primer
-            // `{"perm":{"input":true}}` del anfitrión la enciende.
-            input_on: cfg.allow_input && cfg.input_on_start,
+            // C-45 (F-02): capacidad ≠ estado. El estado es del anfitrión y
+            // persiste entre sesiones (el toggle de la UI); arranca apagado
+            // salvo `--input-on`. Solo `{"perm":{"input":true}}` lo enciende.
+            input_on: cfg.allow_input && cfg.input_on(),
             sources,
             runtime_enabled: false,
             granted_audio,
@@ -532,7 +542,9 @@ impl DynamicPerms {
         log: &mut SessionLog,
         emit: &mut Emit,
     ) {
+        // C-45: el toggle es estado del anfitrión → persiste entre sesiones.
         self.input_on = cfg.allow_input && perm.input;
+        cfg.set_input_on(self.input_on);
         let mut wanted = Vec::new();
         if perm.audio {
             wanted.push(AudioSource::System);
@@ -899,9 +911,11 @@ async fn admit_peer(
             })
         }
         AcceptPolicy::Ask => {
-            // Ya autorizado explícitamente en una sesión anterior: entra sin
-            // volver a preguntar. (Una entrada `seen` NO basta.)
-            if user_trusted {
+            // Ya autorizado explícitamente en una sesión anterior **y** con el
+            // control encendido: entra sin volver a preguntar. Si el toggle
+            // está apagado se pregunta igualmente (el diálogo permite conceder
+            // control); una entrada `seen` no auto-acepta nunca.
+            if user_trusted && cfg.allow_input && cfg.input_on() {
                 return Ok(Admission::Accept {
                     persist: Persist::None,
                 });
@@ -1361,7 +1375,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
     };
     emit.emit(ev(
         "listening",
-        serde_json::json!({ "bind": bind_addr, "transport": cfg.transport.as_str(), "discover": discover.as_ref().map(|d| d.local_addr().to_string()), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION, "input_capability": cfg.allow_input, "input_initial": cfg.allow_input && cfg.input_on_start }),
+        serde_json::json!({ "bind": bind_addr, "transport": cfg.transport.as_str(), "discover": discover.as_ref().map(|d| d.local_addr().to_string()), "node_id": identity.node_id().to_string(), "daemon": DAEMON_VERSION, "input_capability": cfg.allow_input, "input_initial": cfg.allow_input && cfg.input_on() }),
     ));
 
     // C-17: cliente persistente de encuentro (si está configurado): registra
@@ -3588,6 +3602,29 @@ mod tests {
             None
         );
         assert_eq!(parse_decision("bye", "AAAA2222BB"), None);
+    }
+
+    /// C-45 (v0.14.3): el toggle de entrada es **estado del anfitrión** y
+    /// persiste entre sesiones. Antes, la segunda sesión arrancaba en «solo
+    /// ver» aunque el toggle siguiera marcado en la UI.
+    #[test]
+    fn input_state_persists_between_sessions_and_needs_capability() {
+        let mut cfg = DaemonConfig::new(std::env::temp_dir());
+        cfg.allow_input = true;
+        assert!(
+            !DynamicPerms::new(&cfg, &[]).input_on,
+            "arranca en «solo ver»"
+        );
+        cfg.set_input_on(true);
+        assert!(
+            DynamicPerms::new(&cfg, &[]).input_on,
+            "el toggle persiste entre sesiones"
+        );
+        cfg.allow_input = false;
+        assert!(
+            !DynamicPerms::new(&cfg, &[]).input_on,
+            "sin capacidad no se inyecta"
+        );
     }
 
     /// C-44: el default de la política es denegar salvo par confiado.

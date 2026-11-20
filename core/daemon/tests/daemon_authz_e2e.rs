@@ -430,3 +430,109 @@ async fn ask_mode_prompts_for_legacy_seen_peer() {
 
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }
+
+/// C-44/C-45 (v0.14.3): un par `user` con el control **encendido** entra sin
+/// diálogo; el estado del toggle persiste entre sesiones (no vuelve a «solo
+/// ver» al reconectar).
+#[tokio::test]
+async fn ask_mode_auto_accepts_user_trusted_peer_when_control_is_on() {
+    let cfg_dir = temp_cfg_dir("ask-trusted-on");
+    let port = free_port().await;
+    let ident = anyremote_identity::Identity::load_or_generate(&cfg_dir).expect("identidad");
+    let peer_id = ident.node_id().to_string();
+    let pk_hex = data_encoding::HEXLOWER.encode(&ident.verifying_key_bytes());
+    std::fs::write(
+        cfg_dir.join("trusted.ids"),
+        format!("# anyremote: pares conocidos\n{peer_id}={pk_hex}:user\n"),
+    )
+    .expect("trusted.ids user");
+
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let s = sink.clone();
+    let listen = {
+        let mut c = base_cfg(cfg_dir.clone(), port);
+        c.accept = AcceptPolicy::Ask;
+        c.set_input_on(true); // toggle del anfitrión encendido (persistido)
+        c.max_secs = 2;
+        c.on_event = Some(Box::new(move |line| s.lock().unwrap().push(line)));
+        tokio::spawn(async move { run_listen(c).await })
+    };
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    let ctl = {
+        let mut c = DaemonConfig::new(cfg_dir.clone());
+        c.target = Some(format!("127.0.0.1:{port}"));
+        c.clipboard = ClipboardMode::Off;
+        c.max_secs = 2;
+        tokio::spawn(async move { run_connect(c).await })
+    };
+
+    wait_for_line(&sink, "\"event\":\"session_active\"").await;
+    assert!(
+        !sink
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("\"event\":\"session_pending\"")),
+        "un par de confianza con control ON no debe volver a preguntar: {:?}",
+        sink.lock().unwrap()
+    );
+    ctl.await.expect("join controller").expect("controller ok");
+    listen.await.expect("join listener").expect("listener ok");
+
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+}
+
+/// C-44/C-45 (v0.14.3): si el control está **apagado**, incluso un par `user`
+/// vuelve a preguntar (el diálogo es donde se concede el control).
+#[tokio::test]
+async fn ask_mode_prompts_trusted_peer_when_control_is_off() {
+    let cfg_dir = temp_cfg_dir("ask-trusted-off");
+    let port = free_port().await;
+    let ident = anyremote_identity::Identity::load_or_generate(&cfg_dir).expect("identidad");
+    let peer_id = ident.node_id().to_string();
+    let pk_hex = data_encoding::HEXLOWER.encode(&ident.verifying_key_bytes());
+    std::fs::write(
+        cfg_dir.join("trusted.ids"),
+        format!("# anyremote: pares conocidos\n{peer_id}={pk_hex}:user\n"),
+    )
+    .expect("trusted.ids user");
+
+    let (tx_listen, rx_listen) = tokio::sync::mpsc::channel::<String>(8);
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let s = sink.clone();
+    let listen = {
+        let mut c = base_cfg(cfg_dir.clone(), port);
+        c.accept = AcceptPolicy::Ask;
+        c.accept_timeout_secs = 5;
+        c.bye_source = Some(rx_listen);
+        c.on_event = Some(Box::new(move |line| s.lock().unwrap().push(line)));
+        tokio::spawn(async move { run_listen(c).await })
+    };
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    let ctl = {
+        let mut c = DaemonConfig::new(cfg_dir.clone());
+        c.target = Some(format!("127.0.0.1:{port}"));
+        c.clipboard = ClipboardMode::Off;
+        c.max_secs = 2;
+        tokio::spawn(async move { run_connect(c).await })
+    };
+
+    let pending = wait_for_line(&sink, "\"event\":\"session_pending\"").await;
+    let peer = peer_of(&pending);
+    tx_listen
+        .send(format!("{{\"accept\":\"{peer}\"}}"))
+        .await
+        .expect("accept");
+    let ctl = ctl.await.expect("join controller").expect("controller ok");
+    assert!(
+        ctl.events
+            .iter()
+            .any(|e| e.contains("\"event\":\"session_active\"")),
+        "tras aceptar, la sesión se activa"
+    );
+    listen.await.expect("join listener").expect("listener ok");
+
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+}
