@@ -103,7 +103,7 @@ fechada y versionada. RNF-01 sigue siendo la autenticación; RNF-07 añade la
 | **C-49 decodificador con cotas** | F-06 / RNF-09 | **planificado** — `deflate_bomb_is_rejected`, `oversized_dimensions_rejected` | — | `evidence/codec-bounds-gate.md` (por producir) |
 | **C-50 preview autenticado** | F-07 / RNF-09 | **planificado** — `preview_requires_token` | — | `evidence/preview-auth-gate.md` (por producir) |
 | **C-51 higiene de confianza** | F-08 / RNF-07 | **planificado** — `auth_gate_counts_failures`, `trusted_badge_means_allowlisted` | — | `evidence/trust-hygiene-gate.md` (por producir) |
-| **C-52 regresión de vídeo** | RNF-02 / RF-02a | 🟡 **Fase A ✅** 2026-11-21 — causa raíz medida con los logs del 20/11: **D1** la escalera no tiene suelo de bpp (tasa inicial `w*h*3` = 0,200 bpp; suelo 200 kbps = 0,003 bpp) · **D2** la recuperación es inalcanzable con jitter (zona neutra 100–200 ms → 2 min 35 s congelada) · **D3** al subir el bitrate no se pide IDR (el trait `VideoEncoder` no tiene refresco) · H1/H2 confirmadas, H3/H4 descartadas · arnés determinista (5 tests `mod c52_ladder`) que reproduce las 21 decisiones del colapso de campo | — (Fase B) | `evidence/field-2026-11-20.md` → `evidence/video-quality-regression.md` |
+| **C-52 regresión de vídeo** | RNF-02 / RF-02a | 🟡 **Fase A/B ✅** 2026-11-21 — **A**: causa raíz medida con los logs del 20/11: **D1** la escalera no tiene suelo de bpp (tasa inicial `w*h*3` = 0,200 bpp; suelo 200 kbps = 0,003 bpp) · **D2** la recuperación es inalcanzable con jitter (zona neutra 100–200 ms → 2 min 35 s congelada) · **D3** al subir el bitrate no se pide IDR (el trait `VideoEncoder` no tiene refresco) · H1/H2 confirmadas, H3/H4 descartadas · arnés determinista (5 tests `mod c52_ladder`) que reproduce las 21 decisiones del colapso de campo · **B** (commit `4e88cc5`, binario `v0.14.4`): **piso de bpp 0,45** (`TEXT_BPP_FLOOR`, `bpp_floor_bps`; tasa inicial y cada escalón acotados por el piso y `--max-bitrate`; si el enlace no sostiene el piso baja la **escala** —50 % del inicial o 640×360—, nunca el bitrate; el suelo de 200 kbps desaparece) · **refresco IDR al recuperar** (`VideoEncoder::request_refresh`; MF `CODECAPI_AVEncVideoForceKeyFrame`, VP9 keyframe; el cambio de escala ya reconstruye el encoder y no se duplica) · **recuperación con jitter** (`NET_RECOVER=3`, la zona neutra cuenta, `net_high` se limpia al recuperar, cooldown 20 s) · fps real (`AdaptState::with_fps`) · gates `ladder_preserves_bpp` ✅ `static_text_refreshes_after_recovery` ✅ `recovery_reachable_under_jitter` ✅ (Rust 179/0 · clippy 0 · fmt 0 · Flutter 35/35; binario `v0.14.4` verificado) · **C** (campo relay + guion de 2 min) 🔴 | — (Fase C) | `evidence/field-2026-11-20.md` → `evidence/video-quality-regression.md` · `evidence/c52-gate-fase-b.md` · `evidence/c52-build-0.14.4.md` |
 | **C-53 aceptar = control** | RF-01 / RF-02a | **planificado** — `accept_grants_control` + widget | — | `evidence/accept-control-gate.md` (por producir) |
 | **C-54 Caps Lock** | RF-02a | **planificado** — `capslock_toggles_host` | — | `evidence/capslock-gate.md` (por producir) |
 | **C-55 teclado por layout** | RF-02a | **planificado** — investigación + `unicode_text_ignores_host_layout`, `shortcuts_still_use_scancodes` | — | `evidence/keyboard-layout-research.md`, `keyboard-layout-gate.md` |
@@ -118,8 +118,12 @@ fechada y versionada. RNF-01 sigue siendo la autenticación; RNF-07 añade la
    vídeo (**Fase A ✅ 2026-11-21**: causa raíz en
    `evidence/video-quality-regression.md` — escalera sin suelo de bpp +
    recuperación inalcanzable con jitter + sin refresco IDR al recuperar;
-   **Fase B** pendiente: `ladder_preserves_bpp`,
-   `static_text_refreshes_after_recovery`, `recovery_reachable_under_jitter`),
+   **Fase B ✅ 2026-11-21**: commit `4e88cc5`, binario `v0.14.4` — piso de bpp
+   **0,45** (si el enlace no lo sostiene baja la escala, nunca el bitrate) +
+   refresco **IDR al recuperar** + recuperación con jitter (`N=3`, la zona neutra
+   cuenta); gates `ladder_preserves_bpp`, `static_text_refreshes_after_recovery`
+   y `recovery_reachable_under_jitter` verdes — `evidence/c52-gate-fase-b.md`;
+   **Fase C** pendiente: gate de campo con el binario `v0.14.4`),
    **C-53** aceptar = control (quitar la casilla), **C-54** Caps Lock y
    **C-55** teclado independiente del layout (investigación + implementación).
    Semilla: `evidence/field-2026-11-20.md`.

@@ -1,13 +1,13 @@
-# C-52 · Fase A — regresión de calidad de vídeo/texto (campo 2026-11-20)
+# C-52 — regresión de calidad de vídeo/texto (campo 2026-11-20): Fase A (causa raíz) + Fase B (corrección)
 
 | Campo | Valor |
 |---|---|
 | Fecha | 2026-11-21 |
 | Rama | `feature/c52-video-regression` (desde `develop` @ `bee2cc3`) |
-| Alcance | **Fase A** — causa raíz con evidencia + gates de la Fase B. **Sin** cambios de producción (solo `#[cfg(test)]` en `core/daemon/src/video.rs`) |
+| Alcance | **Fase A** (§1–§8) — causa raíz con evidencia + gates de la Fase B; **sin** cambios de producción (solo `#[cfg(test)]` en `core/daemon/src/video.rs`) · **Fase B** (§9) — corrección implementada el 2026-11-21 (commit `4e88cc5`) |
 | Semilla | `evidence/field-2026-11-20.md` (sesión Julie `ONDH6IU4RU` → Brian `GLV5Q76BAQ`) |
 | Logs | Anfitrión `C:\Users\wnuke\AppData\Roaming\anyremote\ui.log` · Cliente `E:\audiany\anyremote\ui.log` |
-| Estado | ✅ causa raíz sustentada · ⏳ Fase B pendiente · ⏳ gate de campo pendiente |
+| Estado | ✅ causa raíz sustentada · ✅ **Fase B implementada con los tres gates verdes** (§9 · `evidence/c52-gate-fase-b.md`) · ⏳ gate de campo pendiente (Fase C) |
 
 ---
 
@@ -315,7 +315,8 @@ producción** (D-13c aplica a los ciclos cerrados; aquí sólo hay tests).
    anfitrión y 3 de `visor: fps render` del cliente.
 3. **Mover una ventana** 10 s y volver a la quietud; anotar otras 3+3.
 4. **Subir el tope** con `--max-bitrate` (o dejar que la escalera suba) y
-   anotar si el texto mejora (no debería, hasta la Fase B).
+   anotar si el texto mejora: con la **Fase B** (piso de bpp 0,45 + refresco
+   IDR al recuperar) **debería** mejorar; si no, es un dato de campo.
 5. Pegar el guion y las líneas en `evidence/c52-field.md`.
 
 Con M1–M4 en el log, la Fase B (y el gate de campo) tienen datos para decidir
@@ -323,7 +324,7 @@ el umbral de bpp por tamaño y la estrategia de refresco.
 
 ---
 
-## 8. Plan de la Fase B (propuesta, para el usuario)
+## 8. Plan de la Fase B (propuesta del usuario; ejecutada — resultado en §9)
 
 Objetivo: que la calidad **percibida** (bpp del contenido estático) sea la
 magnitud gobernada, con refresco al recuperar.
@@ -352,7 +353,54 @@ magnitud gobernada, con refresco al recuperar.
 
 ---
 
-## 9. Trazabilidad
+## 9. Fase B — corrección (2026-11-21)
+
+Detalle completo: [`c52-gate-fase-b.md`](c52-gate-fase-b.md) · binario:
+[`c52-build-0.14.4.md`](c52-build-0.14.4.md) · commit `4e88cc5` (rama
+`feature/c52-video-regression`).
+
+| Punto | Qué cambió | Dónde |
+|---|---|---|
+| **D1 · piso de bpp** | `TEXT_BPP_FLOOR = 0,45` + `bpp_floor_bps(w,h,fps)`: la tasa inicial y cada escalón se acotan por el piso y por `--max-bitrate`; si el enlace **no sostiene el piso** baja la **escala** (suelo 50 % del inicial o 640×360), nunca el bitrate; **el suelo de 200 kbps desaparece** | `core/daemon/src/video.rs:279-291`, `:372-441` |
+| **D2 · recuperación con jitter** | `NET_RECOVER = 3`; la zona neutra (100–200 ms) **suma** a `net_low`; al recuperar se abre ventana nueva (`net_high = 0`); cooldown de 20 s intacto | `core/daemon/src/video.rs:272`, `:497-506`, `:530-536` |
+| **D3 · refresco al recuperar** | `VideoEncoder::request_refresh()` (MF: `CODECAPI_AVEncVideoForceKeyFrame`; VP9: keyframe latched); se pide **solo** al recuperar; el **cambio de escala ya reconstruye el encoder** (SPS/PPS + IDR) y no se duplica | `core/codec/src/lib.rs:76-85` · `core/daemon/src/video.rs:562-580`, `:918-927` |
+| **fps real** | el estado adaptativo se crea con el fps de la sesión (`AdaptState::with_fps`) | `core/daemon/src/video.rs:342`, `:799` |
+
+**Decisiones aprobadas por el usuario:** suelo **0,45 bpp** · **IDR al recuperar**
+y al **cambiar de escala** · recuperación **N=3** con la **zona neutra contando**
+· **cooldown 20 s** intacto.
+
+**Números (replay de campo, 1920×1080@15):** tasa inicial 6 220 800 (0,200 bpp)
+→ **13 996 800** (0,450 bpp); suelo 1001×563: 200 000 (0,024 bpp de objetivo) →
+**3 804 050** (0,450 bpp). Tabla completa en `c52-gate-fase-b.md` §2.
+
+**Gates (resultado real):** `ladder_preserves_bpp` ✅ ·
+`static_text_refreshes_after_recovery` ✅ · `recovery_reachable_under_jitter` ✅
+(1 passed / 0 failed cada uno) · workspace Rust **179/0** · clippy **0** · fmt
+**0** · Flutter **35/35** · binario **v0.14.4** verificado (`FileVersion
+0.14.4+1`, `anyremoted 0.14.4`).
+
+**Tests de la Fase A:** los que afirmaban el defecto pasaron a afirmar el
+comportamiento corregido (`c52_no_rung_of_the_ladder_sustains_the_text_bpp_floor`
+→ `ladder_preserves_bpp`, `c52_static_text_is_not_refreshed_by_the_recovery` →
+`static_text_refreshes_after_recovery`,
+`c52_collapse_does_not_recover_under_neutral_jitter` →
+`recovery_reachable_under_jitter`); los replays de campo (S1/S2) se conservan
+como evidencia del defecto (§2).
+
+**Riesgos abiertos (los mismos de `c52-gate-fase-b.md` §5):** arranque más caro
+(14,0 Mbps a 1080p) · recuperación «de golpe» con diente de sierra de periodo
+≈ cooldown · si el MFT no soporta `CODECAPI_AVEncVideoForceKeyFrame` el texto
+solo se refresca en el GOP (medición **M2** pendiente) · instrumentación
+**M1–M4** sin implementar · `--max-bitrate` por debajo del piso ⇒ el texto no
+llega a 0,45 (el enlace manda).
+
+**Fase C (campo) — pendiente:** guion de 2 min (§7.2) con el binario `v0.14.4`:
+anotar bpp, resolución y legibilidad real por relay.
+
+---
+
+## 10. Trazabilidad
 
 - Semilla: `evidence/field-2026-11-20.md` · Contexto de RE: ninguno nuevo
   (no hay hallazgos H-AD/H-RD en esta fase).
@@ -361,4 +409,6 @@ magnitud gobernada, con refresco al recuperar.
   C-32 (presets de bitrate y piso de bpp del texto), C-35 (encoder NVENC y
   rate-control), C-36 (escalado paralelo). Sus tests deben seguir verdes.
 - `specs/02` §13.1 (fases/gates) y `specs/04` (fila C-52) actualizados en
-  este mismo commit.
+  este mismo commit (Fase A) y en el commit de la Fase B (`4e88cc5`).
+- Fase B: `evidence/c52-gate-fase-b.md` (gates y riesgos) ·
+  `evidence/c52-build-0.14.4.md` (binario verificado, D-13c).
