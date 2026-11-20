@@ -103,7 +103,7 @@ fechada y versionada. RNF-01 sigue siendo la autenticación; RNF-07 añade la
 | **C-49 decodificador con cotas** | F-06 / RNF-09 | **planificado** — `deflate_bomb_is_rejected`, `oversized_dimensions_rejected` | — | `evidence/codec-bounds-gate.md` (por producir) |
 | **C-50 preview autenticado** | F-07 / RNF-09 | **planificado** — `preview_requires_token` | — | `evidence/preview-auth-gate.md` (por producir) |
 | **C-51 higiene de confianza** | F-08 / RNF-07 | **planificado** — `auth_gate_counts_failures`, `trusted_badge_means_allowlisted` | — | `evidence/trust-hygiene-gate.md` (por producir) |
-| **C-52 regresión de vídeo** | RNF-02 / RF-02a | **planificado** — por fases (§13.1): causa raíz medida, `ladder_preserves_bpp`, `static_text_refreshes_after_recovery` | — | `evidence/field-2026-11-20.md` → `video-quality-regression.md` |
+| **C-52 regresión de vídeo** | RNF-02 / RF-02a | 🟡 **Fase A ✅** 2026-11-21 — causa raíz medida con los logs del 20/11: **D1** la escalera no tiene suelo de bpp (tasa inicial `w*h*3` = 0,200 bpp; suelo 200 kbps = 0,003 bpp) · **D2** la recuperación es inalcanzable con jitter (zona neutra 100–200 ms → 2 min 35 s congelada) · **D3** al subir el bitrate no se pide IDR (el trait `VideoEncoder` no tiene refresco) · H1/H2 confirmadas, H3/H4 descartadas · arnés determinista (5 tests `mod c52_ladder`) que reproduce las 21 decisiones del colapso de campo | — (Fase B) | `evidence/field-2026-11-20.md` → `evidence/video-quality-regression.md` |
 | **C-53 aceptar = control** | RF-01 / RF-02a | **planificado** — `accept_grants_control` + widget | — | `evidence/accept-control-gate.md` (por producir) |
 | **C-54 Caps Lock** | RF-02a | **planificado** — `capslock_toggles_host` | — | `evidence/capslock-gate.md` (por producir) |
 | **C-55 teclado por layout** | RF-02a | **planificado** — investigación + `unicode_text_ignores_host_layout`, `shortcuts_still_use_scancodes` | — | `evidence/keyboard-layout-research.md`, `keyboard-layout-gate.md` |
@@ -115,7 +115,11 @@ fechada y versionada. RNF-01 sigue siendo la autenticación; RNF-07 añade la
 ## Pendientes (estado actual)
 
 0. 🔴 **Campo 2026-11-20 (`specs/02` §13)**: **C-52** regresión de calidad de
-   vídeo (relay 351 ms, 0,18–0,47 bpp, texto ilegible sin recuperación),
+   vídeo (**Fase A ✅ 2026-11-21**: causa raíz en
+   `evidence/video-quality-regression.md` — escalera sin suelo de bpp +
+   recuperación inalcanzable con jitter + sin refresco IDR al recuperar;
+   **Fase B** pendiente: `ladder_preserves_bpp`,
+   `static_text_refreshes_after_recovery`, `recovery_reachable_under_jitter`),
    **C-53** aceptar = control (quitar la casilla), **C-54** Caps Lock y
    **C-55** teclado independiente del layout (investigación + implementación).
    Semilla: `evidence/field-2026-11-20.md`.

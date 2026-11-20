@@ -1169,3 +1169,359 @@ mod tests {
         assert!(recovered.expect("recupera_escala").video_size == Some((960, 540)));
     }
 }
+
+/// C-52 · **Fase A** — arnés de simulación determinista (SOLO tests).
+///
+/// Reproduce la escalera de adaptación observada en el campo del 20/11/2026
+/// con los MISMOS números del log del anfitrión y comprueba si el frame
+/// estático se re-emite con la calidad nueva o se queda con la vieja.
+///
+/// **No cambia el comportamiento de producción**: es la política real
+/// (`AdaptState`) más un modelo del códec entre frames. Evidencia:
+/// `evidence/video-quality-regression.md`.
+#[cfg(test)]
+mod c52_ladder {
+    use super::*;
+
+    /// Piso de bpp (bits por píxel y frame) para texto legible — C-32:
+    /// `evidence/text-quality-gate.md:21` («El texto de escritorio necesita
+    /// ~0,4–0,5 bpp/frame»).
+    const TEXT_BPP_FLOOR: f64 = 0.45;
+
+    /// Serie de exceso de RTT observada en la sesión 2 del 20/11 (anfitrión
+    /// Brian, 09:52:38–09:54:32): un valor por decisión de campo
+    /// (`ui.log` líneas 5118…5168). Todos ≥ 200 ms → zona de congestión; los
+    /// valores 250 son los que el log **no** imprime (las decisiones de
+    /// escala no llevan `rtt`: `video.rs:824-827`).
+    const FIELD_RTT_EXCESS: &[u32] = &[
+        529, 275, 234, 230, 794, 227, 296, 250, 267, 265, 237, 250, 286, 294, 250, 205, 232, 250,
+        234, 329,
+    ];
+
+    /// Decisiones de adaptación observadas en campo (mismo orden, mismas
+    /// tasas y tamaños): 20 de red + 1 de presión de CPU — `ui.log` líneas
+    /// 5118…5168.
+    const FIELD_DECISIONS: &[(&str, Option<usize>, (u32, u32))] = &[
+        ("red_bitrate", Some(7_500_000), (1920, 1080)),
+        ("red_bitrate", Some(3_750_000), (1920, 1080)),
+        ("red_bitrate", Some(1_875_000), (1920, 1080)),
+        ("red_bitrate", Some(937_500), (1920, 1080)),
+        ("red_bitrate", Some(468_750), (1920, 1080)),
+        ("red_bitrate", Some(234_375), (1920, 1080)),
+        ("red_bitrate", Some(200_000), (1920, 1080)),
+        ("red_escala", None, (1632, 918)),
+        ("red_bitrate", Some(749_088), (1632, 918)),
+        ("red_bitrate", Some(374_544), (1632, 918)),
+        ("red_bitrate", Some(200_000), (1632, 918)),
+        ("red_escala", None, (1387, 780)),
+        ("presion_bitrate", Some(540_930), (1387, 780)),
+        ("red_bitrate", Some(270_465), (1387, 780)),
+        ("red_bitrate", Some(200_000), (1387, 780)),
+        ("red_escala", None, (1178, 663)),
+        ("red_bitrate", Some(400_000), (1178, 663)),
+        ("red_bitrate", Some(200_000), (1178, 663)),
+        ("red_escala", None, (1001, 563)),
+        ("red_bitrate", Some(400_000), (1001, 563)),
+        ("red_bitrate", Some(200_000), (1001, 563)),
+    ];
+
+    /// bpp (bits por píxel y frame) que permite una tasa objetivo a un tamaño.
+    fn bpp_of(rate_bps: usize, w: u32, h: u32, fps: u32) -> f64 {
+        rate_bps as f64 / fps as f64 / (w as f64 * h as f64)
+    }
+
+    /// Una decisión de adaptación observada: (razón, tasa, tamaño).
+    type Decision = (&'static str, Option<usize>, (u32, u32));
+
+    /// Reproduce la sesión 2 del 20/11 sobre la política real: 3 muestras de
+    /// RTT congestionadas por decisión de campo (NET_CONFIRM=3) y, en el
+    /// punto del log, la observación de CPU que produjo `presion_bitrate`
+    /// (encode_ms=110,2 ms con presupuesto 1000/15=66,7 ms).
+    fn replay_session2_collapse() -> (AdaptState, Vec<Decision>) {
+        let mut st = AdaptState::new((1920, 1080), Some(15_000_000));
+        // Antes del colapso la escalera había subido a 15 Mbps (09:52:34).
+        st.bps = 15_000_000;
+        let mut got: Vec<Decision> = Vec::new();
+        for (i, &rtt) in FIELD_RTT_EXCESS.iter().enumerate() {
+            // 3 muestras altas → 1 decisión de red (`NET_CONFIRM`).
+            for _ in 0..3 {
+                if let Some(d) = st.observe_net(rtt) {
+                    got.push((d.reason, d.target_bps, st.size));
+                }
+            }
+            // Tras `red_escala → 1387x780` el log registra `presion_bitrate`
+            // (encode 110,2 ms > 0,9 × 66,7 ms) — 60 observaciones de CPU.
+            if i == 11 {
+                let budget = 1000.0 / 15.0;
+                for _ in 0..60 {
+                    if let Some(d) = st.observe(110.2, budget) {
+                        got.push((d.reason, d.target_bps, st.size));
+                    }
+                }
+            }
+        }
+        (st, got)
+    }
+
+    /// C-52: la escalera de la sesión 1 (08:59:46 → 9.331.200 bps;
+    /// 08:59:57 → 13.996.800; 09:00:04 → 15.000.000) la reproduce la política
+    /// real con la misma serie de RTT sana.
+    #[test]
+    fn c52_field_ladder_is_reproduced_by_the_policy() {
+        let mut st = AdaptState::new((1920, 1080), Some(15_000_000));
+        assert_eq!(st.bps, 6_220_800, "tasa inicial = w*h*3 (video.rs:302)");
+        let mut ladder: Vec<(&str, usize)> = Vec::new();
+        // 5 muestras sanas (exceso ≤100 ms) → 1 recuperación (NET_RECOVER=5).
+        for _ in 0..15 {
+            if let Some(d) = st.observe_net(0) {
+                ladder.push((d.reason, d.target_bps.expect("decisión de tasa")));
+            }
+        }
+        assert_eq!(
+            ladder,
+            vec![
+                ("red_recupera_bitrate", 9_331_200),
+                ("red_recupera_bitrate", 13_996_800),
+                ("red_recupera_bitrate", 15_000_000),
+            ],
+            "escalera observada en `ui.log:4436,4439,4480`"
+        );
+    }
+
+    /// C-52 · **defecto D1**: la escalera no tiene suelo de **bpp**; sus
+    /// escalones quedan por debajo del piso de texto legible y su suelo
+    /// (bitrate mínimo) queda dos órdenes de magnitud por debajo.
+    ///
+    /// Este test es la **caracterización** del defecto: en la Fase B se
+    /// invierte y pasa a ser el gate `ladder_preserves_bpp`.
+    #[test]
+    fn c52_no_rung_of_the_ladder_sustains_the_text_bpp_floor() {
+        let (w, h, fps) = (1920u32, 1080u32, 15u32);
+        let rungs = [
+            ("inicial w*h*3", 6_220_800usize),
+            ("recuperación 1", 9_331_200),
+            ("recuperación 2", 13_996_800),
+            ("recuperación 3 (tope CLI)", 15_000_000),
+        ];
+        let bpps: Vec<f64> = rungs.iter().map(|(_, r)| bpp_of(*r, w, h, fps)).collect();
+        // Valores calculados, no aproximados: 0,200 · 0,300 · 0,450 · 0,482.
+        for (i, expected) in [0.200f64, 0.300, 0.450, 0.482].iter().enumerate() {
+            assert!(
+                (bpps[i] - expected).abs() < 0.002,
+                "{}: bpp {} (esperado {})",
+                rungs[i].0,
+                bpps[i],
+                expected
+            );
+        }
+        // Los dos primeros escalones NO sostienen texto legible.
+        assert!(bpps[0] < TEXT_BPP_FLOOR, "escalón inicial: {}", bpps[0]);
+        assert!(bpps[1] < TEXT_BPP_FLOOR, "recuperación 1: {}", bpps[1]);
+        // Suelo de la escalera: 200 kbps → 0,006 bpp a 1080p@15.
+        let floor_bpp = bpp_of(200_000, w, h, fps);
+        assert!(
+            floor_bpp < TEXT_BPP_FLOOR / 50.0,
+            "suelo de bitrate (200 kbps): {floor_bpp} bpp"
+        );
+        // Tras un paso de escala la tasa es `size_bps` = máx(w*h, 4×suelo)
+        // (video.rs:324) → 800 kbps a 1001x563 → 0,095 bpp.
+        let st = AdaptState::new((1920, 1080), Some(15_000_000));
+        let after_scale = st.size_bps(1001, 563);
+        assert_eq!(after_scale, 800_000, "size_bps = máx(w*h, 4×suelo)");
+        let scaled_bpp = bpp_of(after_scale, 1001, 563, 15);
+        assert!(
+            scaled_bpp < TEXT_BPP_FLOOR / 4.0,
+            "bpp tras `red_escala`: {scaled_bpp}"
+        );
+    }
+
+    /// C-52: el **colapso** de la sesión 2 (09:52–09:54) lo reproduce la
+    /// política real con el exceso de RTT observado: 21 decisiones, el mismo
+    /// orden y las mismas tasas y tamaños que el log del anfitrión.
+    #[test]
+    fn c52_session2_collapse_is_reproduced_by_the_policy() {
+        let (st, got) = replay_session2_collapse();
+        assert_eq!(got.len(), FIELD_DECISIONS.len(), "nº de decisiones");
+        for (i, expected) in FIELD_DECISIONS.iter().enumerate() {
+            let (reason, bps, size) = got[i];
+            assert_eq!(
+                (reason, bps, size),
+                *expected,
+                "decisión #{} no coincide con el campo",
+                i + 1
+            );
+        }
+        assert_eq!(st.size, (1001, 563), "suelo de escala (50 % del inicial)");
+        assert_eq!(st.bps, 200_000, "suelo de bitrate");
+    }
+
+    /// C-52 · **defecto D2**: en el suelo, el exceso de RTT en la zona neutra
+    /// (100–200 ms) impide la recuperación: la calidad se queda congelada
+    /// (en campo: **2 min 35 s** sin una sola decisión, `ui.log` 09:54:32 →
+    /// 09:57:07). Con 5 muestras sanas sí recupera.
+    #[test]
+    fn c52_collapse_does_not_recover_under_neutral_jitter() {
+        let (mut st, _) = replay_session2_collapse();
+        assert_eq!((st.size, st.bps), ((1001, 563), 200_000));
+        // 155 muestras (2 min 35 s a 1/s) con el exceso en la zona neutra:
+        // la zona neutra sólo DEGRADA `net_low` (video.rs:426) → ni sube ni
+        // baja: la calidad sigue congelada.
+        for i in 0..155 {
+            assert!(
+                st.observe_net(150).is_none(),
+                "muestra {i}: no debería haber decisión"
+            );
+        }
+        assert_eq!(
+            (st.size, st.bps),
+            ((1001, 563), 200_000),
+            "sigue en el suelo: no se recuperó"
+        );
+        // Con 5 muestras sanas (exceso 0) la recuperación SÍ es alcanzable.
+        let mut recovered = None;
+        for _ in 0..20 {
+            recovered = recovered.or_else(|| st.observe_net(0));
+        }
+        let d = recovered.expect("con RTT sano la recuperación es alcanzable");
+        assert_eq!(d.reason, "red_recupera_escala");
+        assert_eq!(st.size, (1920, 1080), "vuelve a la resolución inicial");
+    }
+
+    /// Modelo del códec entre frames (H.264/NVENC por MFT) con lo observado
+    /// en `core/codec/src/mf_backend.rs`:
+    /// - CBR con mean = max = tasa objetivo (`mf_backend.rs:282-284`);
+    /// - GOP de `fps*2` entradas → un IDR cada 30 (`mf_backend.rs:285-287`);
+    /// - un P-frame sólo codifica lo que cambia; un IDR recodifica todo;
+    /// - `set_target_bitrate` sólo cambia el **techo**: no pide IDR
+    ///   (`mf_backend.rs:1090-1127`) y el trait `VideoEncoder` no expone
+    ///   ningún método de refresco (`core/codec/src/lib.rs:65-76`).
+    struct InterCodec {
+        w: u32,
+        h: u32,
+        fps: u32,
+        gop: u32,
+        rate_bps: usize,
+        inputs: u32,
+        /// bpp con el que se codificó la última vez cada región.
+        static_bpp: f64,
+        moving_bpp: f64,
+        /// IDRs por GOP (automáticos) y forzados (lo que producción NO hace).
+        idrs: u32,
+        forced_idrs: u32,
+    }
+
+    impl InterCodec {
+        fn new(w: u32, h: u32, fps: u32, rate_bps: usize) -> Self {
+            let bpp = bpp_of(rate_bps, w, h, fps);
+            Self {
+                w,
+                h,
+                fps,
+                gop: (fps * 2).max(8),
+                rate_bps,
+                inputs: 0,
+                static_bpp: bpp,
+                moving_bpp: bpp,
+                idrs: 1,
+                forced_idrs: 0,
+            }
+        }
+
+        fn rate_bpp(&self) -> f64 {
+            bpp_of(self.rate_bps, self.w, self.h, self.fps)
+        }
+
+        /// `set_target_bitrate` del MFT: cambia el techo y nada más.
+        fn set_target_bitrate(&mut self, bps: usize) {
+            self.rate_bps = bps;
+        }
+
+        /// Lo que producción **no** puede hacer hoy: pedir un IDR.
+        fn force_idr(&mut self) {
+            self.forced_idrs += 1;
+            self.inputs = 0;
+            self.static_bpp = self.rate_bpp();
+            self.moving_bpp = self.rate_bpp();
+        }
+
+        /// Codifica un frame: lo que cambia se recodifica a la tasa vigente;
+        /// lo estático conserva su calidad hasta el próximo IDR.
+        fn encode(&mut self, changed: bool) {
+            self.inputs += 1;
+            if self.inputs >= self.gop {
+                self.inputs = 0;
+                self.idrs += 1;
+                self.static_bpp = self.rate_bpp();
+            }
+            if changed {
+                self.moving_bpp = self.rate_bpp();
+            }
+        }
+    }
+
+    /// C-52 · **defecto D3**: al subir el bitrate, el frame estático **no** se
+    /// re-emite con la calidad nueva: se queda con la del último IDR (el
+    /// texto queda borroso aunque el enlace se haya recuperado). Lo que sí
+    /// sigue la tasa nueva es la zona que cambia → «movimiento fluido con la
+    /// imagen degradada» (exactamente el reporte de campo).
+    ///
+    /// En la Fase B este test se invierte y pasa a ser el gate
+    /// `static_text_refreshes_after_recovery`.
+    #[test]
+    fn c52_static_text_is_not_refreshed_by_the_recovery() {
+        let mut codec = InterCodec::new(1920, 1080, 15, 6_220_800);
+        // El primer IDR codifica TODO a la tasa inicial → 0,200 bpp.
+        assert!(
+            (codec.static_bpp - 0.200).abs() < 0.002,
+            "calidad inicial del texto: {}",
+            codec.static_bpp
+        );
+        // La escalera sube a 15 Mbps (tres recuperaciones, como en campo).
+        codec.set_target_bitrate(9_331_200);
+        codec.set_target_bitrate(13_996_800);
+        codec.set_target_bitrate(15_000_000);
+        // La recuperación cambia el TECHO, pero el texto estático conserva su
+        // calidad: no hay ninguna petición de IDR en el camino de producción.
+        assert!(
+            (codec.static_bpp - 0.200).abs() < 0.002,
+            "el texto estático se queda con la calidad vieja: {}",
+            codec.static_bpp
+        );
+        // La zona que cambia sí sigue la tasa nueva (movimiento fluido).
+        codec.encode(true);
+        assert!(
+            (codec.moving_bpp - 0.482).abs() < 0.002,
+            "la zona en movimiento sigue la tasa: {}",
+            codec.moving_bpp
+        );
+        // El texto sólo se refresca en el próximo IDR de GOP (cada 30 entradas);
+        // con la pantalla estática (reenvío a 1 Hz, `reemit_gap`) son ~30 s.
+        let idrs_before = codec.idrs;
+        for _ in 0..28 {
+            codec.encode(false);
+        }
+        assert_eq!(codec.idrs, idrs_before, "todavía no toca el GOP");
+        assert!(
+            (codec.static_bpp - 0.200).abs() < 0.002,
+            "el texto sigue con la calidad vieja tras 29 entradas"
+        );
+        codec.encode(false);
+        assert_eq!(codec.idrs, idrs_before + 1, "IDR de GOP");
+        assert!(
+            (codec.static_bpp - 0.482).abs() < 0.002,
+            "el texto se refresca en el GOP: {}",
+            codec.static_bpp
+        );
+        // Dirección del arreglo (Fase B): pedir un IDR al recuperar lo arregla
+        // de inmediato, sin esperar al GOP.
+        let mut codec = InterCodec::new(1920, 1080, 15, 6_220_800);
+        codec.set_target_bitrate(15_000_000);
+        codec.force_idr();
+        assert_eq!(codec.forced_idrs, 1);
+        assert!(
+            (codec.static_bpp - 0.482).abs() < 0.002,
+            "con IDR forzado el texto se refresca: {}",
+            codec.static_bpp
+        );
+    }
+}

@@ -10,7 +10,7 @@
 
 ## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
 
-_Última actualización: 2026-11-20 · **C-45 ✅ · C-44 ✅ (v0.14.3)** · **nuevo lote de campo (§13): C-52 vídeo, C-53 aceptar=control, C-54 Caps Lock, C-55 layout de teclado** · seguridad C-46…C-51 pendiente (§12) · semilla `evidence/field-2026-11-20.md`_
+_Última actualización: 2026-11-21 · **C-45 ✅ · C-44 ✅ (v0.14.3)** · **C-52 Fase A ✅** (causa raíz de la regresión de vídeo: la escalera razona en bitrate/escala y no en bpp, y no recodifica el contenido estático — `evidence/video-quality-regression.md`) · **nuevo lote de campo (§13): C-52 vídeo (Fase B pendiente), C-53 aceptar=control, C-54 Caps Lock, C-55 layout de teclado** · seguridad C-46…C-51 pendiente (§12) · semilla `evidence/field-2026-11-20.md`_
 
 | Fase/Ciclo/Lote | Estado | Tag / PR |
 |---|---|---|
@@ -88,7 +88,7 @@ _Última actualización: 2026-11-20 · **C-45 ✅ · C-44 ✅ (v0.14.3)** · **n
 | **C-49 decodificador con cotas** (F-06 · RNF-09) v0.14.5 | 🔴 **planificado** · F-06: `Deflate` → `read_to_end` sin tope (bomba zlib) y `width*height*4` en `u32` (overflow); el formato del frame lo elige el par | Diseño §12.6 · tope de salida, `checked_mul`, rango de dimensiones · gates `deflate_bomb_is_rejected`, `oversized_dimensions_rejected` · `evidence/codec-bounds-gate.md` |
 | **C-50 preview autenticado** (F-07 · RNF-09) v0.14.6 | 🔴 **planificado** · F-07: el primer cliente de `127.0.0.1:<efímero>` recibe BGRA crudo de la pantalla remota sin credencial | Diseño §12.7 · token de un solo uso en la cabecera del stream · gate `preview_requires_token` · `evidence/preview-auth-gate.md` |
 | **C-51 higiene de confianza y contadores** (F-08 · RNF-07) v0.14.7 | 🔴 **planificado** · F-08: `AuthGate` inalcanzable (aborta en el primer fallo) y sin rate-limit; «✓ verificado» se pinta con `peer_trusted` (cualquier par nuevo); `Scroll` multiplica sin comprobar | Diseño §12.8 · contador real + rate-limit por origen, etiqueta «visto antes» vs allowlist, `checked_mul` · gates `auth_gate_counts_failures`, `trusted_badge_means_allowlisted` · `evidence/trust-hygiene-gate.md` |
-| **C-52 regresión de calidad de vídeo** (campo 20/11 · prioridad) | 🔴 **planificado** · semilla `evidence/field-2026-11-20.md`: sesión por **relay** (351 ms) a 1080p con 0,18–0,47 bpp; el visor renderiza fluido (12–20 ms) pero el texto queda ilegible y **no se recupera** al subir el tope de bitrate | Diseño §13.1 · fases A (reproducir/medir bpp y escala), B (política bits/píxel + IDR al recuperar), C (campo LAN/relay) · gates por fase · `evidence/video-quality-regression.md` (por producir) |
+| **C-52 regresión de calidad de vídeo** (campo 20/11 · prioridad) | 🟡 **Fase A ✅** (2026-11-21) — causa raíz sustentada en `evidence/video-quality-regression.md`: la escalera razona en **bitrate/escala** y no en **bpp**, y **no recodifica** el contenido estático al recuperar. **D1** sin suelo de bpp (tasa inicial `w*h*3` = 0,200 bpp; suelo 200 kbps = 0,003–0,006 bpp) · **D2** recuperación inalcanzable con el jitter del relay (zona neutra 100–200 ms sólo degrada `net_low`) → 2 min 35 s congelada en el suelo · **D3** al subir el bitrate no se pide IDR (el trait `VideoEncoder` no tiene método de refresco) → el texto conserva la calidad vieja. H1 y H2 **confirmadas**; H3 y H4 **descartadas** con datos · arnés determinista (5 tests, `core/daemon/src/video.rs` `mod c52_ladder`) que reproduce las 21 decisiones del colapso de campo | 🟡 **Fase B pendiente** (política bpp por tamaño + refresco + recuperación con jitter) · 🔴 **Fase C** (campo relay + script de 2 min) · gates `ladder_preserves_bpp`, `static_text_refreshes_after_recovery`, `recovery_reachable_under_jitter` · `evidence/video-quality-regression.md` |
 | **C-53 aceptar = control** (UX C-44/C-45) | 🔴 **planificado** · campo 20/11: la casilla «Permitir control remoto» sobra; aceptar una sesión remota implica poder controlar | Diseño §13.2 · quitar la casilla (aceptar envía `input:true`), «solo ver» como modo explícito opcional · gates `accept_grants_control` + widget · `evidence/accept-control-gate.md` (por producir) |
 | **C-54 Caps Lock no conmuta** (RF-02a) | 🔴 **planificado** · campo 20/11: mayúsculas no funciona en el anfitrión | Diseño §13.3 · reproducir en wire/backend, estado sincronizado del toggle · gates `capslock_toggles_host` · `evidence/capslock-gate.md` (por producir) |
 | **C-55 teclado independiente del layout** (RF-02a) | 🔴 **planificado** · campo 20/11: la distribución del anfitrión manda; un cliente con otro layout escribe caracteres equivocados | Diseño §13.4 · investigación AnyDesk/RustDesk (clean-room D-01), diseño carácter-primero (Unicode) y atajos por scancode, fase de campo con dos layouts · `evidence/keyboard-layout-gate.md` (por producir) |
@@ -640,15 +640,30 @@ requiere investigación). Todos se planifican aquí para sesiones distintas.
 0,18–0,47 bpp: movimiento fluido (render 12–20 ms, `drop=0`) y **texto
 ilegible**; al subir el tope adaptativo a 15 Mbps no se recupera.
 
-**Fase A — reproducir y medir (sin cambiar la política).**
-1. Reproducir en laboratorio el camino real: forzar relay (o `--rdv` sin
-   reenvío) y medir `bpp = kbps / (w·h·fps)` en el anfitrión y el visor.
+**Fase A — reproducir y medir (sin cambiar la política).** ✅ **hecha
+2026-11-21** (`evidence/video-quality-regression.md`, rama
+`feature/c52-video-regression`).
+1. Reproducir el camino real y medir `bpp = kbps / (w·h·fps)` en el anfitrión
+   y el visor → **hecho con los logs de campo**: el log del anfitrión ya mide
+   el bpp real por bloque de 5 s.
 2. Registrar por sesión: `captura_ms/escala_ms/encode_ms`, escala aplicada,
-   `kbps`, `KB/frame`, `bpp`, `rtt` mínimo y exceso, y si el frame fue IDR.
-3. Confirmar/descartar H1–H4 de la evidencia (bpp, refresco sin IDR, baseline
-   de relay, calentamiento inicial del encoder).
+   `kbps`, `KB/frame`, `bpp`, `rtt` mínimo y exceso, y si el frame fue IDR →
+   **hecho salvo el flag de IDR por frame** (medición M2 pendiente).
+3. Confirmar/descartar H1–H4 → **H1 y H2 confirmadas; H3 y H4 descartadas
+   con datos**.
 4. Gate: informe `evidence/video-quality-regression.md` con la reproducción y
-   la causa raíz sustentada (no una hipótesis).
+   la causa raíz sustentada (no una hipótesis) → **✅ cerrado**.
+
+**Causa raíz (Fase A).** El control adaptativo gobierna dos magnitudes
+(**bitrate** y **escala**) que no son la magnitud percibida (**bpp del
+contenido ya codificado**), y ninguna de las dos recodifica el contenido
+estático:
+
+| # | Defecto | Dónde | Dato de campo |
+|---|---|---|---|
+| **D1** | La escalera **no tiene suelo de bpp**: tasa inicial `w*h*3` = 0,200 bpp; tras un paso de escala `size_bps` = 1 bit/px; suelo 200 kbps = 0,003–0,006 bpp | `core/daemon/src/video.rs:302`, `:324-327`, `:311` | S2: 1001×563 @ 200 kbps → 0,003–0,096 bpp (`ui.log:5168`) |
+| **D2** | La **recuperación es inalcanzable** con jitter: la zona neutra (100–200 ms) sólo degrada `net_low`; se exigen 5 muestras sanas + cooldown 20 s | `core/daemon/src/video.rs:426`, `:467`, `:268` | S2: **2 min 35 s** sin una sola decisión tras el suelo (09:54:32 → 09:57:07) |
+| **D3** | Al **subir** el bitrate **no se pide IDR**: el texto estático conserva la calidad del último IDR (lo que cambia sí sigue la tasa → «movimiento fluido con la imagen degradada») | `core/codec/src/lib.rs:65-76` (sin método de refresco), `core/codec/src/mf_backend.rs:1090-1127` (sólo Mean/MaxBitRate), GOP de 30 entradas `mf_backend.rs:285-287` | S1: bpp de bloque 0,030 y 0,026 con 15 Mbps de objetivo (`ui.log:4713`, `:5052`) |
 
 **Fase B — corrección mínima.**
 - Acoplar **resolución ↔ presupuesto**: elegir escala para sostener un mínimo
@@ -657,11 +672,25 @@ ilegible**; al subir el tope adaptativo a 15 Mbps no se recupera.
   (el frame estático no debe quedarse con la calidad vieja).
 - Revisar el arranque: no fijar la calidad visual con los primeros frames de
   calentamiento (265 ms).
+- Revisar la **recuperación con jitter**: la zona neutra no debe impedir
+  recuperar (D2).
 - Gate: `static_text_refreshes_after_recovery`, `ladder_preserves_bpp` +
   medición antes/después a 1080p y 720p.
 
+**Fase B — gates (falsables, con comando).**
+
+| Gate | Qué exige | Comando |
+|---|---|---|
+| `ladder_preserves_bpp` | Todo escalón de la escalera sostiene ≥0,45 bpp para el tamaño activo; el suelo no baja de ese bpp | `cd core && cargo test -p anyremote-daemon --lib ladder_preserves_bpp` |
+| `static_text_refreshes_after_recovery` | Tras una recuperación, el encoder recibe petición de refresco y el contenido estático se recodifica a la tasa nueva | `cd core && cargo test -p anyremote-daemon --lib static_text_refreshes_after_recovery` |
+| `recovery_reachable_under_jitter` | Una serie con jitter en la zona neutra recupera en ≤ N muestras | `cd core && cargo test -p anyremote-daemon --lib recovery_reachable_under_jitter` |
+| Regresión C-27/C-29/C-32/C-35/C-36 | Los tests de esos ciclos siguen verdes | `cd core && cargo test --workspace --no-fail-fast` |
+| Clippy + fmt | 0 avisos | `cd core && cargo clippy --workspace --all-targets -- -D warnings` · `cargo fmt --all -- --check` |
+| Binario verificado (D-13c) | `VERSION` = `app/pubspec.yaml` = `core/daemon/Cargo.toml` y build | `powershell -ExecutionPolicy Bypass -File scriptsuild-release.ps1` |
+
 **Fase C — campo.** Julie/Brian con el VPS estable; anotar bpp, resolución y
-legibilidad real. Cierre con evidencia y tag.
+legibilidad real. Cierre con evidencia y tag. Guion de campo de 2 min en
+`evidence/video-quality-regression.md` §7.2.
 
 **No tocar** la política de seguridad (C-44/C-45) en este ciclo. Riesgo de
 regresión: el adaptativo comparte estado con C-27/C-29/C-32; los tests de esos
@@ -781,7 +810,7 @@ verifica *unidades* y rompe *fronteras*.
 | Fase | Contenido | Puerta de salida |
 |---|---|---|
 | **F0 Andamiaje** | 9 agentes en `.opencode/agents/` + `opencode.jsonc`; `AGENTS.md` con D-12..D-16 y toolchain corregido; este §14; `evidence/plan-2026-11-21.md`; bóveda | Revisión del usuario de los ficheros de agente |
-| **F1 Campo-1 · vídeo** | **C-52**: A (medir/causa raíz) → B (política bits/píxel + refresco) → C (campo) | Gate de campo (D-14) |
+| **F1 Campo-1 · vídeo** | **C-52**: A (medir/causa raíz) ✅ 2026-11-21 → B (política bits/píxel + refresco + recuperación con jitter) → C (campo) | Gate de campo (D-14) |
 | **F2 Campo-2 · UX y Caps** | **C-53** (aceptar = control) y **C-54** (Caps Lock) | Gate de campo |
 | **F3 Seguridad** | **C-46** → **C-47/C-48** → **C-49/C-50/C-51** | Gates de cada ciclo |
 | **F4 Teclado** | **C-55**: investigación clean-room → diseño → implementación → campo con dos layouts | Gate de campo |
