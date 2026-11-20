@@ -10,7 +10,7 @@
 
 ## Estado de ejecución (dinámico — actualizar al cerrar cada fase/ciclo/lote)
 
-_Última actualización: 2026-11-20 · **C-45 ✅ (v0.13.16 + v0.14.2/v0.14.3: aceptar incluye control y el estado persiste) · C-44 ✅ (v0.14.0 + fix v0.14.1: trust `user`/`seen`)** · **auditoría de fronteras (8 hallazgos): C-44/C-45 cerrados; siguen C-46…C-51 (§12)**_
+_Última actualización: 2026-11-20 · **C-45 ✅ · C-44 ✅ (v0.14.3)** · **nuevo lote de campo (§13): C-52 vídeo, C-53 aceptar=control, C-54 Caps Lock, C-55 layout de teclado** · seguridad C-46…C-51 pendiente (§12) · semilla `evidence/field-2026-11-20.md`_
 
 | Fase/Ciclo/Lote | Estado | Tag / PR |
 |---|---|---|
@@ -88,7 +88,11 @@ _Última actualización: 2026-11-20 · **C-45 ✅ (v0.13.16 + v0.14.2/v0.14.3: a
 | **C-49 decodificador con cotas** (F-06 · RNF-09) v0.14.5 | 🔴 **planificado** · F-06: `Deflate` → `read_to_end` sin tope (bomba zlib) y `width*height*4` en `u32` (overflow); el formato del frame lo elige el par | Diseño §12.6 · tope de salida, `checked_mul`, rango de dimensiones · gates `deflate_bomb_is_rejected`, `oversized_dimensions_rejected` · `evidence/codec-bounds-gate.md` |
 | **C-50 preview autenticado** (F-07 · RNF-09) v0.14.6 | 🔴 **planificado** · F-07: el primer cliente de `127.0.0.1:<efímero>` recibe BGRA crudo de la pantalla remota sin credencial | Diseño §12.7 · token de un solo uso en la cabecera del stream · gate `preview_requires_token` · `evidence/preview-auth-gate.md` |
 | **C-51 higiene de confianza y contadores** (F-08 · RNF-07) v0.14.7 | 🔴 **planificado** · F-08: `AuthGate` inalcanzable (aborta en el primer fallo) y sin rate-limit; «✓ verificado» se pinta con `peer_trusted` (cualquier par nuevo); `Scroll` multiplica sin comprobar | Diseño §12.8 · contador real + rate-limit por origen, etiqueta «visto antes» vs allowlist, `checked_mul` · gates `auth_gate_counts_failures`, `trusted_badge_means_allowlisted` · `evidence/trust-hygiene-gate.md` |
-| **Pendientes** | 🔴 **seguridad: C-46…C-51** (C-44 ✅ v0.14.0, C-45 ✅ v0.13.16) · 🐛 **BUG acentos** (dead key como `Char` → `´o`; fix = precomposición + Unicode, POSPUESTO) · 🟡 repetir sesión WAN (~10 Mbps): debe haber `red_recupera_*` + escala que SUBE y texto legible · `test de campo de5 s` (captura vs emitidos) · reenvío puertos21118 · **`fps render` (decisión `Texture`)** · micrófono end-to-end · **firewall de entrada en Brian**: crear reglas 21118/21119 para LAN directa (ver C-30) | [README § Pendientes](../README.md#pendientes) |
+| **C-52 regresión de calidad de vídeo** (campo 20/11 · prioridad) | 🔴 **planificado** · semilla `evidence/field-2026-11-20.md`: sesión por **relay** (351 ms) a 1080p con 0,18–0,47 bpp; el visor renderiza fluido (12–20 ms) pero el texto queda ilegible y **no se recupera** al subir el tope de bitrate | Diseño §13.1 · fases A (reproducir/medir bpp y escala), B (política bits/píxel + IDR al recuperar), C (campo LAN/relay) · gates por fase · `evidence/video-quality-regression.md` (por producir) |
+| **C-53 aceptar = control** (UX C-44/C-45) | 🔴 **planificado** · campo 20/11: la casilla «Permitir control remoto» sobra; aceptar una sesión remota implica poder controlar | Diseño §13.2 · quitar la casilla (aceptar envía `input:true`), «solo ver» como modo explícito opcional · gates `accept_grants_control` + widget · `evidence/accept-control-gate.md` (por producir) |
+| **C-54 Caps Lock no conmuta** (RF-02a) | 🔴 **planificado** · campo 20/11: mayúsculas no funciona en el anfitrión | Diseño §13.3 · reproducir en wire/backend, estado sincronizado del toggle · gates `capslock_toggles_host` · `evidence/capslock-gate.md` (por producir) |
+| **C-55 teclado independiente del layout** (RF-02a) | 🔴 **planificado** · campo 20/11: la distribución del anfitrión manda; un cliente con otro layout escribe caracteres equivocados | Diseño §13.4 · investigación AnyDesk/RustDesk (clean-room D-01), diseño carácter-primero (Unicode) y atajos por scancode, fase de campo con dos layouts · `evidence/keyboard-layout-gate.md` (por producir) |
+| **Pendientes** | 🔴 **campo primero: C-52 (vídeo) → C-53 (UX) → C-54 (Caps)**, luego la seguridad **C-46…C-51** y **C-55** (teclado global) · (C-44 ✅ v0.14.0, C-45 ✅ v0.13.16) · 🐛 **BUG acentos** (dead key como `Char` → `´o`; fix = precomposición + Unicode, POSPUESTO) · 🟡 repetir sesión WAN (~10 Mbps): debe haber `red_recupera_*` + escala que SUBE y texto legible · `test de campo de5 s` (captura vs emitidos) · reenvío puertos21118 · **`fps render` (decisión `Texture`)** · micrófono end-to-end · **firewall de entrada en Brian**: crear reglas 21118/21119 para LAN directa (ver C-30) | [README § Pendientes](../README.md#pendientes) |
 
 ---
 
@@ -615,3 +619,126 @@ Cada ciclo cierra con: gates verdes (`cargo test` + `clippy -D warnings` + `fmt`
 `specs/04`, y nota en la bóveda. El lote no se declara cerrado hasta que
 F-01…F-08 tengan ciclo con evidencia o una decisión explícita de aceptación del
 riesgo registrada en `specs/04`.
+
+---
+
+## 13. Lote de campo 2026-11-20 — regresiones de vídeo, UX de aceptación y teclado
+
+**Disparador.** Reporte del usuario tras la sesión del 20/11 (cliente 0.14.1 →
+anfitrión 0.14.3). Evidencia y trazas cruzadas:
+`evidence/field-2026-11-20.md`. Tres frentes independientes; **cada ciclo se
+cierra y valida por separado** (lección: no mezclar seguridad con UX/vídeo en
+el mismo lote).
+
+**Orden recomendado:** C-52 (el vídeo ilegible bloquea el uso) → C-53 (UX,
+minutos) → C-54 (Caps Lock) → retomar seguridad C-46 → C-55 (teclado global,
+requiere investigación). Todos se planifican aquí para sesiones distintas.
+
+### 13.1 C-52 · Regresión de calidad de vídeo/texto (prioridad de campo)
+
+**Síntoma.** Con la sesión por **relay** (351 ms) a 1080p, la imagen queda en
+0,18–0,47 bpp: movimiento fluido (render 12–20 ms, `drop=0`) y **texto
+ilegible**; al subir el tope adaptativo a 15 Mbps no se recupera.
+
+**Fase A — reproducir y medir (sin cambiar la política).**
+1. Reproducir en laboratorio el camino real: forzar relay (o `--rdv` sin
+   reenvío) y medir `bpp = kbps / (w·h·fps)` en el anfitrión y el visor.
+2. Registrar por sesión: `captura_ms/escala_ms/encode_ms`, escala aplicada,
+   `kbps`, `KB/frame`, `bpp`, `rtt` mínimo y exceso, y si el frame fue IDR.
+3. Confirmar/descartar H1–H4 de la evidencia (bpp, refresco sin IDR, baseline
+   de relay, calentamiento inicial del encoder).
+4. Gate: informe `evidence/video-quality-regression.md` con la reproducción y
+   la causa raíz sustentada (no una hipótesis).
+
+**Fase B — corrección mínima.**
+- Acoplar **resolución ↔ presupuesto**: elegir escala para sostener un mínimo
+  de bpp para texto (p. ej. ≥ 0,45–0,5) en lugar de mantener 1080p con 1 Mbps.
+- Al **subir** bitrate o escala tras congestión, forzar **IDR/refresco**
+  (el frame estático no debe quedarse con la calidad vieja).
+- Revisar el arranque: no fijar la calidad visual con los primeros frames de
+  calentamiento (265 ms).
+- Gate: `static_text_refreshes_after_recovery`, `ladder_preserves_bpp` +
+  medición antes/después a 1080p y 720p.
+
+**Fase C — campo.** Julie/Brian con el VPS estable; anotar bpp, resolución y
+legibilidad real. Cierre con evidencia y tag.
+
+**No tocar** la política de seguridad (C-44/C-45) en este ciclo. Riesgo de
+regresión: el adaptativo comparte estado con C-27/C-29/C-32; los tests de esos
+ciclos deben seguir verdes.
+
+### 13.2 C-53 · Aceptar una sesión = poder controlar (UX)
+
+**Decisión de producto.** La casilla «Permitir control remoto» del diálogo
+sobra: aceptar una sesión remota implica control (el usuario lo pidió así). El
+modo «solo ver» sigue disponible como acción explícita (toggle del anfitrión /
+futuro botón «Compartir solo pantalla»), no como opción en el diálogo.
+
+**Fase A.** Quitar la casilla; al aceptar (una vez o confiar) enviar
+`{"perm":{"input":true}}` antes de la decisión, y sincronizar el toggle.
+**Fase B.** Ajustar mensajes y el test de widget; el chip «solo ver» queda solo
+si el anfitrión apaga el toggle después.
+**Gate.** `accept_grants_control` (widget: tras aceptar, el toggle está on y la
+decisión va precedida del permiso), regresión de C-45 (compartir sigue sin
+conceder control por sí solo).
+
+### 13.3 C-54 · Caps Lock no conmuta en el anfitrión (RF-02a)
+
+**Fase A — reproducir.** Comprobar el wire: la app envía la tecla de bloqueo
+(código 23) con `down/up`; verificar el mapeo en `key_from_code`, el envío del
+keyup y el `SendInput` de `VK_CAPITAL` en el backend. Revisar si el visor
+consume la tecla (atajos/foco) o si el estado se pierde entre eventos
+(texto libre vs. combinación).
+**Fase B — corregir.** Asegurar down+up de `VK_CAPITAL`, no mezclarlo con
+`Shift`, y (si aplica) sincronizar el indicador del visor con el estado real
+del anfitrión. Test del backend con el inyector `Recording` y prueba manual.
+**Gate.** `capslock_toggles_host` (unit/e2e de mapeo + inyección) y prueba de
+campo: escribir mayúsculas sostenidas y alternas.
+
+### 13.4 C-55 · Teclado independiente de la distribución (solución global)
+
+**Problema.** Hoy el anfitrión interpreta VK/scancodes según **su** layout
+(`VkKeyScanW`), así que un cliente con otra distribución produce caracteres
+equivocados; además Caps/Shift/dead keys dependen del estado del anfitrión.
+
+**Fase A — investigación (sin código de producción).**
+1. Cómo lo resuelven los programas base (AnyDesk y RustDesk): modos de teclado,
+   envío de texto vs. scancodes, tratamiento de atajos, Caps Lock y layouts.
+   Fuentes: documentación pública, comportamiento observable y RE permitida
+   (patrones H-RD-06; **clean-room D-01**, sin copiar código AGPL).
+2. Inventario de nuestro wire: `Key{code, down, extended, ch}` y qué necesita
+   (p. ej. `text` para caracteres compuestos, `scancode` para atajos).
+3. Dictamen de opciones con coste/riesgo:
+   - **A. Carácter-primero**: para texto imprimible, inyectar por Unicode
+     (`KEYEVENTF_UNICODE`) usando el carácter del cliente; atajos y teclas
+     físicas por scancode. Ventaja: layout-independiente; riesgo: apps que solo
+     reaccionan a VK, `Ctrl+letra`, juegos.
+   - **B. Layout negociado**: enviar el layout del cliente y mapear a VK del
+     anfitrión (requiere conocer ambos layouts y manejar diferencias).
+   - **C. Híbrido**: carácter-primero con lista de excepciones (atajos) y
+     fallback a scancode.
+4. Gate: documento `evidence/keyboard-layout-research.md` con la comparativa y
+   la decisión recomendada.
+
+**Fase B — diseño.** Wire (campo nuevo o semántica de `ch`), estado de
+modificadores (Caps/Shift/AltGr), dead keys y composición (ya hay base en
+C-37/C-38), y compatibilidad con peers antiguos (negociación por
+capacidades).
+
+**Fase C — implementación + gates.** `unicode_text_ignores_host_layout`,
+`shortcuts_still_use_scancodes`, `capslock_state_consistency`,
+`dead_keys_with_foreign_layout`; regresión de acentos (C-37/C-38) y de atajos
+(Ctrl+C/V).
+
+**Fase D — campo.** Cliente con layout distinto al anfitrión (p. ej. US vs
+latinoamericano): texto, mayúsculas, acentos, `@`, `#`, atajos. Evidencia y
+tag.
+
+### 13.5 Regla de proceso (para no repetir el lote)
+
+1. Un ciclo = un frente (seguridad, vídeo o UX); no se mezclan en el mismo tag.
+2. Cada ciclo se valida en campo antes de abrir el siguiente que toque la misma
+   capa (entrada/teclado o vídeo).
+3. Toda regresión de una capacidad ya cerrada se abre como **ciclo propio** con
+   la evidencia del campo (como este §13) y referencias a los ciclos que la
+   resolvieron (C-32/C-33/C-35/C-36 para vídeo; C-37/C-38 para teclado).

@@ -103,6 +103,10 @@ fechada y versionada. RNF-01 sigue siendo la autenticación; RNF-07 añade la
 | **C-49 decodificador con cotas** | F-06 / RNF-09 | **planificado** — `deflate_bomb_is_rejected`, `oversized_dimensions_rejected` | — | `evidence/codec-bounds-gate.md` (por producir) |
 | **C-50 preview autenticado** | F-07 / RNF-09 | **planificado** — `preview_requires_token` | — | `evidence/preview-auth-gate.md` (por producir) |
 | **C-51 higiene de confianza** | F-08 / RNF-07 | **planificado** — `auth_gate_counts_failures`, `trusted_badge_means_allowlisted` | — | `evidence/trust-hygiene-gate.md` (por producir) |
+| **C-52 regresión de vídeo** | RNF-02 / RF-02a | **planificado** — por fases (§13.1): causa raíz medida, `ladder_preserves_bpp`, `static_text_refreshes_after_recovery` | — | `evidence/field-2026-11-20.md` → `video-quality-regression.md` |
+| **C-53 aceptar = control** | RF-01 / RF-02a | **planificado** — `accept_grants_control` + widget | — | `evidence/accept-control-gate.md` (por producir) |
+| **C-54 Caps Lock** | RF-02a | **planificado** — `capslock_toggles_host` | — | `evidence/capslock-gate.md` (por producir) |
+| **C-55 teclado por layout** | RF-02a | **planificado** — investigación + `unicode_text_ignores_host_layout`, `shortcuts_still_use_scancodes` | — | `evidence/keyboard-layout-research.md`, `keyboard-layout-gate.md` |
 
 **PRs a `main`**: #2 (fases+ciclos+base M2) · #3 (M2 fix+v0.3.0) · #4 (v0.4.0) · #5 (specs dinámicos) · #6 (v0.5.0 entrada) · #7 (v0.6.0 audio) · #8 (v0.6.1 campo) · #9 (coords) · #10 (dinámico) · #11 (perf) · #12 (fix vídeo estático) · #13 (diagnóstico) · #14 (identidad) · #15 (menores+CI) · #16 (docs+CI) · #17 (v0.8.2 listener repetidor) · #18 (v0.8.3 visor+ID) · #19 (v0.8.4 modo visor) · #20 (v0.8.5 cursor) · #21 (v0.8.6 dueño ausente) · #22 (v0.8.7 adaptación por red) · #23 (v0.9.0 H.264/MF) · #24 (v0.9.1 hotfix H.264) · #25 (v0.10.0 UDP/QUIC) · #26 (fmt e2e QUIC) · #27 (v0.10.1 auditoría transport) · #28 (v0.11.0 conexión por ID) · #29 (v0.11.1 fan-out broadcasts) · #30 (v0.11.2 fix ICMP-poison) · #31 (v0.12.0 WAN rendezvous+relay) · #32 (fix layout) · #33 (servidor → repo serveremote, dep. git + Docker) · #34 (fix flake de puertos) · #35 (v0.12.1 resampler rubato) · #36 (v0.12.2 render alto sin nativo) · #37 (v0.12.3 defaults UDP+rdv + primer release) · #38 (v0.12.4 compartir escritorio) · #39 (docs post-merge C-21 — título erróneo: era solo-docs) · #40 (v0.12.5 rdv vacío + auto-detección LAN/WAN) · #41 (v0.12.6 arranque en frío) · #42 (v0.12.7 encoder en WAN+estático) · #43 (v0.12.8 detalle video_error) · #44 (v0.12.9 framing H.264) · #45 (CI Flutter fijado) · #46 (v0.13.0 exceso de RTT) · #47 (v0.13.1 cola del encoder) · #48 (v0.13.2 escalera acotada) · #49 (v0.13.3 reintento de relay) · #50 (fmt CI) · #51 (v0.13.4 escala separable) · #52 (v0.13.5 texto) · #53 (v0.13.6 zoom) · #54 (v0.13.7 barras) · #55 (v0.13.8 GPU) · #56 (v0.13.9 escalado) · #57 (v0.13.10 acentos) · #58 (v0.13.11 input+4K) · #59 (v0.13.12 audio) · #60 (v0.13.13 WAN) · #61 (v0.13.14 render) · #62 (v0.13.15 conectar) — `main` = `949d7be`.
 
@@ -110,10 +114,14 @@ fechada y versionada. RNF-01 sigue siendo la autenticación; RNF-07 añade la
 
 ## Pendientes (estado actual)
 
-0. 🔴 **Seguridad (auditoría 2026-11-19)**: F-01…F-08 → ciclos **C-44…C-51** en
-   `specs/02` §12. **C-44 ✅ (autorización del par) y C-45 ✅ (entrada opt-in)**;
-   siguen **C-46** (teclas en el log), **C-47/C-48** (permisos de portapapeles y
-   archivos) y **C-49…C-51**.
+0. 🔴 **Campo 2026-11-20 (`specs/02` §13)**: **C-52** regresión de calidad de
+   vídeo (relay 351 ms, 0,18–0,47 bpp, texto ilegible sin recuperación),
+   **C-53** aceptar = control (quitar la casilla), **C-54** Caps Lock y
+   **C-55** teclado independiente del layout (investigación + implementación).
+   Semilla: `evidence/field-2026-11-20.md`.
+0-bis. 🔴 **Seguridad (auditoría 2026-11-19)**: F-01…F-08 → ciclos **C-44…C-51**
+   (`specs/02` §12). **C-44 ✅ y C-45 ✅**; siguen **C-46** (teclas en el log),
+   **C-47/C-48** (portapapeles/archivos) y **C-49…C-51**.
 1. Audio: re-validar en LAN la cadena completa con v0.7.3+ (loopback + micrófono + toggles ya verificados por separado); resampler de mayor orden.
 2. ~~Acuse de inyección al controlador~~ ✅ resuelto en v0.8.1 (acuse `InputAck` por evento + contador real de inyectadas en la app).
 3. ~~Identidad persistente + trust por dispositivo~~ ✅ resuelto en v0.8.0 (C-6); el ID ya es visible/copiable (v0.8.3, C-9) — queda el uso futuro: **conectar** por ID estable (resolutor).

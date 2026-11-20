@@ -36,6 +36,20 @@ _Última actualización: 2026-11-19 — **auditoría de fronteras de confianza**
 
 ### Pendientes
 
+#### 🔴 Regresiones de campo (20/11) — antes que la seguridad restante
+
+Sesión Julie→Brian por **relay** (351 ms). Evidencia cruzada:
+[`evidence/field-2026-11-20.md`](evidence/field-2026-11-20.md). Diseño por fases:
+[`specs/02`](specs/02-plan-implementacion.md) §13. **Un ciclo por frente**, con
+validación de campo antes del siguiente.
+
+| # | Ciclo | Problema | Plan |
+|---|---|---|---|
+| 1 | **C-52** | Texto ilegible y sin recuperación: 1080p a 0,18–0,47 bpp por relay; el visor va fluido (12–20 ms) pero la imagen no mejora al subir el tope | Fase A medir/causa raíz · B política bits/píxel + IDR al recuperar · C campo |
+| 2 | **C-53** | La casilla «Permitir control remoto» sobra: aceptar una sesión remota es para controlar | Quitar la casilla; aceptar envía `input:true`; «solo ver» como modo explícito |
+| 3 | **C-54** | Caps Lock no conmuta en el anfitrión | Reproducir wire/backend, corregir down+up y estado |
+| 4 | **C-55** | El teclado usa la distribución del **anfitrión**: un cliente con otro layout escribe mal | Investigación AnyDesk/RustDesk (clean-room) + diseño carácter-primero (Unicode) y atajos por scancode |
+
 #### 🔴 Seguridad primero (auditoría 19/11 — ciclos C-44…C-51)
 
 Revisión estática de las fronteras críticas (transporte/auth, identidad, daemon,
