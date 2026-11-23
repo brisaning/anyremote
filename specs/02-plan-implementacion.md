@@ -660,8 +660,37 @@ ilegible**; al subir el tope adaptativo a 15 Mbps no se recupera.
 - Gate: `static_text_refreshes_after_recovery`, `ladder_preserves_bpp` +
   medición antes/después a 1080p y 720p.
 
-**Fase C — campo.** Julie/Brian con el VPS estable; anotar bpp, resolución y
-legibilidad real. Cierre con evidencia y tag.
+**Fase C — campo. ❌ FALLIDA (2026-11-23, binario v0.14.4).** El usuario
+reportó que la app quedó **totalmente inutilizable**: no se puede seleccionar
+ni mover una ventana, tarda mucho en conectar y el diálogo de aceptación
+**vuelve a aparecer** (probado en 720p, 1080p y Nativa). Evidencia completa:
+`evidence/c52-field-gate-failed.md`.
+
+| # | Defecto | Dónde | Consecuencia |
+|---|---|---|---|
+| **P1** | El piso de bpp se aplicó como **exigencia de bitrate** al encoder, ignorando lo que el enlace entrega (a 1386×780@15 pide 13,8 Mbps; a 4K, 56 Mbps) sobre un enlace de ~1 Mbps | `core/daemon/src/video.rs:342-368`, `:370-417` | Pipe saturado → en TCP el control (input) queda detrás del vídeo → la app no responde |
+| **P2** | La escalera **oscila**: bpp 0,477→0,112→0,496→0,121→0,734 en 30 s | `video.rs:493-539` | Recodificación constante → más tráfico → más saturación |
+| **P3** | Un **prompt por intento de conexión** (el cliente abre QUIC→TCP→relay) y timeout de handshake de 45 s | `core/daemon/src/lib.rs` (`admit_peer`, `handshake_timeout`) | El diálogo reaparece; el usuario decide sobre intentos ya muertos |
+
+**Lo que sí funcionó**: la escalera **bajó la resolución** (4K → 1386×780) y el
+render del cliente volvió a 10 ms. El error no es la idea (bits por píxel) sino
+**cómo se le pide el bitrate**.
+
+**Fase B2 — corrección (aprobada por el usuario, valores propuestos)**:
+1. El objetivo **nunca supera lo que el enlace entrega**:
+   `objetivo = min(piso_bpp(tamaño), tasa_entregada_EWMA × 0,8)`; y se baja la
+   **resolución** hasta que el piso quepa en el presupuesto disponible (no se
+   pide más bitrate del que hay).
+2. **Anti-oscilación**: histeresis de **10 s** entre cambios de escala; subida
+   máximo cada **3** muestras buenas.
+3. **En TCP, descartar frames de vídeo** en vez de encolarlos (máx. **2** en
+   vuelo): el control no puede esperar detrás de megabytes de vídeo.
+4. Gates: `video_target_never_exceeds_delivered_rate`,
+   `ladder_does_not_oscillate`, `control_frames_are_not_starved_by_video`.
+
+**Cierre.** Fase B2 → binario → **nuevo** gate de campo (el guion de §7.2 de
+`evidence/video-quality-regression.md`, con el conteo de frames entregados y la
+latencia de un input añadidos).
 
 **No tocar** la política de seguridad (C-44/C-45) en este ciclo. Riesgo de
 regresión: el adaptativo comparte estado con C-27/C-29/C-32; los tests de esos
