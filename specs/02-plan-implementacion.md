@@ -850,3 +850,55 @@ conexión, contraseña temporal/permanente, modo view-only).
 
 **No se copia código**: solo se referencian rutas lógicas de símbolo, como ya
 exige D-01.
+
+### 13.6 Hotfix 0.14.5 — flujo de aceptación (C-53/C-54)
+
+**Disparador.** El gate de campo de C-52 falló (23/11) con dos síntomas que no
+eran de vídeo: el diálogo de aceptación **reaparecía** y el usuario se quedaba
+**sin control** (no podía seleccionar ni mover una ventana).
+
+**Causa de los dos síntomas.**
+- El diálogo repetía porque el cliente abre **varios intentos** (QUIC → TCP →
+  relay) y **cada intento** pedía autorización; además, sin casilla, el
+  anfitrión quedaba en «solo ver» → cero control.
+- El diálogo «volvía a aparecer» porque la decisión se consumía en el intento
+  que la leía y los demás seguían esperando su propio prompt (45 s de timeout).
+
+**C-53 (app) — aceptar = control.**
+- El diálogo **pierde la casilla** «Permitir control remoto»: *Rechazar* /
+  *Aceptar una vez* / *Aceptar y confiar*.
+- Aceptar ⇒ el anfitrión concede control: se envía `{"perm":{"input":true,…}}`
+  **antes** de la línea de decisión (el daemon la encola y la aplica al abrir
+  la sesión → el primer clic ya controla). Rechazar ⇒ cero permisos.
+- La app **recuerda la decisión por par** (60 s) → un `session_pending`
+  repetido se responde sin volver a preguntar.
+- Se mantiene el chip «solo ver» para cuando el anfitrión apague el control
+  después.
+
+**C-54 (daemon) — una decisión por par.**
+- `AdmissionBoard`: decisiones archivadas por par con TTL
+  (`--accept-decision-ttl`, 60 s; el rechazo, la mitad) y **preguntas abiertas**
+  con un único dueño por par (`claim`/`release` con `Drop`).
+- `admit_peer` (`ask`): decisión fresca → atajo «`user` + control ON» →
+  `claim` (si otra conexión del mismo par ya pregunta, se espera sin volver a
+  preguntar) → `session_pending` + espera por stdin.
+- `trust:true` persiste el par en `trusted.ids` (una sola vez).
+
+**Gates.** `accept_implies_control` y `no_second_dialog_for_same_peer`
+(widget) · `ask_mode_prompts_once_per_peer`, `ask_mode_reuses_recent_decision`,
+`ask_mode_reuses_recent_rejection` (e2e) · unitarios del tablero · workspace
+**178/0** · clippy 0 · fmt 0 · Flutter **35/35**.
+
+**Hallazgo colateral (arreglado aquí).** `daemon_dynperm_e2e` usaba el backend
+**real** de Windows: enviaba teclas de verdad al escritorio del usuario y
+fallaba según la ventana en primer plano («SendInput envió 0/1», UIPI). Ahora
+usa `InputBackend::Recording`. También el probe de portapapeles ahora **omite**
+el test si otra app tiene el portapapeles abierto (0x80070005), en vez de
+hacer fallar el gate.
+
+**Pendiente de esta línea (nuevo, C-56).** El listener atiende las conexiones
+**en serie** y el cliente tiene un **presupuesto de 2 s** para leer el bootstrap
+del certificado (`cert_store::read_bootstrap`): si el anfitrión tarda en
+aceptar, ese intento muere con `DecodeError` y el cliente encadena más
+intentos → «tarda mucho en conectar». Propuesta: listener no serial + presupuesto
+de bootstrap alineado + failover más rápido.
