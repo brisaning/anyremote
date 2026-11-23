@@ -811,7 +811,7 @@ verifica *unidades* y rompe *fronteras*.
 |---|---|---|
 | **F0 Andamiaje** | 9 agentes en `.opencode/agents/` + `opencode.jsonc`; `AGENTS.md` con D-12..D-16 y toolchain corregido; este §14; `evidence/plan-2026-11-21.md`; bóveda | Revisión del usuario de los ficheros de agente |
 | **F1 Campo-1 · vídeo** | **C-52**: A (medir/causa raíz) → B (política bits/píxel + refresco) → C (campo) | Gate de campo (D-14) |
-| **F2 Campo-2 · UX y Caps** | **C-53** (aceptar = control) y **C-54** (Caps Lock) | Gate de campo |
+| **F2 Campo-2 · UX y Caps** | **C-53** (aceptar = control, ya en 0.14.5) y **C-54** (Caps Lock) | Gate de campo |
 | **F3 Seguridad** | **C-46** → **C-47/C-48** → **C-49/C-50/C-51** | Gates de cada ciclo |
 | **F4 Teclado** | **C-55**: investigación clean-room → diseño → implementación → campo con dos layouts | Gate de campo |
 | **F5 Contrato** | **D-15**: esquema versionado de eventos/stdio, parser único, test de compatibilidad, CI lo valida | Sin rupturas app↔daemon |
@@ -851,7 +851,7 @@ conexión, contraseña temporal/permanente, modo view-only).
 **No se copia código**: solo se referencian rutas lógicas de símbolo, como ya
 exige D-01.
 
-### 13.6 Hotfix 0.14.5 — flujo de aceptación (C-53/C-54)
+### 13.6 Hotfix 0.14.5 — flujo de aceptación (C-53/C-57)
 
 **Disparador.** El gate de campo de C-52 falló (23/11) con dos síntomas que no
 eran de vídeo: el diálogo de aceptación **reaparecía** y el usuario se quedaba
@@ -875,7 +875,7 @@ eran de vídeo: el diálogo de aceptación **reaparecía** y el usuario se queda
 - Se mantiene el chip «solo ver» para cuando el anfitrión apague el control
   después.
 
-**C-54 (daemon) — una decisión por par.**
+**C-57 (daemon) — una decisión por par.**
 - `AdmissionBoard`: decisiones archivadas por par con TTL
   (`--accept-decision-ttl`, 60 s; el rechazo, la mitad) y **preguntas abiertas**
   con un único dueño por par (`claim`/`release` con `Drop`).
@@ -919,7 +919,7 @@ de bootstrap alineado + failover más rápido.
    El presupuesto se agota en cada salto.
 3. El `session_pending` **no lleva id de intento**: el usuario (y la app)
    no pueden distinguir el intento al que aplica una decisión → de ahí que la
-   decisión se cachee por par (C-54) con ventana de 60 s.
+   decisión se cachee por par (C-57) con ventana de 60 s.
 
 **Propuesta (a especificar en su ciclo)**:
 - **Listener no serial**: aceptar la conexión siguiente mientras la sesión

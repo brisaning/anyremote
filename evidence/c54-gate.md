@@ -1,4 +1,4 @@
-# Gate C-54 — una decisión por par en el daemon (v0.14.5)
+# Gate C-57 — una decisión por par en el daemon (v0.14.5)
 
 **Fecha**: 2026-11-23 · Rama: `hotfix/v0.14.5-accept-flow` · **Ámbito**: solo
 `core/**` (+ este archivo). Sin tocar `app/`, `specs/`, `README` ni `VERSION`.

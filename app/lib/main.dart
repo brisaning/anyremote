@@ -730,6 +730,11 @@ class _HomePageState extends State<HomePage> {
           case 'peer_rejected':
             _append('[daemon] sesión rechazada (${ev['peer'] ?? '?'}): '
                 '${ev['reason'] ?? 'sin motivo'}');
+          case 'session_decision_reused':
+            // C-57: el daemon aplicó una decisión archivada del par (sin
+            // volver a preguntar). Antes caía en el `default` mudo.
+            _append('[daemon] sesión admitida con la decisión anterior '
+                '(${ev['decision'] ?? '?'} para ${ev['peer'] ?? '?'})');
           case 'session_active':
             // D-03: `peer_trusted` = este equipo ya se autenticó antes (TOFU).
             _append('[daemon] SESIÓN ACTIVA con ${ev['peer']}'
@@ -1058,7 +1063,11 @@ class _HomePageState extends State<HomePage> {
     // C-53: sin ventana montada no se toca el estado (la app se está cerrando;
     // el listener muere con ella).
     if (!mounted) return;
-    _rememberAdmission(peer, choice);
+    // S-04 (revisión de seguridad 23/11): la app NO recuerda el rechazo.
+    // El daemon ya lo cachea con su ventana correcta (mitad del TTL) y
+    // recordar aquí lo re-sellaba: hasta ~90 s de denegación silenciosa
+    // sin poder readmitir desde la UI.
+    if (choice != 'reject') _rememberAdmission(peer, choice);
     if (choice != 'reject') {
       // C-53: aceptar = conceder control. El permiso se escribe justo después,
       // antes de la decisión (ver `_writeAdmission`).

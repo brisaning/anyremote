@@ -87,3 +87,13 @@ mientras se abre `session_pending` por varios transportes y comprobar (1) que el
 diálogo aparece una sola vez, (2) que al aceptar se puede mover y seleccionar una
 ventana en el anfitrión sin tocar el toggle, y (3) que el chip «solo ver» solo
 aparece si el anfitrión apaga el control.
+
+## Registro (condiciones de la revisión de seguridad, 2026-11-23)
+
+1. `session_decision_reused` **es un evento nuevo** del contrato daemon→app
+   (la app lo registra en una línea; antes caía en el `default` mudo).
+2. El ciclo de admisión es **C-57** (C-54 sigue siendo Caps Lock).
+3. «Aceptar una vez» significa **durante `--accept-decision-ttl` (60 s)**, no
+   un intento: la decisión se archiva por par y la reutilizan los reintentos.
+4. La app **no recuerda los rechazos** (S-04): los cachea el daemon con su
+   ventana correcta (mitad del TTL) para no bloquear ~90 s en silencio.

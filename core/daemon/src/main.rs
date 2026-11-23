@@ -156,7 +156,7 @@ async fn main() {
             if let Some(v) = flag_value(&args, "--accept-timeout") {
                 cfg.accept_timeout_secs = v.parse().unwrap_or(30);
             }
-            // C-54: ventana (s) para reutilizar la decisión del anfitrión en los
+            // C-57: ventana (s) para reutilizar la decisión del anfitrión en los
             // reintentos del mismo par (QUIC→TCP→relay): un diálogo por cliente
             // y no uno por intento.
             if let Some(v) = flag_value(&args, "--accept-decision-ttl") {

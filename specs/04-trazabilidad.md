@@ -104,7 +104,7 @@ fechada y versionada. RNF-01 sigue siendo la autenticación; RNF-07 añade la
 | **C-50 preview autenticado** | F-07 / RNF-09 | **planificado** — `preview_requires_token` | — | `evidence/preview-auth-gate.md` (por producir) |
 | **C-51 higiene de confianza** | F-08 / RNF-07 | **planificado** — `auth_gate_counts_failures`, `trusted_badge_means_allowlisted` | — | `evidence/trust-hygiene-gate.md` (por producir) |
 | **C-52 regresión de vídeo** | RNF-02 / RF-02a | ❌ **Fase C fallida** (0.14.4 inutilizó la app) → **Fase B2**: `video_target_never_exceeds_delivered_rate`, `ladder_does_not_oscillate`, `control_frames_are_not_starved_by_video` | — | `evidence/field-2026-11-20.md` → `video-quality-regression.md` → `c52-field-gate-failed.md` |
-| **C-53/C-54 flujo de aceptación** | RF-01 / RF-02a | **en curso** (hotfix 0.14.5): aceptar = control (sin casilla) y una decisión por par (sin diálogo repetido) | `accept-control-v0.14.5` | `evidence/c52-field-gate-failed.md` §3 |
+| **C-53/C-57 flujo de aceptación** | RF-01 / RF-02a | **en curso** (hotfix 0.14.5): aceptar = control (sin casilla) y una decisión por par (sin diálogo repetido) | `accept-control-v0.14.5` | `evidence/c52-field-gate-failed.md` §3 |
 | **C-53 aceptar = control** | RF-01 / RF-02a | **planificado** — `accept_grants_control` + widget | — | `evidence/accept-control-gate.md` (por producir) |
 | **C-54 Caps Lock** | RF-02a | **planificado** — `capslock_toggles_host` | — | `evidence/capslock-gate.md` (por producir) |
 | **C-55 teclado por layout** | RF-02a | **planificado** — investigación + `unicode_text_ignores_host_layout`, `shortcuts_still_use_scancodes` | — | `evidence/keyboard-layout-research.md`, `keyboard-layout-gate.md` |
