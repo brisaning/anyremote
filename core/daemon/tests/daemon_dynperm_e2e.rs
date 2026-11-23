@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyremote_audio::{AudioMode, AudioSource};
-use anyremote_daemon::{run_connect, run_listen, ClipboardMode, DaemonConfig};
+use anyremote_daemon::{run_connect, run_listen, ClipboardMode, DaemonConfig, InputBackend};
 
 fn temp_cfg_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("anyremote-dynperm-{tag}-{}", std::process::id()));
@@ -28,6 +28,10 @@ async fn free_port() -> u16 {
 fn base_cfg(cfg_dir: PathBuf) -> DaemonConfig {
     let mut c = DaemonConfig::new(cfg_dir).insecure_accept_any();
     c.clipboard = ClipboardMode::Off;
+    // 2026-11-23: este test usaba el backend REAL (SendInput) → enviaba teclas
+    // de verdad al escritorio del usuario y fallaba según la ventana en primer
+    // plano («SendInput envió 0/1», UIPI). Ahora es hermético.
+    c.input_backend = InputBackend::Recording;
     c.max_secs = 10;
     c
 }

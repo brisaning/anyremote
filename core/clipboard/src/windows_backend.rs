@@ -100,6 +100,16 @@ fn windows_clipboard_read_probe() {
     // Lectura segura: no modifica el contenido actual.
     match c.read_text() {
         Ok(_) => {}
+        // El portapapeles de Windows es un recurso GLOBAL: otra aplicación lo
+        // puede tener abierto (VS Code, el navegador…). Abrirlo puede fallar
+        // con ACCESS_DENIED o CLIPBOARD_NOT_OPEN, y eso NO es un backend roto:
+        // se omite el test en vez de hacer fallar el gate por el estado del
+        // escritorio (2026-11-23: falló con 0x80070005 con VS Code abierto).
+        Err(ClipboardError::Platform(ref p))
+            if p.contains("0x80070005") || p.contains("0x800401D3") =>
+        {
+            eprintln!("omitido: el portapapeles del sistema está en uso por otra app");
+        }
         Err(ClipboardError::Platform(p)) => panic!("backend roto: {p}"),
         Err(e) => panic!("error inesperado: {e:?}"),
     }
