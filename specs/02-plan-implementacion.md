@@ -902,3 +902,38 @@ del certificado (`cert_store::read_bootstrap`): si el anfitrión tarda en
 aceptar, ese intento muere con `DecodeError` y el cliente encadena más
 intentos → «tarda mucho en conectar». Propuesta: listener no serial + presupuesto
 de bootstrap alineado + failover más rápido.
+
+### 13.7 C-56 · Conexión: listener en serie y presupuesto de bootstrap (nuevo, 2026-11-23)
+
+**Síntoma de campo**: «tarda mucho en conectar» y, en el mismo intento, varios
+`session_pending` del mismo par.
+
+**Hallazgos** (del agente de Rust, reproducidos en su e2e):
+1. **`run_listen` atiende las conexiones en serie**: una sesión abierta bloquea
+   la siguiente; el intento que espera queda en la cola TCP.
+2. **El cliente tiene 2 s de presupuesto para leer el bootstrap** del
+   certificado (`cert_store::read_bootstrap`, `core/transport/src/lib.rs`): si el
+   anfitrión no acepta enseguida (porque está con otra sesión), ese intento
+   muere con `fatal alert: DecodeError` → el cliente encadena el siguiente
+   intento (QUIC 3 s → TCP 8 s → relay) → **la conexión tarda lo que la cadena**.
+   El presupuesto se agota en cada salto.
+3. El `session_pending` **no lleva id de intento**: el usuario (y la app)
+   no pueden distinguir el intento al que aplica una decisión → de ahí que la
+   decisión se cachee por par (C-54) con ventana de 60 s.
+
+**Propuesta (a especificar en su ciclo)**:
+- **Listener no serial**: aceptar la conexión siguiente mientras la sesión
+  actual sigue viva (cola de conexiones con su propia admisión), o al menos
+  no bloquear el `accept()` del socket.
+- **Bootstrap con presupuesto alineado**: leer el bootstrap con un presupuesto
+  mayor (p. ej. 10 s) o **no bloquearlo**: si el peer es antiguo (sin
+  bootstrap), la conexión debe caer rápido y el cliente debe pasar al siguiente
+  camino sin esperar el timeout completo.
+- **Failover más rápido**: acortar el timeout del intento TCP directo (hoy 8 s)
+  para llegar al relay antes, con el criterio explícito de cuándo usar relay
+  (LAN directa si responde).
+- **`session_pending` con `session_id`/`attempt`**: para que el registro y la
+  UI puedan correlacionar la decisión con el intento concreto.
+
+**Gate de campo previsto**: tiempo hasta sesión activa (LAN y relay), nº de
+intentos, y un caso con dos conexiones simultáneas al mismo anfitrión.
