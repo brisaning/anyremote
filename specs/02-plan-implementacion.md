@@ -90,7 +90,7 @@ _Última actualización: 2026-11-20 · **C-45 ✅ · C-44 ✅ (v0.14.3)** · **n
 | **C-51 higiene de confianza y contadores** (F-08 · RNF-07) v0.14.7 | 🔴 **planificado** · F-08: `AuthGate` inalcanzable (aborta en el primer fallo) y sin rate-limit; «✓ verificado» se pinta con `peer_trusted` (cualquier par nuevo); `Scroll` multiplica sin comprobar | Diseño §12.8 · contador real + rate-limit por origen, etiqueta «visto antes» vs allowlist, `checked_mul` · gates `auth_gate_counts_failures`, `trusted_badge_means_allowlisted` · `evidence/trust-hygiene-gate.md` |
 | **C-52 regresión de calidad de vídeo** (campo 20/11 · prioridad) | 🔴 **planificado** · semilla `evidence/field-2026-11-20.md`: sesión por **relay** (351 ms) a 1080p con 0,18–0,47 bpp; el visor renderiza fluido (12–20 ms) pero el texto queda ilegible y **no se recupera** al subir el tope de bitrate | Diseño §13.1 · fases A (reproducir/medir bpp y escala), B (política bits/píxel + IDR al recuperar), C (campo LAN/relay) · gates por fase · `evidence/video-quality-regression.md` (por producir) |
 | **C-53 aceptar = control** (UX C-44/C-45) | 🔴 **planificado** · campo 20/11: la casilla «Permitir control remoto» sobra; aceptar una sesión remota implica poder controlar | Diseño §13.2 · quitar la casilla (aceptar envía `input:true`), «solo ver» como modo explícito opcional · gates `accept_grants_control` + widget · `evidence/accept-control-gate.md` (por producir) |
-| **C-54 Caps Lock no conmuta** (RF-02a) | 🔴 **planificado** · campo 20/11: mayúsculas no funciona en el anfitrión | Diseño §13.3 · reproducir en wire/backend, estado sincronizado del toggle · gates `capslock_toggles_host` · `evidence/capslock-gate.md` (por producir) |
+| **C-54 Caps Lock no conmuta** (RF-02a) | 🔴 **planificado** · campo 24/11 (con 0.14.5): **Caps solo funciona para los acentos; el texto normal no pasa a mayúsculas** → el cliente hornea el Caps en el carácter y el host lo invierte (`evidence/capslock-field-2026-11-24.md`) | Diseño §13.3 · reproducir en wire/backend, estado sincronizado del toggle · gates `capslock_toggles_host` · `evidence/capslock-gate.md` (por producir) |
 | **C-55 teclado independiente del layout** (RF-02a) | 🔴 **planificado** · campo 20/11: la distribución del anfitrión manda; un cliente con otro layout escribe caracteres equivocados | Diseño §13.4 · investigación AnyDesk/RustDesk (clean-room D-01), diseño carácter-primero (Unicode) y atajos por scancode, fase de campo con dos layouts · `evidence/keyboard-layout-gate.md` (por producir) |
 | **Pendientes** | 🔴 **campo primero: C-52 (vídeo) → C-53 (UX) → C-54 (Caps)**, luego la seguridad **C-46…C-51** y **C-55** (teclado global) · (C-44 ✅ v0.14.0, C-45 ✅ v0.13.16) · 🐛 **BUG acentos** (dead key como `Char` → `´o`; fix = precomposición + Unicode, POSPUESTO) · 🟡 repetir sesión WAN (~10 Mbps): debe haber `red_recupera_*` + escala que SUBE y texto legible · `test de campo de5 s` (captura vs emitidos) · reenvío puertos21118 · **`fps render` (decisión `Texture`)** · micrófono end-to-end · **firewall de entrada en Brian**: crear reglas 21118/21119 para LAN directa (ver C-30) | [README § Pendientes](../README.md#pendientes) |
 
@@ -711,13 +711,23 @@ si el anfitrión apaga el toggle después.
 decisión va precedida del permiso), regresión de C-45 (compartir sigue sin
 conceder control por sí solo).
 
-### 13.3 C-54 · Caps Lock no conmuta en el anfitrión (RF-02a)
+### 13.3 C-54 · Caps Lock: el texto normal no pasa a mayúsculas (RF-02a)
 
-**Fase A — reproducir.** Comprobar el wire: la app envía la tecla de bloqueo
-(código 23) con `down/up`; verificar el mapeo en `key_from_code`, el envío del
-keyup y el `SendInput` de `VK_CAPITAL` en el backend. Revisar si el visor
-consume la tecla (atajos/foco) o si el estado se pierde entre eventos
-(texto libre vs. combinación).
+**Síntoma de campo (24/11, con 0.14.5 validado en lo demás).** Con Caps
+encendido, el **texto normal no pasa a mayúsculas** y los **acentuados sí**
+salen bien. Evidencia y mecanismo: `evidence/capslock-field-2026-11-24.md`.
+
+**Causa.** El cliente manda el **carácter ya resuelto por su SO** (`'A'`), el
+backend lo traduce con `VkKeyScanW` → **Shift + VK_A**, y el host (con Caps
+encendido) **invierte** el Shift → minúscula. El camino por
+`KEYEVENTF_UNICODE` (acentuados, C-37) ignora el estado de modificadores del
+host → por eso solo fallan las letras normales. Además, el VK deducido por
+`VkKeyScanW` es el de la **distribución del host**, no la del cliente (C-55).
+
+**Fase A — reproducir.** Con el guion de 4 puntos de la evidencia (Caps en el
+cliente, Caps en el host, acentos con Caps en ambos, mayúsculas sostenidas) y un
+test de wire→backend que fije elVK+Shift que se inyecta al escribir una letra
+con Caps.
 **Fase B — corregir.** Asegurar down+up de `VK_CAPITAL`, no mezclarlo con
 `Shift`, y (si aplica) sincronizar el indicador del visor con el estado real
 del anfitrión. Test del backend con el inyector `Recording` y prueba manual.
