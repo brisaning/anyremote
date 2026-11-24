@@ -148,10 +148,16 @@ pub struct SessionReport {
     pub audio_sent: u64,
     #[serde(default)]
     pub audio_recv: u64,
-    /// Frames de vídeo DESCARTADOS por saturación del stream dedicado (C-15,
-    /// política drop-new: el vídeo cede al control). `0` en TCP (no aplica).
+    /// Frames de vídeo DESCARTADOS por saturación: en el stream dedicado (C-15,
+    /// política drop-new: el vídeo cede al control) y, desde C-52/B2, también en
+    /// TCP cuando la escritura por el canal de control se pasa del presupuesto.
     #[serde(default)]
     pub frames_dropped: u64,
+    /// C-52 (B2/P1): frames de vídeo descartados porque la escritura por el
+    /// canal de control (TCP) se pasó del presupuesto — el socket estaba lleno
+    /// y encolarlos dejaba la entrada del controlador detrás del vídeo.
+    #[serde(default)]
+    pub frames_dropped_slow: u64,
 }
 
 impl SessionReport {
@@ -170,6 +176,7 @@ impl SessionReport {
             audio_sent: 0,
             audio_recv: 0,
             frames_dropped: 0,
+            frames_dropped_slow: 0,
         }
     }
 
@@ -192,6 +199,13 @@ impl SessionReport {
     /// (cola drop-new llena): el backpressure no bloquea el bucle (C-15).
     pub fn record_frame_dropped(&mut self) {
         self.frames_dropped += 1;
+    }
+
+    /// C-52 (B2/P1): frame de vídeo descartado porque el canal de control (TCP)
+    /// estaba saturado: se prefiere un frame fresco a encolar más vídeo detrás
+    /// de la entrada del controlador.
+    pub fn record_frame_dropped_slow(&mut self) {
+        self.frames_dropped_slow += 1;
     }
 
     pub fn record_file(&mut self) {

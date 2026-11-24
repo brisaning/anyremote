@@ -31,7 +31,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 pub mod preview;
 pub mod video;
 
-use video::{net_excess, spawn_video_task, VideoMode, VideoMsg};
+use video::{net_excess, spawn_video_task, DeliveryMeter, VideoGate, VideoMode, VideoMsg};
 
 #[derive(Debug)]
 pub enum DaemonError {
@@ -1777,7 +1777,10 @@ async fn active_controlled<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
     }
 
     // Hito M2: vídeo hacia el canal + preview local de la propia pantalla (solo listen).
-    let (video_tx, mut video_rx) = mpsc::channel::<VideoMsg>(3);
+    // C-52 (B2/P1): profundidad 2 = el máximo de frames de vídeo «en vuelo»
+    // entre el hilo de vídeo y el socket; lo que no quepa se descarta (frames
+    // frescos) en vez de encolarse detrás del control.
+    let (video_tx, mut video_rx) = mpsc::channel::<VideoMsg>(2);
     // C-15 (QUIC): el stream de vídeo dedicado se envía desde SU PROPIA tarea
     // con un mpsc acotado (profundidad 2, drop-new): el backpressure del
     // stream jamás bloquea este bucle — control/audio/heartbeats quedan
@@ -1832,6 +1835,16 @@ async fn active_controlled<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
     // hilo de vídeo (`watch`: último valor, sin encolar; si no hay vídeo el
     // receptor no existe y la pista se descarta sin ruido).
     let (net_tx, net_rx) = tokio::sync::watch::channel::<u32>(0);
+    // C-52 (B2/D1'): tasa de vídeo que el transporte ENTREGA de verdad (bps;
+    // 0 = sin medida todavía) → el encoder no pide más de lo que hay. Se mide
+    // aquí porque solo este bucle sabe cuánto tardó la escritura.
+    let (delivery_tx, delivery_rx) = tokio::sync::watch::channel::<u64>(0);
+    let mut delivery = DeliveryMeter::default();
+    // C-52 (B2/P1): compuerta del camino TCP (vídeo y control comparten
+    // socket). Reloj del bucle en ms desde el inicio de la sesión.
+    let mut video_gate = VideoGate::new();
+    let loop_t0 = std::time::Instant::now();
+    let loop_ms = |t: std::time::Instant| t.duration_since(loop_t0).as_secs_f64() * 1000.0;
     if cfg.video != VideoMode::Off {
         let (preview_srv, preview_port, _preview_task) = preview::PreviewServer::start();
         emit.emit(ev("preview", serde_json::json!({ "port": preview_port })));
@@ -1853,6 +1866,7 @@ async fn active_controlled<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
             preview_srv,
             stop,
             net_rx,
+            delivery_rx,
         );
     }
 
@@ -2113,10 +2127,48 @@ async fn active_controlled<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
                             },
                             None => {
                                 // TCP (histórico): vídeo por el canal principal.
+                                //
+                                // C-52 (B2/P1): aquí el vídeo y el control
+                                // COMPARTEN socket. Si la escritura anterior se
+                                // pasó del presupuesto, el buffer está lleno y
+                                // cualquier frame más se encola delante de la
+                                // entrada del controlador (campo 23/11: «no se
+                                // puede seleccionar ni mover una ventana»).
+                                // Se DESCARTA el frame en vez de encolarlo: el
+                                // visor prefiere frames frescos. Las tramas de
+                                // control (input, audio, latidos) no pasan por
+                                // esta compuerta y nunca se descartan.
+                                let now = loop_ms(std::time::Instant::now());
+                                if !video_gate.allows(now) {
+                                    video_gate.on_dropped();
+                                    report.record_frame_dropped();
+                                    report.record_frame_dropped_slow();
+                                    continue;
+                                }
+                                // El episodio anterior (si lo hubo) ya drenó:
+                                // se informa una sola vez, sin inundar el log.
+                                if let Some(n) = video_gate.close_episode(now) {
+                                    emit.emit(ev(
+                                        "video_dropped_slow",
+                                        serde_json::json!({"frames": n}),
+                                    ));
+                                }
+                                let t_w = std::time::Instant::now();
                                 match ch.send(proto::envelope::Payload::VideoFrame(
                                     arsp::video_frame_to_wire(&item),
                                 )).await {
-                                    Ok(()) => report.record_frame_sent(len),
+                                    Ok(()) => {
+                                        report.record_frame_sent(len);
+                                        let now_w = loop_ms(std::time::Instant::now());
+                                        let ms = t_w.elapsed().as_secs_f64() * 1000.0;
+                                        video_gate.on_written(now_w, ms);
+                                        // D1': la capacidad del enlace sale de
+                                        // la escritura REAL (solo una escritura
+                                        // bloqueante la mide), no del objetivo.
+                                        if let Some(bps) = delivery.observe(len, ms) {
+                                            let _ = delivery_tx.send(bps as u64);
+                                        }
+                                    }
                                     Err(e) if conn_gone(&e) => {
                                         log.record(AuditEventKind::Disconnected, session_id,
                                             serde_json::json!({"reason":"connection_gone","role":"peer"}))?;
