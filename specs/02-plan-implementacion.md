@@ -865,3 +865,40 @@ conexión, contraseña temporal/permanente, modo view-only).
 
 **No se copia código**: solo se referencian rutas lógicas de símbolo, como ya
 exige D-01.
+
+### 13.8 C-58 · Legibilidad con poco ancho de banda: el fps también tiene que bajar (nuevo, 2026-11-24)
+
+**Deducción de los números de campo (no es un bug, es una cuenta).** El piso de
+legibilidad son **0,45 bpp**, y los bpp dependen del **fps**:
+
+| Tamaño | fps | bitrate para 0,45 bpp |
+|---|---|---|
+| 1920×1080 | 15 | 13,99 Mbps |
+| 1386×780 | 15 | 7,30 Mbps |
+| 640×360 | 15 | 1,56 Mbps |
+| 640×360 | **5** | **0,52 Mbps** |
+| 640×360 | **2** | **0,21 Mbps** |
+
+Sobre un enlace de **~1 Mbps** (relay), **ningún tamaño a 15 fps** alcanza el
+piso: a 640×360 harían falta 1,56 Mbps. La única forma de tener texto legible
+con poco ancho de banda es **bajar también el fps**; hoy el adaptativo mueve
+solo bitrate y escala («el fps no se toca»).
+
+**Propuesta.**
+1. El adaptativo puede **bajar el fps** cuando el presupuesto no alcanza
+   (orden: bitrate → escala → fps), con suelo (p. ej. 5 fps) y sin bajar del
+   todo lo que el visor necesita (el visor ya dibuja a 15 fps como máximo real).
+2. El objetivo de vídeo pasa a ser: `bps ≤ 0,8 × entregada` **y**
+   `bps ≥ 0,45 · w · h · fps_efectivo`; si no cabe, se baja el **fps** antes
+   que romper el bpp.
+3. Medición: registrar el `fps` efectivo en la línea `[video] fps (5 s)` y en el
+   informe de sesión, para que el campo pueda leerlo.
+
+**Gate de campo previsto**: sesión por relay a 1080p → el registro debe mostrar
+el fps bajando y el bpp recovering por encima de 0,45, con el texto legible a
+100 %.
+
+**Por qué no va en B2**: B2 arregla que el vídeo **ahogue** al control (la app
+volvió a responder). B2 no toca el fps porque el usuario aprobó un alcance
+concreto y tocar el fps cambia el ritmo del vídeo para todos. C-58 es un ciclo
+propio, con su gate de campo.
