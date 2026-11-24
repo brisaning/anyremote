@@ -59,6 +59,37 @@ async fn wait_for_line(sink: &Sink, needle: &str) -> String {
     );
 }
 
+/// Espera a que un evento aparezca al menos `n` veces (varias sesiones del
+/// mismo listener, C-54). Espera más que `wait_for_line`: el listener atiende
+/// las sesiones de una en una.
+async fn wait_for_count(sink: &Sink, needle: &str, n: usize) {
+    for _ in 0..400 {
+        if sink
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains(needle))
+            .count()
+            >= n
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "timeout esperando {n} × `{needle}`; eventos: {:?}",
+        sink.lock().unwrap()
+    );
+}
+
+fn count_events(sink: &Sink, needle: &str) -> usize {
+    sink.lock()
+        .unwrap()
+        .iter()
+        .filter(|l| l.contains(needle))
+        .count()
+}
+
 fn peer_of(pending_line: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(pending_line).expect("json de session_pending");
     v["peer"]
@@ -427,6 +458,13 @@ async fn ask_mode_prompts_for_legacy_seen_peer() {
         trust.contains(&format!("{peer_id}={pk_hex}:user")),
         "«Aceptar y confiar» debe persistir user:\n{trust}"
     );
+    // C-54: una sola entrada por par aunque los reintentos reutilicen la
+    // decisión (`TrustStore::remember` es idempotente).
+    assert_eq!(
+        trust.lines().filter(|l| l.contains(&peer_id)).count(),
+        1,
+        "trusted.ids no debe duplicar el par:\n{trust}"
+    );
 
     let _ = std::fs::remove_dir_all(&cfg_dir);
 }
@@ -532,6 +570,228 @@ async fn ask_mode_prompts_trusted_peer_when_control_is_off() {
             .any(|e| e.contains("\"event\":\"session_active\"")),
         "tras aceptar, la sesión se activa"
     );
+    listen.await.expect("join listener").expect("listener ok");
+
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+}
+
+/// C-54 (fix de campo 2026-11-23): el cliente abre **varios intentos** de la
+/// misma conexión (QUIC → TCP → relay). Los intentos de un mismo par comparten
+/// UNA decisión del anfitrión: un solo `session_pending` y ambas conexiones se
+/// activan (el listener las atiende de una en una; el diálogo no se repite).
+#[tokio::test]
+async fn ask_mode_prompts_once_per_peer() {
+    let cfg_dir = temp_cfg_dir("ask-once");
+    let port = free_port().await;
+
+    let (tx_listen, rx_listen) = tokio::sync::mpsc::channel::<String>(8);
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let s = sink.clone();
+    let listen = {
+        let mut c = base_cfg(cfg_dir.clone(), port);
+        c.accept = AcceptPolicy::Ask;
+        c.accept_timeout_secs = 10;
+        c.accept_decision_ttl_secs = 60;
+        // Cada sesión dura 1 s: el segundo intento espera en la cola TCP y su
+        // bootstrap del certificado tiene 2 s de presupuesto (transport).
+        c.max_secs = 1;
+        c.max_sessions = 0; // la escucha sigue viva (modo «Escuchar (red)»)
+        c.bye_source = Some(rx_listen);
+        c.on_event = Some(Box::new(move |line| s.lock().unwrap().push(line)));
+        tokio::spawn(async move { run_listen(c).await })
+    };
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    // Dos intentos del MISMO par (comparten `config_dir` → misma identidad).
+    let attempt = |max_secs: u64| {
+        let mut c = DaemonConfig::new(cfg_dir.clone());
+        c.target = Some(format!("127.0.0.1:{port}"));
+        c.clipboard = ClipboardMode::Off;
+        c.max_secs = max_secs;
+        tokio::spawn(async move { run_connect(c).await })
+    };
+    let first = attempt(1);
+    let second = attempt(1);
+
+    // Un único aviso aunque haya dos intentos en vuelo.
+    let pending = wait_for_line(&sink, "\"event\":\"session_pending\"").await;
+    let peer = peer_of(&pending);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        count_events(&sink, "\"event\":\"session_pending\""),
+        1,
+        "dos intentos del mismo par = un solo diálogo: {:?}",
+        sink.lock().unwrap()
+    );
+
+    tx_listen
+        .send(format!("{{\"accept\":\"{peer}\"}}"))
+        .await
+        .expect("accept");
+
+    // Ambos intentos llegan a sesión activa con la misma decisión.
+    wait_for_count(&sink, "\"event\":\"session_active\"", 2).await;
+    for (name, ctl) in [("primero", first), ("segundo", second)] {
+        let out = ctl
+            .await
+            .expect("join controlador")
+            .expect("controlador ok");
+        assert!(
+            out.events
+                .iter()
+                .any(|e| e.contains("\"event\":\"session_active\"")),
+            "el intento {name} debe activarse: {:?}",
+            out.events
+        );
+    }
+
+    tx_listen.send("bye".to_string()).await.expect("bye");
+    let srv = listen.await.expect("join listener").expect("listener ok");
+    let ev = srv.events.join("\n");
+    assert_eq!(
+        ev.matches("\"event\":\"session_pending\"").count(),
+        1,
+        "un solo diálogo para todo el cliente:\n{ev}"
+    );
+    assert_eq!(
+        ev.matches("\"event\":\"session_active\"").count(),
+        2,
+        "los dos intentos se activan:\n{ev}"
+    );
+
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+}
+
+/// C-54: tras decidir por un par, un intento **nuevo** del mismo par dentro de
+/// la ventana (`--accept-decision-ttl`) no vuelve a preguntar: se activa
+/// directamente. Antes, este caso costaba otro diálogo (y un timeout si el
+/// anfitrión no lo atendía).
+#[tokio::test]
+async fn ask_mode_reuses_recent_decision() {
+    let cfg_dir = temp_cfg_dir("ask-reuse");
+    let port = free_port().await;
+
+    let (tx_listen, rx_listen) = tokio::sync::mpsc::channel::<String>(8);
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let s = sink.clone();
+    let listen = {
+        let mut c = base_cfg(cfg_dir.clone(), port);
+        c.accept = AcceptPolicy::Ask;
+        c.accept_timeout_secs = 5;
+        c.accept_decision_ttl_secs = 60;
+        c.max_secs = 1; // las sesiones cierran solas, sin `bye` por intento
+        c.max_sessions = 0;
+        c.bye_source = Some(rx_listen);
+        c.on_event = Some(Box::new(move |line| s.lock().unwrap().push(line)));
+        tokio::spawn(async move { run_listen(c).await })
+    };
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    let attempt = |max_secs: u64| {
+        let mut c = DaemonConfig::new(cfg_dir.clone());
+        c.target = Some(format!("127.0.0.1:{port}"));
+        c.clipboard = ClipboardMode::Off;
+        c.max_secs = max_secs;
+        tokio::spawn(async move { run_connect(c).await })
+    };
+
+    // Primer intento: el anfitrión decide aceptar.
+    let first = attempt(1);
+    let pending = wait_for_line(&sink, "\"event\":\"session_pending\"").await;
+    let peer = peer_of(&pending);
+    tx_listen
+        .send(format!("{{\"accept\":\"{peer}\"}}"))
+        .await
+        .expect("accept");
+    wait_for_count(&sink, "\"event\":\"session_active\"", 1).await;
+    first.await.expect("join 1").expect("controlador 1 ok");
+
+    // Segundo intento dentro de la ventana: sin diálogo nuevo.
+    let second = attempt(1);
+    wait_for_count(&sink, "\"event\":\"session_active\"", 2).await;
+    let out = second.await.expect("join 2").expect("controlador 2 ok");
+    assert!(
+        out.events
+            .iter()
+            .any(|e| e.contains("\"event\":\"session_active\"")),
+        "el reintento se activa con la decisión reciente: {:?}",
+        out.events
+    );
+
+    tx_listen.send("bye".to_string()).await.expect("bye");
+    let srv = listen.await.expect("join listener").expect("listener ok");
+    let ev = srv.events.join("\n");
+    assert_eq!(
+        ev.matches("\"event\":\"session_pending\"").count(),
+        1,
+        "la decisión reciente evita un segundo diálogo:\n{ev}"
+    );
+    assert!(
+        ev.contains("\"event\":\"session_decision_reused\""),
+        "el camino de reutilización queda trazado:\n{ev}"
+    );
+
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+}
+
+/// C-54: un rechazo también se recuerda (ventana corta) para no preguntar de
+/// inmediato al mismo par por cada intento que quede en vuelo.
+#[tokio::test]
+async fn ask_mode_reuses_recent_rejection() {
+    let cfg_dir = temp_cfg_dir("ask-reject-reuse");
+    let port = free_port().await;
+
+    let (tx_listen, rx_listen) = tokio::sync::mpsc::channel::<String>(8);
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let s = sink.clone();
+    let listen = {
+        let mut c = base_cfg(cfg_dir.clone(), port);
+        c.accept = AcceptPolicy::Ask;
+        c.accept_timeout_secs = 5;
+        c.accept_decision_ttl_secs = 60; // rechazo = 30 s
+        c.max_sessions = 0;
+        c.bye_source = Some(rx_listen);
+        c.on_event = Some(Box::new(move |line| s.lock().unwrap().push(line)));
+        tokio::spawn(async move { run_listen(c).await })
+    };
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    let attempt = || {
+        let mut c = DaemonConfig::new(cfg_dir.clone());
+        c.target = Some(format!("127.0.0.1:{port}"));
+        c.clipboard = ClipboardMode::Off;
+        c.max_secs = 2;
+        tokio::spawn(async move { run_connect(c).await })
+    };
+
+    let first = attempt();
+    let pending = wait_for_line(&sink, "\"event\":\"session_pending\"").await;
+    let peer = peer_of(&pending);
+    tx_listen
+        .send(format!("{{\"reject\":\"{peer}\"}}"))
+        .await
+        .expect("reject");
+    assert!(
+        first.await.expect("join 1").is_err(),
+        "el primer intento no debe activar"
+    );
+    wait_for_line(&sink, "\"reason\":\"rejected_by_host\"").await;
+
+    // Segundo intento: se rechaza sin volver a preguntar.
+    let second = attempt();
+    assert!(
+        second.await.expect("join 2").is_err(),
+        "el reintento tampoco activa"
+    );
+    wait_for_line(&sink, "\"reason\":\"rejected_recently\"").await;
+    assert_eq!(
+        count_events(&sink, "\"event\":\"session_pending\""),
+        1,
+        "el rechazo reciente no reabre el diálogo: {:?}",
+        sink.lock().unwrap()
+    );
+
+    tx_listen.send("bye".to_string()).await.expect("bye");
     listen.await.expect("join listener").expect("listener ok");
 
     let _ = std::fs::remove_dir_all(&cfg_dir);

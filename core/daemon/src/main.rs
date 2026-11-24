@@ -1,7 +1,7 @@
 //! `anyremoted` — daemon de anyremote (integración de los ciclos S0–C8).
 //!
 //! Uso:
-//!   anyremoted listen  [--bind 127.0.0.1:21118] [--accept trusted|ask|any] [--trust ID[,ID]] [--accept-timeout 30] [--clipboard off|memory|win] [--grant keyboard,mouse] [--allow-input [--input-on]] [--max-secs 600] [--max-sessions 1]
+//!   anyremoted listen  [--bind 127.0.0.1:21118] [--accept trusted|ask|any] [--trust ID[,ID]] [--accept-timeout 30] [--accept-decision-ttl 60] [--clipboard off|memory|win] [--grant keyboard,mouse] [--allow-input [--input-on]] [--max-secs 600] [--max-sessions 1]
 //!   anyremoted connect <host:puerto> | --profile <alias>  [--clipboard ...] [--grant ...] [--send-file <ruta>] [--max-secs ...]
 //!   anyremoted profiles [--config-dir <dir>] [--list] [--add <alias,host,puerto>] [--remove <alias>]
 //!   anyremoted id [--config-dir <dir>]     (ID estable de este equipo, D-03)
@@ -155,6 +155,12 @@ async fn main() {
             }
             if let Some(v) = flag_value(&args, "--accept-timeout") {
                 cfg.accept_timeout_secs = v.parse().unwrap_or(30);
+            }
+            // C-57: ventana (s) para reutilizar la decisión del anfitrión en los
+            // reintentos del mismo par (QUIC→TCP→relay): un diálogo por cliente
+            // y no uno por intento.
+            if let Some(v) = flag_value(&args, "--accept-decision-ttl") {
+                cfg.accept_decision_ttl_secs = v.parse().unwrap_or(60);
             }
             // RF-02a (D-07): inyección de teclado/ratón — denegada salvo flag explícito.
             cfg.allow_input = args.iter().any(|a| a == "--allow-input");
@@ -355,7 +361,7 @@ async fn main() {
             eprintln!(
                 "anyremoted — integración anyremote (S0..C8) + vídeo M2 + entrada RF-02a + audio"
             );
-            eprintln!("  anyremoted listen   [--bind a:p] [--transport tcp|udp] [--discover ip:puerto] [--rdv ip:puerto] [--accept trusted|ask|any] [--trust ID[,ID]] [--accept-timeout s] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input [--input-on]] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
+            eprintln!("  anyremoted listen   [--bind a:p] [--transport tcp|udp] [--discover ip:puerto] [--rdv ip:puerto] [--accept trusted|ask|any] [--trust ID[,ID]] [--accept-timeout s] [--accept-decision-ttl s] [--video off|on|test] [--video-size native|1280x720] [--video-fps 10] [--max-bitrate kbps] [--codec vp9|h264|deflate|raw] [--audio off|test|on] [--audio-source system|mic|system,mic] [--clipboard ...] [--allow-input [--input-on]] [--max-secs n] [--max-sessions n] (0 = escucha ilimitada)");
             eprintln!("  anyremoted connect <host:puerto> | --profile <alias> [--transport tcp|udp] [--discover ip:puerto] [--rdv ip:puerto] [--send-file ruta] [--one-way-files] [--audio off|test|on] [--clipboard ...]   (stdin: lineas de entrada o bye)");
             eprintln!("  anyremoted profiles [--list] [--add alias,host,puerto] [--remove alias]");
             eprintln!("  anyremoted id                                       (ID estable de este equipo, D-03)");

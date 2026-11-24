@@ -93,9 +93,30 @@ void main() {
       admissionLine(peer: 'AAAA2222BB', choice: 'lo-que-sea'),
       '{"reject":"AAAA2222BB"}',
     );
+
+    // C-53: aceptar concede control; el `{"perm":...}` viaja ANTES de la
+    // decisión para que el daemon lo aplique al abrir la sesión.
+    final writes = admissionWrites(
+        peer: 'AAAA2222BB', choice: 'accept', audio: false, mic: false);
+    expect(writes, hasLength(2));
+    expect(writes.first,
+        '{"perm":{"input":true,"audio":false,"mic":false}}');
+    expect(writes.last, '{"accept":"AAAA2222BB"}');
+    // «Aceptar y confiar» conserva `trust:true` y también concede control.
+    final trusted = admissionWrites(
+        peer: 'AAAA2222BB', choice: 'trust', audio: true, mic: false);
+    expect(trusted.first,
+        '{"perm":{"input":true,"audio":true,"mic":false}}');
+    expect(trusted.last, '{"accept":"AAAA2222BB","trust":true}');
+    // Rechazar NO envía permiso: no debe alterar el estado del anfitrión.
+    expect(
+      admissionWrites(
+          peer: 'AAAA2222BB', choice: 'reject', audio: true, mic: true),
+      ['{"reject":"AAAA2222BB"}'],
+    );
   });
 
-  testWidgets('C-44: session_pending abre el diálogo y permite control',
+  testWidgets('C-44/C-53: accept_implies_control (sin casilla en el diálogo)',
       (tester) async {
     await tester.pumpWidget(const AnyremoteApp());
     final st = tester.state(find.byType(HomePage)) as dynamic;
@@ -108,8 +129,11 @@ void main() {
 
     expect(find.text('Sesión entrante'), findsOneWidget);
     expect(find.textContaining('AAAA2222BB'), findsWidgets);
-    // v0.14.2: aceptar la sesión incluye (explícito) el control remoto.
-    expect(find.text('Permitir control remoto (teclado y ratón)'), findsOneWidget);
+    // C-53: la casilla «Permitir control remoto» del diálogo ya no existe;
+    // quedan tres acciones y aceptar implica control.
+    expect(find.text('Permitir control remoto (teclado y ratón)'), findsNothing);
+    expect(find.byType(CheckboxListTile), findsNothing);
+    expect(find.widgetWithText(TextButton, 'Rechazar'), findsOneWidget);
     expect(find.widgetWithText(TextButton, 'Aceptar una vez'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, 'Aceptar y confiar'), findsOneWidget);
 
@@ -120,21 +144,37 @@ void main() {
     expect(tester.widget<Checkbox>(find.byType(Checkbox).at(0)).value, isTrue);
   });
 
-  testWidgets('C-45: se puede aceptar en «solo ver» desmarcando el control',
-      (tester) async {
+  testWidgets('C-53: no_second_dialog_for_same_peer', (tester) async {
     await tester.pumpWidget(const AnyremoteApp());
     final st = tester.state(find.byType(HomePage)) as dynamic;
-    st.debugHandleEvent(
-        '{"event":"session_pending","peer":"CCCC4444DD","peer_addr":"1.2.3.4:5556"}');
+    const ev =
+        '{"event":"session_pending","peer":"EEEE6666FF","peer_addr":"1.2.3.4:5557"}';
+
+    st.debugHandleEvent(ev);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Sesión entrante'), findsOneWidget);
 
-    // Desmarcar la casilla del diálogo → sesión sin teclado/ratón.
-    await tester.tap(find.byType(CheckboxListTile));
+    // Segundo evento del MISMO par con el diálogo abierto: se ignora (no se
+    // apila un segundo diálogo).
+    st.debugHandleEvent(ev);
     await tester.pump();
+    expect(find.text('Sesión entrante'), findsOneWidget);
+
     await tester.tap(find.widgetWithText(TextButton, 'Aceptar una vez'));
     await tester.pumpAndSettle();
-    expect(tester.widget<Checkbox>(find.byType(Checkbox).at(0)).value, isFalse);
+    expect(find.text('Sesión entrante'), findsNothing);
+
+    // Tercer intento (reconexión QUIC → TCP → relay) de un par ya decidido:
+    // se reenvía la decisión SIN volver a preguntar.
+    st.debugHandleEvent(ev);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Sesión entrante'), findsNothing);
+    expect(find.textContaining('se reenvía sin volver a preguntar'),
+        findsOneWidget);
+    // El control sigue concedido (aceptar = control).
+    expect(tester.widget<Checkbox>(find.byType(Checkbox).at(0)).value, isTrue);
   });
 
   testWidgets('C-2: tres toggles desactivados por defecto y dinámicos (D-07)',

@@ -157,6 +157,13 @@ pub struct DaemonConfig {
     /// C-44: espera máxima (segundos) de la decisión del anfitrión en
     /// `--accept ask`. Sin respuesta → se deniega (fail-closed).
     pub accept_timeout_secs: u64,
+    /// C-57 (fix de campo 2026-11-23): ventana (segundos) durante la que una
+    /// decisión del anfitrión para un par se **reutiliza**. El cliente abre
+    /// varios intentos (QUIC→TCP→relay) y sin esto cada intento volvía a abrir
+    /// su propio diálogo. El rechazo usa una ventana más corta (mitad de ésta,
+    /// mínimo 1 s): no se pregunta de inmediato al mismo par, pero un rechazo
+    /// no debe dejarlo fuera durante toda la ventana de aceptación.
+    pub accept_decision_ttl_secs: u64,
     /// RF-02a (D-07): permite inyectar teclado/ratón en el controlado.
     /// **Desactivado por defecto** (denegado salvo que se pida `--allow-input`).
     /// Es la **capacidad**: sin ella ninguna orden `{"perm":{"input":true}}`
@@ -214,6 +221,7 @@ impl DaemonConfig {
             accept: AcceptPolicy::Trusted,
             trusted_ids: Vec::new(),
             accept_timeout_secs: 30,
+            accept_decision_ttl_secs: 60,
             allow_input: false,
             input_state: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input_backend: InputBackend::Windows,
@@ -825,7 +833,7 @@ struct StdinCtl {
 }
 
 /// Decisión del anfitrión sobre una sesión entrante (C-44, `--accept ask`).
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum AdmissionDecision {
     Accept { trust: bool },
     Reject,
@@ -834,20 +842,179 @@ enum AdmissionDecision {
 /// Parsea `{"accept":"<ID>","trust":bool}` / `{"reject":"<ID>"}` (C-44).
 /// `None` = la línea no es una decisión (p. ej. `{"perm":...}` o `bye`).
 fn parse_decision(line: &str, expected_id: &str) -> Option<AdmissionDecision> {
+    let (id, dec) = parse_decision_any(line)?;
+    // Decisión para otro par: no es la nuestra (el llamador decide si la
+    // archiva para ese par, C-57).
+    if !id.eq_ignore_ascii_case(expected_id) {
+        return None;
+    }
+    Some(dec)
+}
+
+/// Igual que [`parse_decision`] pero devuelve también el ID destino: en C-57
+/// una decisión puede llegar mientras se atiende a **otro** par (varios
+/// intentos del mismo cliente en vuelo) y debe archivarse para el suyo.
+fn parse_decision_any(line: &str) -> Option<(String, AdmissionDecision)> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let id = v
         .get("accept")
         .or_else(|| v.get("reject"))
         .and_then(|x| x.as_str())?;
-    if !id.eq_ignore_ascii_case(expected_id) {
-        return None; // decisión para otro par: se ignora
-    }
-    if v.get("accept").is_some() {
-        Some(AdmissionDecision::Accept {
+    let dec = if v.get("accept").is_some() {
+        AdmissionDecision::Accept {
             trust: v.get("trust").and_then(|x| x.as_bool()).unwrap_or(false),
-        })
+        }
     } else {
-        Some(AdmissionDecision::Reject)
+        AdmissionDecision::Reject
+    };
+    Some((id.to_string(), dec))
+}
+
+/// Decisión guardada y su instante (C-57). La ventana se evalúa al leerla, no
+/// se re-sella al reutilizarla: un par que reintenta en bucle no puede
+/// prolongar indefinidamente una aceptación/rechazo ya decidida.
+#[derive(Clone, Copy)]
+struct RememberedDecision {
+    decision: AdmissionDecision,
+    at: std::time::Instant,
+}
+
+/// Estado de admisión compartido por el listener (C-57).
+///
+/// **Por qué existe**: el cliente abre varios intentos de la misma conexión
+/// (QUIC → TCP → relay) y cada uno hacía su propia pregunta al anfitrión. La
+/// decisión se guarda por par (el `node_id` es auténtico — se deriva de la
+/// clave verificada en C2) y se reutiliza; además solo una conexión por par
+/// es "dueña" de la pregunta abierta, así que los intentos en vuelo esperan
+/// esa misma decisión en vez de duplicar el diálogo. El segundo caso no
+/// ocurre con el bucle de aceptación serial de hoy, pero la regla se mantiene
+/// para que F6 (aceptación concurrente) no reintroduzca el diálogo múltiple.
+#[derive(Default)]
+struct AdmissionBoard {
+    /// Ventana de una decisión de aceptación (C-57).
+    ttl: std::time::Duration,
+    /// Decisión por par, con su instante.
+    decisions: std::sync::Mutex<std::collections::HashMap<String, RememberedDecision>>,
+    /// Pares con una pregunta **abierta** (algún intento está leyendo stdin).
+    asking: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl AdmissionBoard {
+    fn new(ttl: std::time::Duration) -> Self {
+        Self {
+            ttl,
+            ..Self::default()
+        }
+    }
+
+    /// Ventana de un rechazo: la mitad de la de aceptación (mínimo 1 s). Un
+    /// rechazo debe cortar los reintentos inmediatos sin dejar al par fuera
+    /// durante toda la ventana de aceptación.
+    fn reject_window(ttl: std::time::Duration) -> std::time::Duration {
+        (ttl / 2).max(std::time::Duration::from_secs(1))
+    }
+
+    /// El mutex del mapa puede quedar envenenado solo si un pánico previo
+    /// ocurrió con el cerrojo tomado; el contenido sigue siendo válido, así
+    /// que se usa igual en vez de propagar el pánico al listener.
+    fn decisions(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, RememberedDecision>> {
+        self.decisions.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn asking(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+        self.asking.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Decisión vigente para el par (la repele si ya caducó).
+    fn lookup(&self, id: &str) -> Option<AdmissionDecision> {
+        let mut map = self.decisions();
+        let saved = *map.get(id)?;
+        let window = match saved.decision {
+            AdmissionDecision::Accept { .. } => self.ttl,
+            AdmissionDecision::Reject => Self::reject_window(self.ttl),
+        };
+        if saved.at.elapsed() > window {
+            map.remove(id);
+            return None;
+        }
+        Some(saved.decision)
+    }
+
+    /// Archiva la decisión del anfitrión para el par.
+    fn remember(&self, id: &str, decision: AdmissionDecision) {
+        let mut map = self.decisions();
+        // Poda perezosa: el mapa es diminuto (un par por cliente) y de vida
+        // corta; basta con tirar lo caducado al insertar.
+        let ttl = self.ttl;
+        map.retain(|_, r| r.at.elapsed() <= ttl);
+        map.insert(
+            id.to_string(),
+            RememberedDecision {
+                decision,
+                at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    /// ¿Hay ya una pregunta abierta para este par?
+    fn is_asking(&self, id: &str) -> bool {
+        self.asking().contains(id)
+    }
+
+    /// Intenta ser el dueño del diálogo del par. `None` = otra conexión del
+    /// mismo par ya está preguntando: hay que esperar **su** decisión.
+    fn claim(&self, id: &str) -> Option<PromptClaim<'_>> {
+        if !self.asking().insert(id.to_string()) {
+            return None;
+        }
+        Some(PromptClaim {
+            board: self,
+            id: id.to_string(),
+        })
+    }
+
+    fn release(&self, id: &str) {
+        self.asking().remove(id);
+    }
+}
+
+/// Marca de "soy el dueño de la pregunta del par" (C-57); al soltarse libera la
+/// plaza incluso si la conexión termina con error a mitad de la espera.
+struct PromptClaim<'a> {
+    board: &'a AdmissionBoard,
+    id: String,
+}
+
+impl Drop for PromptClaim<'_> {
+    fn drop(&mut self) {
+        self.board.release(&self.id);
+    }
+}
+
+/// Sondeo de la decisión de otro intento del mismo par (C-57). Suficiente
+/// para la escala del diálogo humano y barato: un `HashSet`/`HashMap`.
+const ADMISSION_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Traduce la decisión del anfitrión a la autorización del par. `trust` sigue
+/// persistiendo el par en `trusted.ids` (`TrustStore::remember` es idempotente:
+/// una sola entrada aunque lo reutilicen varios intentos).
+fn admission_of(decision: AdmissionDecision, reused: bool) -> Admission {
+    match decision {
+        AdmissionDecision::Accept { trust } => Admission::Accept {
+            persist: if trust { Persist::User } else { Persist::None },
+            origin: if reused { "reused" } else { "host" },
+        },
+        // Se distingue en la auditoría si el rechazo lo dio el diálogo o una
+        // decisión reciente reutilizada: en campo importa saber por qué NO
+        // hubo pregunta.
+        AdmissionDecision::Reject if reused => Admission::Deny {
+            reason: "rejected_recently",
+        },
+        AdmissionDecision::Reject => Admission::Deny {
+            reason: "rejected_by_host",
+        },
     }
 }
 
@@ -862,8 +1029,16 @@ enum Persist {
 
 /// Resultado de la autorización del par (C-44).
 enum Admission {
-    Accept { persist: Persist },
-    Deny { reason: &'static str },
+    /// `origin`: `host` (decisión del diálogo), `reused` (decisión archivada) o
+    /// `trusted_shortcut` (par `user` con el control ya encendido). S-03: el
+    /// JSONL debe decir **cómo** se admitió la sesión.
+    Accept {
+        persist: Persist,
+        origin: &'static str,
+    },
+    Deny {
+        reason: &'static str,
+    },
 }
 
 /// Autoriza al par autenticado según `--accept` (F-01/RNF-07). El anfitrión
@@ -877,6 +1052,7 @@ async fn admit_peer(
     peer_id: &auth::PeerIdentity,
     cfg: &DaemonConfig,
     trust: &TrustStore,
+    board: &AdmissionBoard,
     ctl: &mut StdinCtl,
     session_id: &str,
     peer: std::net::SocketAddr,
@@ -890,11 +1066,13 @@ async fn admit_peer(
         // «visto» para que no se convierta en autorización en `ask`/`trusted`.
         AcceptPolicy::Any => Ok(Admission::Accept {
             persist: Persist::Seen,
+            origin: "any",
         }),
         AcceptPolicy::Trusted => {
             if user_trusted {
                 return Ok(Admission::Accept {
                     persist: Persist::None,
+                    origin: "trusted_shortcut",
                 });
             }
             if cfg
@@ -904,6 +1082,7 @@ async fn admit_peer(
             {
                 return Ok(Admission::Accept {
                     persist: Persist::User,
+                    origin: "trusted_shortcut",
                 });
             }
             Ok(Admission::Deny {
@@ -911,6 +1090,27 @@ async fn admit_peer(
             })
         }
         AcceptPolicy::Ask => {
+            // C-57 (fix de campo 2026-11-23): el cliente abre VARIOS intentos
+            // de la misma conexión (QUIC→TCP→relay). Una decisión del
+            // anfitrión reciente se aplica sin volver a preguntar. Va antes
+            // que nada —también antes del atajo de par confiado/capacidad—
+            // porque lo último que dijo el anfitrión es lo que manda (p. ej.
+            // un rechazo reciente no debe quedar eclipsado).
+            if let Some(decision) = board.lookup(id.as_str()) {
+                emit.emit(ev(
+                    "session_decision_reused",
+                    serde_json::json!({
+                        "peer": id,
+                        "peer_addr": peer.to_string(),
+                        "session_id": session_id,
+                        "decision": match decision {
+                            AdmissionDecision::Accept { .. } => "accept",
+                            AdmissionDecision::Reject => "reject",
+                        },
+                    }),
+                ));
+                return Ok(admission_of(decision, true));
+            }
             // Ya autorizado explícitamente en una sesión anterior **y** con el
             // control encendido: entra sin volver a preguntar. Si el toggle
             // está apagado se pregunta igualmente (el diálogo permite conceder
@@ -918,8 +1118,29 @@ async fn admit_peer(
             if user_trusted && cfg.allow_input && cfg.input_on() {
                 return Ok(Admission::Accept {
                     persist: Persist::None,
+                    origin: "trusted_shortcut",
                 });
             }
+            // C-57: un solo diálogo por par. Si otra conexión del mismo par ya
+            // tiene la pregunta abierta, este intento espera ESA decisión en vez
+            // de abrir otra. Con el bucle de aceptación serial de hoy esto no
+            // se alcanza, pero deja la regla donde vive la admisión para que F6
+            // (aceptación concurrente) no duplique el diálogo.
+            let timeout = std::time::Duration::from_secs(cfg.accept_timeout_secs.max(1));
+            let deadline = tokio::time::Instant::now() + timeout;
+            let _claim = loop {
+                if let Some(decision) = board.lookup(id.as_str()) {
+                    return Ok(admission_of(decision, true));
+                }
+                if let Some(claim) = board.claim(id.as_str()) {
+                    break claim;
+                }
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    return Ok(Admission::Deny { reason: "timeout" });
+                }
+                tokio::time::sleep(left.min(ADMISSION_POLL)).await;
+            };
             emit.emit(ev(
                 "session_pending",
                 serde_json::json!({
@@ -929,26 +1150,31 @@ async fn admit_peer(
                     "role": "controlled",
                 }),
             ));
-            let timeout = std::time::Duration::from_secs(cfg.accept_timeout_secs.max(1));
-            let deadline = tokio::time::Instant::now() + timeout;
-            loop {
+            let admission = loop {
                 let left = deadline.saturating_duration_since(tokio::time::Instant::now());
                 if left.is_zero() {
-                    return Ok(Admission::Deny { reason: "timeout" });
+                    break Admission::Deny { reason: "timeout" };
                 }
                 match tokio::time::timeout(left, ctl.rx.recv()).await {
                     // Sin gestor (stdin cerrado) o timeout → denegar.
-                    Err(_) | Ok(None) => return Ok(Admission::Deny { reason: "timeout" }),
+                    Err(_) | Ok(None) => break Admission::Deny { reason: "timeout" },
                     Ok(Some(line)) => {
                         if let Some(dec) = parse_decision(&line, id.as_str()) {
-                            return Ok(match dec {
-                                AdmissionDecision::Accept { trust } => Admission::Accept {
-                                    persist: if trust { Persist::User } else { Persist::None },
-                                },
-                                AdmissionDecision::Reject => Admission::Deny {
-                                    reason: "rejected_by_host",
-                                },
-                            });
+                            // C-57: la decisión se archiva para que los
+                            // reintentos del mismo cliente la reutilicen (los
+                            // `trust:true` siguen cayendo en `trusted.ids` al
+                            // persistirlos, una sola vez por par).
+                            board.remember(id.as_str(), dec);
+                            break admission_of(dec, false);
+                        }
+                        // Decisión para OTRO par que también está esperando
+                        // (varios intentos en vuelo): se archiva para él; aquí
+                        // no aplica.
+                        if let Some((target, dec)) = parse_decision_any(&line) {
+                            if board.is_asking(&target) {
+                                board.remember(&target, dec);
+                            }
+                            continue;
                         }
                         // Los toggles `{"perm":...}` no se pierden: se aplican
                         // al abrir la sesión (C-2).
@@ -959,7 +1185,7 @@ async fn admit_peer(
                         if line.trim_start().starts_with('{')
                             && (line.contains("\"accept\"") || line.contains("\"reject\""))
                         {
-                            continue; // decisión para otro par: se ignora
+                            continue; // decisión ilegible: no es un `bye`
                         }
                         // `bye`/línea de control del gestor → detener la escucha.
                         ctl.stop = true;
@@ -968,10 +1194,14 @@ async fn admit_peer(
                             session_id,
                             serde_json::json!({"pending_session": "stop", "peer": id}),
                         );
-                        return Ok(Admission::Deny { reason: "stopped" });
+                        break Admission::Deny { reason: "stopped" };
                     }
                 }
-            }
+            };
+            // `_claim` libera la plaza de «pregunta abierta» al salir del
+            // brazo (Drop), de modo que el siguiente intento vea la decisión
+            // archivada o pueda preguntar si no la hubo (timeout/stop).
+            Ok(admission)
         }
     }
 }
@@ -1019,6 +1249,8 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     cfg: &DaemonConfig,
     // C-44: canal del gestor (UI) para pedir la decisión en `--accept ask`.
     ctl: &mut StdinCtl,
+    // C-57: decisiones por par del listener (un diálogo por cliente, no por intento).
+    board: &AdmissionBoard,
     log: &mut SessionLog,
     emit: &mut Emit,
 ) -> Result<Established<T>, DaemonError> {
@@ -1028,9 +1260,12 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     let peer_id = auth::recv_validate_auth(&mut ch, &mut gate, &trust, &binding).await?;
     // C-44 (F-01/RNF-07): autenticado ≠ autorizado. El anfitrión decide ANTES
     // de anunciar nada ni enviar su prueba de identidad (mínima exposición).
-    let admission = admit_peer(&peer_id, cfg, &trust, ctl, session_id, peer, log, emit).await?;
-    let persist = match admission {
-        Admission::Accept { persist } => persist,
+    let admission = admit_peer(
+        &peer_id, cfg, &trust, board, ctl, session_id, peer, log, emit,
+    )
+    .await?;
+    let (persist, admission_origin) = match admission {
+        Admission::Accept { persist, origin } => (persist, origin),
         Admission::Deny { reason } => {
             log.record(
                 AuditEventKind::PermissionDenied,
@@ -1072,7 +1307,7 @@ async fn establish_common<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpi
     log.record(
         AuditEventKind::SessionEstablished,
         session_id,
-        serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted, "peer_trust": trust_origin, "persist": match persist { Persist::None => "none", Persist::User => "user", Persist::Seen => "seen" }, "peer_addr": peer.to_string(), "transport": transport, "accept": cfg.accept.as_str()}),
+        serde_json::json!({"peer": peer_id.node_id.to_string(), "peer_trusted": peer_id.trusted, "peer_trust": trust_origin, "admission": admission_origin, "persist": match persist { Persist::None => "none", Persist::User => "user", Persist::Seen => "seen" }, "peer_addr": peer.to_string(), "transport": transport, "accept": cfg.accept.as_str()}),
     )?;
     emit.emit(ev(
         "session_active",
@@ -1316,6 +1551,12 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
         pending: Vec::new(),
         stop: false,
     };
+    // C-57: decisiones por par del listener. Vive lo que vive la escucha para
+    // que los reintentos del mismo cliente (QUIC→TCP→relay) compartan una sola
+    // decisión del anfitrión.
+    let board = AdmissionBoard::new(std::time::Duration::from_secs(
+        cfg.accept_decision_ttl_secs.max(1),
+    ));
 
     let (cert, key) = anyremote_transport::cert_store::ensure(&cfg.config_dir)?;
     let srv_cfg = anyremote_transport::server_config_from(cert.clone(), key.clone_key())?;
@@ -1559,6 +1800,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                         &session_id,
                         &cfg,
                         &mut ctl,
+                        &board,
                         &mut log,
                         &mut emit,
                     )
@@ -1607,6 +1849,7 @@ pub async fn run_listen(mut cfg: DaemonConfig) -> Result<RunOutcome, DaemonError
                         &session_id,
                         &cfg,
                         &mut ctl,
+                        &board,
                         &mut log,
                         &mut emit,
                     )
@@ -3654,6 +3897,82 @@ mod tests {
             None
         );
         assert_eq!(parse_decision("bye", "AAAA2222BB"), None);
+    }
+
+    /// C-57 (fix de campo 2026-11-23): un cliente abre varios intentos de la
+    /// misma conexión; solo uno es dueño de la pregunta y los demás esperan su
+    /// decisión en vez de abrir otro diálogo. La plaza se libera al soltar.
+    #[test]
+    fn admission_board_allows_one_prompt_per_peer() {
+        let board = AdmissionBoard::new(std::time::Duration::from_secs(60));
+        let first = board.claim("PAR1").expect("el primer intento pregunta");
+        assert!(
+            board.claim("PAR1").is_none(),
+            "el segundo intento del MISMO par debe esperar, no preguntar"
+        );
+        assert!(
+            board.claim("PAR2").is_some(),
+            "otro par tiene su propio diálogo (no se bloquean entre sí)"
+        );
+        assert!(board.lookup("PAR1").is_none(), "aún no hay decisión");
+        board.remember("PAR1", AdmissionDecision::Accept { trust: true });
+        assert_eq!(
+            board.lookup("PAR1"),
+            Some(AdmissionDecision::Accept { trust: true }),
+            "la decisión queda disponible para los intentos en vuelo"
+        );
+        drop(first);
+        assert!(
+            board.claim("PAR1").is_some(),
+            "sin pregunta abierta (timeout/cierre) se puede volver a preguntar"
+        );
+    }
+
+    /// C-57: la aceptación caduca con la ventana configurada (un intento
+    /// futuro del mismo par no hereda una autorización vieja) y el rechazo usa
+    /// una ventana más corta que la de aceptación.
+    #[test]
+    fn admission_board_expires_decisions_after_the_window() {
+        let board = AdmissionBoard::new(std::time::Duration::from_millis(40));
+        board.remember("PAR", AdmissionDecision::Accept { trust: false });
+        assert!(board.lookup("PAR").is_some());
+        std::thread::sleep(std::time::Duration::from_millis(90));
+        assert!(
+            board.lookup("PAR").is_none(),
+            "una aceptación caducada no autoriza un intento posterior"
+        );
+        // La ventana del rechazo se comprueba por fórmula: dormir 30 s en un
+        // test unitario no aportaría nada.
+        assert_eq!(
+            AdmissionBoard::reject_window(std::time::Duration::from_secs(60)),
+            std::time::Duration::from_secs(30)
+        );
+        assert_eq!(
+            AdmissionBoard::reject_window(std::time::Duration::from_millis(200)),
+            std::time::Duration::from_secs(1),
+            "mínimo 1 s aunque el TTL sea diminuto (tests/embebedores)"
+        );
+        // Y el mapa no guarda indefinidamente pares que ya no aparecen.
+        board.remember("OTRO", AdmissionDecision::Reject);
+        assert_eq!(board.decisions().len(), 1, "la poda tira lo caducado");
+    }
+
+    /// C-57: la auditoría distingue un rechazo del diálogo de uno reutilizado
+    /// (en campo importa saber por qué NO se preguntó).
+    #[test]
+    fn reused_rejection_is_audited_with_its_own_reason() {
+        match admission_of(AdmissionDecision::Reject, false) {
+            Admission::Deny { reason } => assert_eq!(reason, "rejected_by_host"),
+            Admission::Accept { .. } => panic!("un rechazo no autoriza"),
+        }
+        match admission_of(AdmissionDecision::Reject, true) {
+            Admission::Deny { reason } => assert_eq!(reason, "rejected_recently"),
+            Admission::Accept { .. } => panic!("un rechazo no autoriza"),
+        }
+        match admission_of(AdmissionDecision::Accept { trust: true }, true) {
+            Admission::Accept { persist, .. } => assert_eq!(persist, Persist::User),
+            Admission::Deny { .. } => panic!("una aceptación debe autorizar"),
+        }
     }
 
     /// C-45 (v0.14.3): el toggle de entrada es **estado del anfitrión** y

@@ -323,6 +323,42 @@ String admissionLine({required String peer, required String choice}) {
   return jsonEncode({'reject': peer});
 }
 
+/// C-53: ventana durante la que se recuerda la decisión de un par. El cliente
+/// abre varios intentos (QUIC → TCP → relay) y cada intento emite su propio
+/// `session_pending`; sin memoria, el diálogo reaparecía sobre un intento ya
+/// decidido (reporte de campo 2026-11-23, P3).
+const kAdmissionDecisionWindow = Duration(seconds: 60);
+
+/// C-53: líneas que la UI escribe en el stdin del listener al decidir por
+/// PRIMERA vez.
+///
+/// Al **aceptar**, el `{"perm":...}` va **antes** de la decisión: el daemon
+/// encola los permisos mientras espera la decisión y los aplica al abrir la
+/// sesión, así que el primer clic del invitado ya encuentra `input:true` (el
+/// bug de campo eran 244 `input_injected` que el usuario no "sentía" porque el
+/// anfitrión estaba en «solo ver»).
+///
+/// Al **rechazar** no se envía ningún permiso: rechazar no debe alterar el
+/// estado del anfitrión.
+List<String> admissionWrites({
+  required String peer,
+  required String choice,
+  required bool audio,
+  required bool mic,
+}) {
+  // `admissionLine` degrada a rechazo cualquier elección desconocida; aquí se
+  // replica para no conceder permiso en ese caso (fail-closed).
+  if (choice != 'accept' && choice != 'trust') {
+    return [admissionLine(peer: peer, choice: choice)];
+  }
+  return [
+    jsonEncode({
+      'perm': {'input': true, 'audio': audio, 'mic': mic},
+    }),
+    admissionLine(peer: peer, choice: choice),
+  ];
+}
+
 /// Ubica `anyremoted.exe`: env ANYREMOTE_DAEMON (override) o junto al ejecutable.
 String resolveDaemonPath() {
   final override = Platform.environment['ANYREMOTE_DAEMON'];
@@ -382,6 +418,11 @@ class _HomePageState extends State<HomePage> {
   /// C-44: evita apilar diálogos si llegan varias solicitudes (el daemon
   /// atiende una sesión a la vez, pero la UI debe ser idempotente).
   bool _admissionPromptOpen = false;
+  /// C-53: decisión ya tomada por par (`peer` → elección + instante). El
+  /// cliente reintenta por QUIC → TCP → relay y cada intento emite otro
+  /// `session_pending`; recordar la decisión durante
+  /// `kAdmissionDecisionWindow` evita volver a preguntar lo ya decidido.
+  final Map<String, ({String choice, DateTime at})> _admissionDecisions = {};
   bool _shareAudio = false;
   bool _shareMic = false;
   /// Calidad del vídeo que comparte el listener. **720p por defecto**: en la
@@ -672,11 +713,28 @@ class _HomePageState extends State<HomePage> {
             // C-44: el anfitrión decide; el daemon bloquea el handshake hasta
             // recibir `{"accept"|"reject":"<ID>"}` por stdin.
             final pendingPeer = (ev['peer'] as String?) ?? '?';
-            _append('[daemon] sesión entrante de $pendingPeer — esperando tu decisión');
-            unawaited(_promptIncoming(pendingPeer));
+            // C-53: el mismo cliente reintenta por varios transportes y cada
+            // intento emite `session_pending`. Si ya se decidió hace poco, se
+            // reenvía la misma decisión sin volver a preguntar; si no, se
+            // pregunta (un segundo evento con el diálogo abierto se ignora).
+            final recent = _recentAdmission(pendingPeer);
+            if (recent != null) {
+              _append('[daemon] sesión entrante de $pendingPeer — decisión '
+                  'reciente ($recent): se reenvía sin volver a preguntar');
+              _writeAdmission(
+                  peer: pendingPeer, choice: recent, replay: true);
+            } else {
+              _append('[daemon] sesión entrante de $pendingPeer — esperando tu decisión');
+              unawaited(_promptIncoming(pendingPeer));
+            }
           case 'peer_rejected':
             _append('[daemon] sesión rechazada (${ev['peer'] ?? '?'}): '
                 '${ev['reason'] ?? 'sin motivo'}');
+          case 'session_decision_reused':
+            // C-57: el daemon aplicó una decisión archivada del par (sin
+            // volver a preguntar). Antes caía en el `default` mudo.
+            _append('[daemon] sesión admitida con la decisión anterior '
+                '(${ev['decision'] ?? '?'} para ${ev['peer'] ?? '?'})');
           case 'session_active':
             // D-03: `peer_trusted` = este equipo ya se autenticó antes (TOFU).
             _append('[daemon] SESIÓN ACTIVA con ${ev['peer']}'
@@ -890,91 +948,132 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  /// C-44 (F-01): diálogo de **sesión entrante**. Escribe la decisión en el
-  /// stdin del listener; el daemon (`--accept ask`) mantiene el handshake
-  /// bloqueado hasta entonces y deniega por timeout si no hay respuesta.
+  /// C-53: recuerda la decisión de [peer] y poda las entradas caducadas (la
+  /// ventana es corta; sin poda el mapa crecería con cada invitado del día).
+  void _rememberAdmission(String peer, String choice) {
+    final now = DateTime.now();
+    _admissionDecisions.removeWhere(
+        (_, d) => now.difference(d.at) > kAdmissionDecisionWindow);
+    _admissionDecisions[peer] = (choice: choice, at: now);
+  }
+
+  /// C-53: decisión vigente para [peer], o `null` si toca preguntar.
+  String? _recentAdmission(String peer) {
+    final d = _admissionDecisions[peer];
+    if (d == null) return null;
+    if (DateTime.now().difference(d.at) <= kAdmissionDecisionWindow) {
+      return d.choice;
+    }
+    _admissionDecisions.remove(peer);
+    return null;
+  }
+
+  /// C-53: escribe en el listener la decisión de [peer].
   ///
-  /// **C-44/C-45 (v0.14.2):** el diálogo decide también el **control remoto**
-  /// (casilla marcada por defecto). Autorizar la conexión y autorizar teclado/
-  /// ratón son la misma decisión explícita; sin esto, «Aceptar» abría una
-  /// sesión en «solo ver» y el cliente no podía hacer nada (reporte 20/11).
-  Future<void> _promptIncoming(String peer) async {
-    if (_admissionPromptOpen) {
-      _append('[ui] ya hay una solicitud de sesión en pantalla');
-      return;
-    }
+  /// Primera decisión: `admissionWrites` pone el `{"perm":{"input":true}}`
+  /// **antes** de la línea de decisión (el daemon lo encola mientras espera).
+  /// Reenvío de un intento ya decidido: solo la línea de decisión — los
+  /// toggles ya están sincronizados con el daemon y repetir `input:true`
+  /// reactivaría un control que el anfitrión apagara después de aceptar.
+  void _writeAdmission({
+    required String peer,
+    required String choice,
+    bool replay = false,
+  }) {
     final proc = _listener;
-    _admissionPromptOpen = true;
-    var choice = 'reject';
-    var allowControl = true;
-    try {
-      if (!mounted) return;
-      final res = await showDialog<String>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => StatefulBuilder(
-          builder: (ctx, setLocal) => AlertDialog(
-            title: const Text('Sesión entrante'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('El equipo $peer quiere conectarse a este equipo.\n\n'
-                    '«Aceptar y confiar» la recordará para próximas sesiones.'),
-                const SizedBox(height: 8),
-                CheckboxListTile(
-                  value: allowControl,
-                  contentPadding: EdgeInsets.zero,
-                  controlAffinity: ListTileControlAffinity.leading,
-                  title: const Text('Permitir control remoto (teclado y ratón)'),
-                  subtitle: const Text('Desmárcalo para compartir solo la pantalla'),
-                  onChanged: (v) => setLocal(() => allowControl = v ?? false),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, 'reject'),
-                child: const Text('Rechazar'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, 'accept'),
-                child: const Text('Aceptar una vez'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(ctx, 'trust'),
-                child: const Text('Aceptar y confiar'),
-              ),
-            ],
-          ),
-        ),
-      );
-      if (res != null) choice = res;
-    } finally {
-      _admissionPromptOpen = false;
-    }
-    if (choice != 'reject') {
-      // Los permisos van ANTES de la decisión: el daemon los encola mientras
-      // espera y los aplica al abrir la sesión (el primer clic ya funciona).
-      setState(() => _acceptRemoteControl = allowControl);
-      _sendPerms();
-      if (!allowControl) {
-        _append('[ui] sesión aceptada en modo «solo ver»: marca '
-            '«Control remoto» para permitir teclado/ratón');
-      }
-    }
+    final lines = replay
+        ? [admissionLine(peer: peer, choice: choice)]
+        : admissionWrites(
+            peer: peer,
+            choice: choice,
+            audio: _shareAudio,
+            mic: _shareMic,
+          );
     if (proc == null) {
       _append('[ui] decisión «$choice» para $peer no enviada: no hay listener '
           'local (el anfitrión la denegará por timeout)');
       return;
     }
     try {
-      proc.stdin.writeln(admissionLine(peer: peer, choice: choice));
-      _append('[ui] decisión para $peer: $choice'
-          '${choice == 'reject' ? '' : allowControl ? ' · con control' : ' · solo ver'}');
+      for (final line in lines) {
+        proc.stdin.writeln(line);
+      }
+      final suffix = replay
+          ? ' (reenvío de un intento ya decidido)'
+          : choice == 'reject'
+              ? ''
+              : ' · con control';
+      _append('[ui] decisión para $peer: $choice$suffix');
     } catch (e) {
       _append('[ui] no se pudo enviar la decisión: $e');
     }
+  }
+
+  /// C-44 (F-01): diálogo de **sesión entrante**. Escribe la decisión en el
+  /// stdin del listener; el daemon (`--accept ask`) mantiene el handshake
+  /// bloqueado hasta entonces y deniega por timeout si no hay respuesta.
+  ///
+  /// **C-53 (v0.14.5):** fuera la casilla «Permitir control remoto». Aceptar
+  /// una sesión remota implica poder controlarla: `session_pending` es el
+  /// diálogo de **admisión**, no de permisos. «Solo ver» sigue existiendo como
+  /// estado explícito del anfitrión (toggle «Control remoto»), no como opción
+  /// del diálogo. La decisión se recuerda por par (`kAdmissionDecisionWindow`)
+  /// porque el cliente reintenta por varios transportes.
+  Future<void> _promptIncoming(String peer) async {
+    if (_admissionPromptOpen) {
+      // C-53: un segundo evento mientras el diálogo está abierto se descarta
+      // (no se apila otro diálogo sobre el actual).
+      _append('[ui] ya hay una solicitud de sesión en pantalla: se ignora');
+      return;
+    }
+    _admissionPromptOpen = true;
+    var choice = 'reject';
+    try {
+      if (!mounted) return;
+      final res = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Sesión entrante'),
+          content: Text('El equipo $peer quiere conectarse a este equipo.\n\n'
+              'Si aceptas, podrá ver la pantalla y controlarla (teclado y '
+              'ratón). Puedes retirar el control después con «Control '
+              'remoto».\n\n'
+              '«Aceptar y confiar» la recordará para próximas sesiones.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'reject'),
+              child: const Text('Rechazar'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'accept'),
+              child: const Text('Aceptar una vez'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'trust'),
+              child: const Text('Aceptar y confiar'),
+            ),
+          ],
+        ),
+      );
+      if (res != null) choice = res;
+    } finally {
+      _admissionPromptOpen = false;
+    }
+    // C-53: sin ventana montada no se toca el estado (la app se está cerrando;
+    // el listener muere con ella).
+    if (!mounted) return;
+    // S-04 (revisión de seguridad 23/11): la app NO recuerda el rechazo.
+    // El daemon ya lo cachea con su ventana correcta (mitad del TTL) y
+    // recordar aquí lo re-sellaba: hasta ~90 s de denegación silenciosa
+    // sin poder readmitir desde la UI.
+    if (choice != 'reject') _rememberAdmission(peer, choice);
+    if (choice != 'reject') {
+      // C-53: aceptar = conceder control. El permiso se escribe justo después,
+      // antes de la decisión (ver `_writeAdmission`).
+      setState(() => _acceptRemoteControl = true);
+    }
+    _writeAdmission(peer: peer, choice: choice);
   }
 
   /// C-2/C-10: los tres toggles de permisos DINÁMICOS (una sola copia).
@@ -1021,6 +1120,10 @@ class _HomePageState extends State<HomePage> {
       _append('[ui] el listener local ya corre');
       return;
     }
+    // C-53: cada «Compartir escritorio» abre un contexto de consentimiento
+    // nuevo; no se reutilizan las decisiones recordadas de la ventana anterior
+    // (si no, un par aceptado antes entraría sin preguntar tras reiniciar).
+    _admissionDecisions.clear();
     // C-43: con una sesión de cliente activa no se abre la escucha (mismo
     // conflicto que al revés): se pide detenerla.
     if (_daemon != null) {
